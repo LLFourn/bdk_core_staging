@@ -1,0 +1,20 @@
+[package]
+name = "bdk_core"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bitcoin = { version = "0.28" }
+miniscript = { git =  "https://github.com/llfourn/rust-miniscript", rev = "2d351c08caca292e8710d74b950bc200f5a539cc" }
+serde_crate = { package = "serde", version = "1", optional = true, features = ["derive"] }
+
+
+[features]
+default = ["std"]
+std = []
+serde = ["serde_crate", "miniscript/use-serde", "bitcoin/use-serde"]
+
+# [patch.crates-io]
+# miniscript = { git =  "https://github.com/llfourn/rust-miniscript", rev = "2d351c08caca292e8710d74b950bc200f5a539cc" }
