@@ -17,9 +17,8 @@ pub struct DescriptorTracker {
     descriptor: Descriptor<DescriptorPublicKey>,
     /// Which txids are included in which checkpoints
     checkpointed_txs: BTreeMap<u32, (BlockHash, HashSet<Txid>)>,
-    /// The txouts owned by this tracker
-    //TODO: just put the derivation index here
-    txouts: BTreeMap<OutPoint, TxOutData>,
+    /// Index the outpoints owned by this tracker to the derivation index of script pubkey.
+    txouts: BTreeMap<OutPoint, u32>,
     /// Which tx spent each output. This indexes the spends for every transaction regardless if the
     /// outpoint has one of our scripts pubkeys.
     spends: BTreeMap<OutPoint, (u32, Txid)>,
@@ -146,9 +145,9 @@ impl DescriptorTracker {
             .collect::<Vec<_>>();
 
         for txout_to_remove in &txouts_to_remove {
-            if let Some(txout) = self.txouts.remove(txout_to_remove) {
+            if let Some(derivation_index) = self.txouts.remove(txout_to_remove) {
                 self.script_txouts
-                    .get_mut(&txout.index)
+                    .get_mut(&derivation_index)
                     .expect("guaranteed to exist")
                     .remove(&txout_to_remove);
             }
@@ -238,13 +237,7 @@ impl DescriptorTracker {
                     vout: i as u32,
                 };
 
-                self.txouts.insert(
-                    outpoint,
-                    TxOutData {
-                        value: out.value,
-                        index,
-                    },
-                );
+                self.txouts.insert(outpoint, index);
 
                 if !self.spends.contains_key(&outpoint) {
                     self.unspent.insert(outpoint);
@@ -453,20 +446,23 @@ impl DescriptorTracker {
         self.unspent
             .iter()
             .map(|txo| (txo, self.txouts.get(txo).expect("txout must exist")))
-            .map(|(txo, data)| self.create_txout(*txo, *data))
+            .map(|(txo, index)| self.create_txout(*txo, *index))
     }
 
-    fn create_txout(&self, outpoint: OutPoint, data: TxOutData) -> LocalTxOut {
+    fn create_txout(&self, outpoint: OutPoint, derivation_index: u32) -> LocalTxOut {
         let tx = self
             .txs
             .get(&outpoint.txid)
             .expect("must exist since we have the txout");
         let spent_by = self.spends.get(&outpoint).cloned();
+        let value = self.txs.get(&outpoint.txid).expect("must exist").tx.output
+            [outpoint.vout as usize]
+            .value;
         LocalTxOut {
-            value: data.value,
+            value,
             spent_by,
             outpoint,
-            derivation_index: data.index,
+            derivation_index,
             confirmed_at: tx.confirmation_time,
         }
     }
@@ -606,8 +602,8 @@ impl DescriptorTracker {
 
     /// Prepare an input for insertion into a PSBT
     pub fn prime_input(&self, op: OutPoint) -> Option<PrimedInput> {
-        let txout = self.txouts.get(&op)?;
-        let descriptor = self.descriptor().derive(txout.index);
+        let derivation_index = self.txouts.get(&op)?;
+        let descriptor = self.descriptor().derive(*derivation_index);
         let mut psbt_input = psbt::Input::default();
 
         let prev_tx = self
@@ -626,7 +622,7 @@ impl DescriptorTracker {
         }
 
         psbt_input
-            .update_with_descriptor_unchecked(&self.descriptor().derive(txout.index).into())
+            .update_with_descriptor_unchecked(&descriptor)
             .expect("conversion error cannot happen if descriptor is well formed");
 
         let primed_input = PrimedInput {
@@ -667,12 +663,6 @@ pub struct LocalTxOut {
     pub outpoint: OutPoint,
     pub derivation_index: u32,
     pub confirmed_at: Option<BlockTime>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TxOutData {
-    value: u64,
-    index: u32,
 }
 
 pub trait MultiTracker {
