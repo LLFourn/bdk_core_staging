@@ -18,7 +18,11 @@ pub struct DescriptorTracker {
     /// Which txids are included in which checkpoints
     checkpointed_txs: BTreeMap<u32, (BlockHash, HashSet<Txid>)>,
     /// The txouts owned by this tracker
+    //TODO: just put the derivation index here
     txouts: BTreeMap<OutPoint, TxOutData>,
+    /// Which tx spent each output. This indexes the spends for every transaction regardless if the
+    /// outpoint has one of our scripts pubkeys.
+    spends: BTreeMap<OutPoint, (u32, Txid)>,
     /// The unspent txouts
     unspent: HashSet<OutPoint>,
     /// The ordered script pubkeys that have been derived from the descriptor.
@@ -28,20 +32,36 @@ pub struct DescriptorTracker {
     /// A lookup from script pubkey to outpoint
     script_txouts: BTreeMap<u32, HashSet<OutPoint>>,
     /// The next derivation index the tracker should used if asked for a "new" script pubkey.
+    //TODO: why can't just be self.scripts.len()
     next_derivation_index: u32,
     /// Map from txid to metadata
     txs: HashMap<Txid, AugmentedTx>,
     /// Index of transactions that are in the mempool
     mempool: HashSet<Txid>,
     // TODO change to blocktime + height
+    // Optionally we need the consensus time i.e. Median time past
+    // https://github.com/bitcoin/bitcoin/blob/a4e066af8573dcefb11dff120e1c09e8cf7f40c2/src/chain.h#L290-L302
     latest_blockheight: Option<u32>,
     secp: Secp256k1<VerifyOnly>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateResult {
+    /// The update was applied successfully.
+    // TODO: return a diff
     Ok,
+    /// The update cannot be applied to the current state because it does not apply to the current
+    /// tip of the tracker or does not invalidate the right checkpoint such that it does.
     Stale,
+    /// The update you tried to apply was inconsistent with the current state.
+    ///
+    /// To resolve the consistency you can treat the update as invalid and ignore it or invalidate
+    /// the checkpoint and re-apply it.
+    Inconsistent {
+        txid: Txid,
+        conflicts_with: Txid,
+        at_checkpoint: CheckPoint,
+    },
 }
 
 impl DescriptorTracker {
@@ -51,6 +71,7 @@ impl DescriptorTracker {
             checkpointed_txs: Default::default(),
             secp: Secp256k1::verification_only(),
             txouts: Default::default(),
+            spends: Default::default(),
             unspent: Default::default(),
             scripts: Default::default(),
             script_indexes: Default::default(),
@@ -93,6 +114,16 @@ impl DescriptorTracker {
             })
     }
 
+    fn best_checkpoint_for(&self, height: u32) -> Option<CheckPoint> {
+        self.checkpointed_txs
+            .range(height..)
+            .map(|(height, (hash, _))| CheckPoint {
+                height: *height,
+                hash: *hash,
+            })
+            .next()
+    }
+
     pub fn iter_checkpoints(&self) -> impl Iterator<Item = (CheckPoint, &HashSet<Txid>)> {
         self.checkpointed_txs.iter().map(|(height, (hash, txs))| {
             (
@@ -118,8 +149,8 @@ impl DescriptorTracker {
             .map(|(k, _)| *k)
             .collect::<Vec<_>>();
 
-        for txout_to_remove in txouts_to_remove {
-            if let Some(txout) = self.txouts.remove(&txout_to_remove) {
+        for txout_to_remove in &txouts_to_remove {
+            if let Some(txout) = self.txouts.remove(txout_to_remove) {
                 self.script_txouts
                     .get_mut(&txout.index)
                     .expect("guaranteed to exist")
@@ -128,14 +159,16 @@ impl DescriptorTracker {
         }
 
         if let Some(aug_tx) = self.txs.remove(&txid) {
-            for (i, input) in aug_tx.tx.input.iter().enumerate() {
-                if let Some(txout) = self.txouts.get(&input.previous_output) {
+            debug_assert!(!txouts_to_remove.is_empty());
+            for input in &aug_tx.tx.input {
+                if let Some((_, tx_that_spends)) = self.spends.remove(&input.previous_output) {
                     debug_assert_eq!(
-                        txout.spent_by,
-                        Some((i as u32, aug_tx.tx.txid())),
-                        "tx being removed was not the child of its parent in the database."
+                        tx_that_spends, txid,
+                        "the one that spent it must be this one"
                     );
-                    // this previous spent output is now unspent
+                }
+
+                if self.txouts.contains_key(&input.previous_output) {
                     self.unspent.insert(input.previous_output);
                 }
             }
@@ -146,63 +179,80 @@ impl DescriptorTracker {
 
     fn add_tx(&mut self, inputs: PrevOuts, tx: Transaction, confirmation_time: Option<BlockTime>) {
         let txid = tx.txid();
-        // compare to potentially existing tx in the database
-        if let Some(existing) = self.txs.get_mut(&txid) {
-            match (existing.confirmation_time, confirmation_time) {
-                (Some(existing_time), Some(new_time)) => {
-                    if existing_time != new_time {
-                        todo!("return an error since this cannot change");
-                    }
-                }
-                (Some(_), None) => todo!("return an error since this doesn't make sense"),
-                (None, None) => {
-                    return;
-                }
-                (None, Some(new_time)) => {
-                    existing.confirmation_time = Some(new_time);
-                    return;
-                }
-            }
-        }
-        let mut inputs_sum: u64 = 0;
-        let mut outputs_sum: u64 = 0;
 
-        match inputs {
+        let inputs_sum = match inputs {
             PrevOuts::Coinbase => {
                 debug_assert_eq!(tx.input.len(), 1);
                 debug_assert!(tx.input[0].previous_output.is_null());
+                // HACK: set to 0. We only use this for fee which for coinbase is always 0.
+                0
             }
-            PrevOuts::Spend(txouts) => {
-                for txout in txouts.iter() {
-                    inputs_sum += txout.value;
+            PrevOuts::Spend(txouts) => txouts.iter().map(|input| input.value).sum(),
+        };
+        let outputs_sum: u64 = tx.output.iter().map(|out| out.value).sum();
+        // we need to saturating sub since we want coinbase txs to map to 0 fee and
+        // this subtraction will be negative for coinbase txs.
+        let fee = inputs_sum.saturating_sub(outputs_sum);
+        let feerate = fee as f32 / tx.weight() as f32;
+
+        let conflicts = tx
+            .input
+            .iter()
+            .filter_map(|input| {
+                self.spends
+                    .get(&input.previous_output)
+                    .map(|(_, txid)| *txid)
+            })
+            .collect::<Vec<_>>();
+
+        if confirmation_time.is_some() {
+            // the only things we conflict with are in the mempool and this is confirmed so delete it
+            for conflicting_txid in conflicts {
+                self.remove_tx(conflicting_txid);
+            }
+        } else {
+            // NOTE: We have already made sure that all conflicts are unconfirmed. Therefore
+            // TODO: Make resolution for mempool conflicts customizable
+            let conflicing_tx_with_higher_feerate = conflicts.iter().find(|conflicting_txid| {
+                self.txs.get(*conflicting_txid).expect("must exist").feerate > feerate
+            });
+            if conflicing_tx_with_higher_feerate.is_none() {
+                for conflicting_txid in conflicts {
+                    self.remove_tx(conflicting_txid);
                 }
+            } else {
+                // we shouldn't add this tx as it conflicts with one with a higher feerate.
+                return;
             }
         }
 
+        for (i, input) in tx.input.iter().enumerate() {
+            let removed = self.spends.insert(input.previous_output, (i as u32, txid));
+            debug_assert_eq!(
+                removed, None,
+                "we should have already removed all conflicts!"
+            );
+            self.unspent.remove(&input.previous_output);
+        }
+
         for (i, out) in tx.output.iter().enumerate() {
-            outputs_sum += out.value;
             if let Some(index) = self.index_of_stored_script(&out.script_pubkey) {
                 let outpoint = OutPoint {
                     txid,
                     vout: i as u32,
                 };
 
-                // TODO: what if it is spent by a transaction in our state already? i.e. it's a old
-                // tx that we've just found out about that has already been spent.
-                // To fix this we could:
-                // 1. Create an index of previous_output -> tx that is spending it
-                // 2. Simply go through all txs that are "newer" than this one (confirmed after or in mempool)
-                // Since you will ususally only have newish transactions here (2) seems fine.
                 self.txouts.insert(
                     outpoint,
                     TxOutData {
                         value: out.value,
-                        spent_by: None,
                         index,
                     },
                 );
 
-                self.unspent.insert(outpoint);
+                if !self.spends.contains_key(&outpoint) {
+                    self.unspent.insert(outpoint);
+                }
 
                 let txos_for_script = self.script_txouts.entry(index).or_default();
                 txos_for_script.insert(outpoint);
@@ -251,11 +301,6 @@ impl DescriptorTracker {
             }
         }
 
-        // we need to saturating sub since we want coinbase txs to map to 0 fee and
-        // this subtraction will be negative for coinbase txs.
-        let fee = inputs_sum.saturating_sub(outputs_sum);
-        let feerate = fee as f32 / (tx.weight() as f32 / 4.0).ceil();
-
         self.txs.insert(
             txid,
             AugmentedTx {
@@ -276,6 +321,47 @@ impl DescriptorTracker {
     }
 
     pub fn apply_update(&mut self, update: Update) -> UpdateResult {
+        // Do consistency checks first so we don't mutate anything until we're sure the update is
+        // valid.
+        for (_, tx, confirmation_time) in &update.transactions {
+            let txid = tx.txid();
+            if let Some(existing) = self.txs.get(&tx.txid()) {
+                if let Some(existing_time) = existing.confirmation_time {
+                    if confirmation_time != &Some(existing_time) {
+                        let at_checkpoint = self
+                            .best_checkpoint_for(existing_time.height)
+                            .expect("must exist since there's a confirmed tx");
+                        return UpdateResult::Inconsistent {
+                            txid,
+                            conflicts_with: existing.tx.txid(),
+                            at_checkpoint,
+                        };
+                    }
+                }
+            }
+            let conflicts = tx
+                .input
+                .iter()
+                .filter_map(|input| self.spends.get(&input.previous_output));
+            for (_, conflicting_txid) in conflicts {
+                if let Some(conflicting_conftime) = self
+                    .txs
+                    .get(conflicting_txid)
+                    .expect("must exist")
+                    .confirmation_time
+                {
+                    let at_checkpoint = self
+                        .best_checkpoint_for(conflicting_conftime.height)
+                        .expect("must exist since there's a confirmed tx");
+                    return UpdateResult::Inconsistent {
+                        txid,
+                        conflicts_with: *conflicting_txid,
+                        at_checkpoint,
+                    };
+                }
+            }
+        }
+
         if let Some(last_active_index) = update.last_active_index {
             // It's possible that we find a script derived at a higher index than what we have given
             // out in the case where another system is deriving from the same descriptor.
@@ -332,35 +418,6 @@ impl DescriptorTracker {
 
         let (_, tip_txids) = self.checkpointed_txs.values().rev().next().unwrap();
 
-        let spent_inputs = tip_txids
-            .iter()
-            .chain(&self.mempool)
-            .map(|txid| {
-                let aug_tx = self.txs.get(txid).expect("existence guaranteed");
-                aug_tx
-                    .tx
-                    .input
-                    .iter()
-                    .enumerate()
-                    .map(|(i, input)| (input.previous_output, i, *txid))
-            })
-            .flatten();
-
-        for (outpoint, in_index, txid) in spent_inputs {
-            if let Some(txout) = self.txouts.get_mut(&outpoint) {
-                if let Some(spent_by) = txout.spent_by {
-                    // TODO: reslove mempool conflicts so this doesn't happen
-                    debug_assert_eq!(spent_by, (in_index as u32, txid));
-                }
-                txout.spent_by = Some((in_index as u32, txid));
-                self.unspent.remove(&outpoint);
-            }
-
-            // TODO: What if the txo is ours but we just haven't got it in self.txouts perhaps
-            // because we failed to store enough scripts to find it earlier. We should check this
-            // somewhere (where it's possible) and
-        }
-
         if tip_txids.is_empty() {
             // the new checkpoint we inserted ends up empty so delete it
             self.checkpointed_txs.remove(&update.new_tip.height);
@@ -409,9 +466,10 @@ impl DescriptorTracker {
             .txs
             .get(&outpoint.txid)
             .expect("must exist since we have the txout");
+        let spent_by = self.spends.get(&outpoint).cloned();
         LocalTxOut {
             value: data.value,
-            spent_by: data.spent_by,
+            spent_by,
             outpoint,
             derivation_index: data.index,
             confirmed_at: tx.confirmation_time,
@@ -622,7 +680,6 @@ pub struct LocalTxOut {
 struct TxOutData {
     value: u64,
     index: u32,
-    spent_by: Option<(u32, Txid)>,
 }
 
 pub trait MultiTracker {
