@@ -10,7 +10,6 @@ use bitcoin::{
     util::address::WitnessVersion,
     BlockHash, OutPoint, Script, Transaction, TxIn, TxOut, Txid,
 };
-use core::ops::RangeInclusive;
 use miniscript::{
     descriptor::DerivedDescriptorKey, psbt::PsbtInputExt, Descriptor, DescriptorPublicKey,
 };
@@ -139,40 +138,36 @@ impl DescriptorTracker {
     }
 
     fn remove_tx(&mut self, txid: Txid) {
-        let txouts_to_remove = self
-            .txouts
-            .range(RangeInclusive::new(
-                OutPoint { txid, vout: 0 },
-                OutPoint {
-                    txid,
-                    vout: u32::MAX,
-                },
-            ))
-            .map(|(k, _)| *k)
-            .collect::<Vec<_>>();
+        let aug_tx = match self.txs.remove(&txid) {
+            Some(aug_tx) => aug_tx,
+            None => {
+                debug_assert!(!self.mempool.contains(&txid));
+                return;
+            }
+        };
+        for input in &aug_tx.tx.input {
+            if let Some((_, tx_that_spends)) = self.spends.remove(&input.previous_output) {
+                debug_assert_eq!(
+                    tx_that_spends, txid,
+                    "the one that spent it must be this one"
+                );
+            }
 
-        for txout_to_remove in &txouts_to_remove {
-            if let Some(derivation_index) = self.txouts.remove(txout_to_remove) {
+            if self.txouts.contains_key(&input.previous_output) {
+                self.unspent.insert(input.previous_output);
+            }
+        }
+
+        for i in 0..aug_tx.tx.output.len() {
+            let txout_to_remove = OutPoint {
+                vout: i as u32,
+                txid,
+            };
+            if let Some(derivation_index) = self.txouts.remove(&txout_to_remove) {
                 self.script_txouts
                     .get_mut(&derivation_index)
                     .expect("guaranteed to exist")
                     .remove(&txout_to_remove);
-            }
-        }
-
-        if let Some(aug_tx) = self.txs.remove(&txid) {
-            debug_assert!(!txouts_to_remove.is_empty());
-            for input in &aug_tx.tx.input {
-                if let Some((_, tx_that_spends)) = self.spends.remove(&input.previous_output) {
-                    debug_assert_eq!(
-                        tx_that_spends, txid,
-                        "the one that spent it must be this one"
-                    );
-                }
-
-                if self.txouts.contains_key(&input.previous_output) {
-                    self.unspent.insert(input.previous_output);
-                }
             }
         }
 
