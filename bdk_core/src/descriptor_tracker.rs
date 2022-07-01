@@ -492,21 +492,27 @@ impl DescriptorTracker {
 
     /// Iterates over all the script pubkeys of a descriptor.
     ///
+    /// This method does **not** use the tracker's stored scripts and returned iterator does not
+    /// hold a reference to the tracker. This allows it to be sent between threads. If the
+    /// descriptor `is_deriveable` then the iterator will derive and emit all non-hardened indexes
+    /// of the descriptor otherwise it will just have one script in it.
+    ///
     /// **WARNING**: never turn these into addresses or send coins to them.
     /// The tracker may not be able to find them.
     /// To get a script you can use as an address use [`derive_next`].
     ///
     /// [`derive_next`]: Self::derive_next
-    pub fn iter_scripts(&self) -> impl Iterator<Item = Script> {
+    pub fn iter_all_scripts(&self) -> impl Iterator<Item = Script> + Send {
         let descriptor = self.descriptor.clone();
         let end = if self.descriptor.is_deriveable() {
-            u32::MAX
+            // Because we only iterate over non-hardened indexes there are 2^31 values
+            (1 << 31) - 1
         } else {
-            1
+            0
         };
 
         let secp = self.secp.clone();
-        (0..end).map(move |i| {
+        (0..=end).map(move |i| {
             descriptor
                 .derive(i)
                 .derived_descriptor(&secp)
@@ -515,6 +521,9 @@ impl DescriptorTracker {
         })
     }
 
+    /// Returns the script that has been derived at the index.
+    ///
+    /// If that index hasn't been derived yet it will return None instead.
     pub fn script_at_index(&self, index: u32) -> Option<&Script> {
         self.scripts.get(index as usize)
     }
@@ -537,31 +546,42 @@ impl DescriptorTracker {
         (next_derivation_index, script)
     }
 
-    /// Derives and stores a new address only if we don't have one that hasn't been used
+    /// Derives and stores a new address only if we haven't already got one that hasn't been used
+    /// yet.
     pub fn derive_next_unused(&mut self) -> (u32, &Script) {
-        let need_new = self.iter_unused_derived_scripts().next().is_none();
+        let need_new = self.iter_unused_scripts().next().is_none();
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
             self.derive_new()
         } else {
-            self.iter_unused_derived_scripts().next().unwrap()
+            self.iter_unused_scripts().next().unwrap()
         }
     }
 
-    pub fn iter_derived_scripts(&self) -> impl Iterator<Item = &Script> {
+    /// Iterate over the scripts that have been derived already
+    pub fn iter_scripts(&self) -> impl Iterator<Item = &Script> {
         self.scripts.iter()
     }
 
-    pub fn iter_unused_derived_scripts(&self) -> impl Iterator<Item = (u32, &Script)> {
+    /// Iterate over the scripts that have been derived but we have not seen a transaction spending
+    /// from it.
+    pub fn iter_unused_scripts(&self) -> impl Iterator<Item = (u32, &Script)> {
         self.unused
             .iter()
             .map(|index| (*index, self.script_at_index(*index).expect("must exist")))
     }
 
+    /// Returns whether the script at index `index` has been used or not.
+    ///
+    /// Will also return `false` if the script at `index` hasn't been derived yet (because we have
+    /// no way of knowing if it has been used yet in that case).
     pub fn is_used(&self, index: u32) -> bool {
-        !self.unused.contains(&index)
+        !self.unused.contains(&index) && (index as usize) < self.scripts.len()
     }
 
+    /// Derives and stores all the scripts **up to and including** `end`.
+    ///
+    /// Returns whether any new scripts needed deriving.
     pub fn derive_scripts(&mut self, end: u32) -> bool {
         let end = match self.descriptor.is_deriveable() {
             false => 0,
@@ -597,6 +617,10 @@ impl DescriptorTracker {
             .expect("descriptor is well formed") as u32
     }
 
+    /// The dust value for any script used as a script pubkey on the network.
+    ///
+    /// Transactions with output containing script pubkeys from this descriptor with values below
+    /// this will not be relayed by the network.
     pub fn dust_value(&self) -> u64 {
         self.descriptor
             .derive(0)
@@ -863,7 +887,7 @@ mod test {
     #[test]
     fn apply_update_no_checkpoint() {
         let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
-        let scripts = tracker.iter_scripts().take(5).collect::<Vec<_>>();
+        let scripts = tracker.iter_all_scripts().take(5).collect::<Vec<_>>();
         use IOSpec::*;
 
         let mut update = create_update(

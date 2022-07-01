@@ -189,7 +189,7 @@ fn main() -> anyhow::Result<()> {
                         &trackers[0]
                     };
 
-                    for (i, spk) in tracker.iter_derived_scripts().enumerate() {
+                    for (i, spk) in tracker.iter_scripts().enumerate() {
                         let address = Address::from_script(&spk, args.network)
                             .expect("should always be able to derive address");
                         println!("{} used:{}", address, tracker.is_used(i as u32));
@@ -381,7 +381,7 @@ pub fn fully_sync_tracker(
     let update = client
         .fetch_related_transactions(
             tracker
-                .iter_scripts()
+                .iter_all_scripts()
                 .enumerate()
                 .map(|(i, script)| (i as u32, script))
                 .inspect(|(i, _)| {
