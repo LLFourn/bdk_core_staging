@@ -31,9 +31,6 @@ pub struct DescriptorTracker {
     script_indexes: HashMap<Script, u32>,
     /// A lookup from script pubkey to outpoint
     script_txouts: BTreeMap<u32, HashSet<OutPoint>>,
-    /// The next derivation index the tracker should used if asked for a "new" script pubkey.
-    //TODO: why can't just be self.scripts.len()
-    next_derivation_index: u32,
     /// Map from txid to metadata
     txs: HashMap<Txid, AugmentedTx>,
     /// Index of transactions that are in the mempool
@@ -77,7 +74,6 @@ impl DescriptorTracker {
             script_indexes: Default::default(),
             script_txouts: Default::default(),
             txs: Default::default(),
-            next_derivation_index: 0,
             mempool: Default::default(),
             latest_blockheight: Default::default(),
         }
@@ -92,7 +88,7 @@ impl DescriptorTracker {
     }
 
     pub fn next_derivation_index(&self) -> u32 {
-        self.next_derivation_index
+        self.scripts.len() as u32
     }
 
     pub fn latest_checkpoint(&self) -> Option<CheckPoint> {
@@ -236,7 +232,7 @@ impl DescriptorTracker {
         }
 
         for (i, out) in tx.output.iter().enumerate() {
-            if let Some(index) = self.index_of_stored_script(&out.script_pubkey) {
+            if let Some(index) = self.index_of_derived_script(&out.script_pubkey) {
                 let outpoint = OutPoint {
                     txid,
                     vout: i as u32,
@@ -365,8 +361,7 @@ impl DescriptorTracker {
         if let Some(last_active_index) = update.last_active_index {
             // It's possible that we find a script derived at a higher index than what we have given
             // out in the case where another system is deriving from the same descriptor.
-            self.next_derivation_index = (last_active_index + 1).max(self.next_derivation_index);
-            self.store_scripts(last_active_index);
+            self.derive_scripts(last_active_index);
         }
 
         // look for invalidated and check that start tip is the one before it.
@@ -525,20 +520,20 @@ impl DescriptorTracker {
     /// The tracker returns a new address for each call to this method and stores it internally so
     /// it will be able to find transactions related to it.
     pub fn derive_new(&mut self) -> (u32, &Script) {
-        debug_assert!(self.descriptor().is_deriveable() || self.next_derivation_index == 0);
-        self.store_scripts(self.next_derivation_index);
+        let next_derivation_index = if self.descriptor.is_deriveable() {
+            0
+        } else {
+            self.scripts.len() as u32
+        };
+        self.derive_scripts(next_derivation_index);
         let script = self
             .scripts
-            .get(self.next_derivation_index as usize)
+            .get(next_derivation_index as usize)
             .expect("we just derived to that index");
-        let answer = (self.next_derivation_index, script);
-        if self.descriptor().is_deriveable() {
-            self.next_derivation_index += 1;
-        }
-        answer
+        (next_derivation_index, script)
     }
 
-    /// Derives a new address only if we don't have one that hasn't been used
+    /// Derives and stores a new address only if we don't have one that hasn't been used
     pub fn derive_next_unused(&mut self) -> (u32, &Script) {
         let need_new = self.iter_unused_derived_scripts().next().is_none();
         // this rather strange branch is needed because of some lifetime issues
@@ -550,9 +545,7 @@ impl DescriptorTracker {
     }
 
     pub fn iter_derived_scripts(&self) -> impl Iterator<Item = &Script> {
-        self.scripts
-            .iter()
-            .take(self.next_derivation_index as usize)
+        self.scripts.iter()
     }
 
     pub fn iter_unused_derived_scripts(&self) -> impl Iterator<Item = (u32, &Script)> {
@@ -569,7 +562,7 @@ impl DescriptorTracker {
             .unwrap_or(false)
     }
 
-    pub fn store_scripts(&mut self, end: u32) -> bool {
+    pub fn derive_scripts(&mut self, end: u32) -> bool {
         let end = match self.descriptor.is_deriveable() {
             false => 0,
             true => end,
@@ -591,7 +584,7 @@ impl DescriptorTracker {
     }
 
     /// Returns at what derivation index a script pubkey was derived at.
-    pub fn index_of_stored_script(&self, script: &Script) -> Option<u32> {
+    pub fn index_of_derived_script(&self, script: &Script) -> Option<u32> {
         self.script_indexes.get(script).cloned()
     }
 
