@@ -3,12 +3,12 @@ use bdk_core::{
     bitcoin::{
         consensus,
         hashes::{hex::ToHex, sha256, Hash},
-        BlockHash, Script, Txid, Transaction,
+        BlockHash, Script, Transaction, Txid,
     },
     CheckPoint, Update,
 };
-use ureq::Agent;
 pub use ureq;
+use ureq::Agent;
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -21,15 +21,13 @@ pub struct Client {
 pub enum UpdateError {
     Ureq(ureq::Error),
     TipChangeDuringUpdate,
-    Deserialization {
-        url: String
-    }
+    Deserialization { url: String },
 }
 
 #[derive(Debug)]
 pub enum Error {
     Ureq(ureq::Error),
-    Deserialization { url: String }
+    Deserialization { url: String },
 }
 
 impl From<Error> for UpdateError {
@@ -45,8 +43,12 @@ impl core::fmt::Display for UpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UpdateError::Ureq(e) => write!(f, "{}", e),
-            UpdateError::TipChangeDuringUpdate => write!(f, "The blockchain tip changed during the update"),
-            UpdateError::Deserialization { url } => write!(f, "Failed to deserialize response from {}", url),
+            UpdateError::TipChangeDuringUpdate => {
+                write!(f, "The blockchain tip changed during the update")
+            }
+            UpdateError::Deserialization { url } => {
+                write!(f, "Failed to deserialize response from {}", url)
+            }
         }
     }
 }
@@ -55,7 +57,9 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Ureq(e) => write!(f, "{}", e),
-            Error::Deserialization { url } => write!(f, "Failed to deserialize response from {}", url),
+            Error::Deserialization { url } => {
+                write!(f, "Failed to deserialize response from {}", url)
+            }
         }
     }
 }
@@ -109,30 +113,30 @@ impl Client {
 
     pub fn tip_hash(&self) -> Result<BlockHash, Error> {
         let url = format!("{}/blocks/tip/hash", self.base_url);
-        let response = self
-                .agent
-                .get(&url)
-                .call()?;
-        Ok(response.into_string()?.parse().map_err(|_| Error::Deserialization { url })?)
+        let response = self.agent.get(&url).call()?;
+        Ok(response
+            .into_string()?
+            .parse()
+            .map_err(|_| Error::Deserialization { url })?)
     }
 
     pub fn tip(&self) -> Result<CheckPoint, Error> {
         let height = {
             let url = format!("{}/blocks/tip/height", self.base_url);
-            let response = self
-                .agent
-                .get(&url)
-                .call()?;
-            response.into_string()?.parse().map_err(|_| Error::Deserialization { url })?
+            let response = self.agent.get(&url).call()?;
+            response
+                .into_string()?
+                .parse()
+                .map_err(|_| Error::Deserialization { url })?
         };
 
         let hash = {
             let url = format!("{}/block-height/{}", self.base_url, height);
-            let response = self
-                .agent
-                .get(&url)
-                .call()?;
-            response.into_string()?.parse().map_err(|_| Error::Deserialization { url  })?
+            let response = self.agent.get(&url).call()?;
+            response
+                .into_string()?
+                .parse()
+                .map_err(|_| Error::Deserialization { url })?
         };
 
         Ok(CheckPoint { height, hash })
@@ -147,7 +151,10 @@ impl Client {
 
     pub fn broadcast(&self, tx: &Transaction) -> Result<(), ureq::Error> {
         let url = format!("{}/tx", self.base_url);
-        let resp = self.agent.post(&url).send_string(&consensus::serialize(tx).to_hex());
+        let resp = self
+            .agent
+            .post(&url)
+            .send_string(&consensus::serialize(tx).to_hex());
         // if let Err(e) = resp {
         //     dbg!(e.clone().into_response().unwrap().into_string().unwrap());
         // }
