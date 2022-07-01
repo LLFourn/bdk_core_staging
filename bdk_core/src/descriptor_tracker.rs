@@ -1,5 +1,9 @@
 use crate::{BlockTime, CheckPoint, HashMap, HashSet, PrevOuts};
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 use bitcoin::{
     psbt::{self, PartiallySignedTransaction as Psbt},
     secp256k1::{Secp256k1, VerifyOnly},
@@ -30,6 +34,8 @@ pub struct DescriptorTracker {
     script_indexes: HashMap<Script, u32>,
     /// A lookup from script pubkey to outpoint
     script_txouts: BTreeMap<u32, HashSet<OutPoint>>,
+    /// A set of script derivation indexes that haven't been spent to
+    unused: BTreeSet<u32>,
     /// Map from txid to metadata
     txs: HashMap<Txid, AugmentedTx>,
     /// Index of transactions that are in the mempool
@@ -72,6 +78,7 @@ impl DescriptorTracker {
             scripts: Default::default(),
             script_indexes: Default::default(),
             script_txouts: Default::default(),
+            unused: Default::default(),
             txs: Default::default(),
             mempool: Default::default(),
             latest_blockheight: Default::default(),
@@ -245,6 +252,7 @@ impl DescriptorTracker {
 
                 let txos_for_script = self.script_txouts.entry(index).or_default();
                 txos_for_script.insert(outpoint);
+                self.unused.remove(&index);
             }
         }
 
@@ -545,17 +553,13 @@ impl DescriptorTracker {
     }
 
     pub fn iter_unused_derived_scripts(&self) -> impl Iterator<Item = (u32, &Script)> {
-        self.iter_derived_scripts()
-            .enumerate()
-            .filter(|(i, _)| !self.is_used(*i as u32))
-            .map(|(index, script)| (index as u32, script))
+        self.unused
+            .iter()
+            .map(|index| (*index, self.script_at_index(*index).expect("must exist")))
     }
 
     pub fn is_used(&self, index: u32) -> bool {
-        self.script_txouts
-            .get(&index)
-            .map(|txos| !txos.is_empty())
-            .unwrap_or(false)
+        !self.unused.contains(&index)
     }
 
     pub fn derive_scripts(&mut self, end: u32) -> bool {
@@ -574,6 +578,7 @@ impl DescriptorTracker {
                 .script_pubkey();
             self.scripts.push(script.clone());
             self.script_indexes.insert(script.clone(), index as u32);
+            self.unused.insert(index as u32);
         }
 
         needed == 0
