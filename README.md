@@ -25,7 +25,7 @@ This decouples completely how you fetch data from how you store it.
 
 This keeps track of the value of the coins you have selected so far and whether the coin selection constraints have been satisfied. Improvements over bdk:
 
-1. You can have **both** a feerate and absolute fee constaint.
+1. You can have **both** a feerate and absolute fee constraint.
 2. The coin selection "algorithm" logic does not need to keep track of whether feerate has been satisfied yet etc. All this logic is done for you. (at least in coin selection algorithms that are greedy I don't know how well this idea will work with branch and bound).
 3. No traits needed to be implemented to do coin selection. This is good because you can use bespoke application data like utxo labels etc without having to pass them into something implementing `CoinSelectionAlgorithm`.
 4. `CoinSelector` tries checks if it complete at any stage both with and without change. In bdk the choice of change [is done after](https://github.com/bitcoindevkit/bdk/issues/147) coin selection which is sub-optimal.
