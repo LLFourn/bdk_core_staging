@@ -9,7 +9,8 @@ edition = "2021"
 bitcoin = { version = "0.28" }
 miniscript = { git =  "https://github.com/llfourn/rust-miniscript", rev = "2d351c08caca292e8710d74b950bc200f5a539cc" }
 serde_crate = { package = "serde", version = "1", optional = true, features = ["derive"] }
-
+# Use hashbrown as a feature flag to have HashSet and HashMap from it.
+hashbrown = { version = "0.12.1" , optional = true }
 
 [features]
 default = ["std"]
