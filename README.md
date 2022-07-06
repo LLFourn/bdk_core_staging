@@ -18,8 +18,8 @@ This decouples completely how you fetch data from how you store it.
 
 #### TODOs
 
-- I think we should keep a hash of all txids found out to a certain block. This help decide whether we are in sync with persistent storage for example and helps find where two sets of data diverge. This would be better than the current approach.
-- The algorithm for tracking which txouts have been spent is not guaranteed to be correct if things happen in odd orders or you get conflicting things in the mempool. I think we will need an index of txo spends e.g. outpoints -> tx that spends them.
+- I think we should keep a hash of all txids found out to a certain block. This help decide whether we are in sync with persistent storage for example and helps find where two sets of data diverge. This would be better than the current approach. ✅ (done)
+- The algorithm for tracking which txouts have been spent is not guaranteed to be correct if things happen in odd orders or you get conflicting things in the mempool. I think we will need an index of txo spends e.g. outpoints -> tx that spends them. ✅ (done but needs tests)
 
 ### `CoinSelector`
 
