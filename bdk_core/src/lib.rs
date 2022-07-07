@@ -1,6 +1,6 @@
 #![no_std]
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
+pub use alloc::boxed::Box;
+pub use alloc::vec::Vec;
 pub use bitcoin;
 use bitcoin::{BlockHash, TxOut};
 pub use miniscript;
@@ -10,6 +10,7 @@ pub mod coin_select;
 pub mod sign;
 
 #[allow(unused_imports)]
+#[macro_use]
 extern crate alloc;
 
 #[cfg(feature = "serde")]
@@ -18,6 +19,9 @@ extern crate serde_crate as serde;
 #[cfg(feature = "std")]
 #[macro_use]
 extern crate std;
+
+#[cfg(all(not(feature = "std"), feature = "hashbrown"))]
+extern crate hashbrown;
 
 /// Block height and timestamp of a block
 #[derive(Debug, Clone, PartialEq, Eq, Default, Copy)]
@@ -33,7 +37,7 @@ pub struct BlockTime {
     pub time: u64,
 }
 
-/// Block height and timestamp of a block
+/// A Blockhash and Blockheight denoting a Checkpoint in the Blockchain.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Copy)]
 #[cfg_attr(
     feature = "serde",
@@ -45,9 +49,29 @@ pub struct CheckPoint {
     pub hash: BlockHash,
 }
 
-// TODO: use the proper one if wev've got std or hashbrown if not
-type HashMap<K, V> = BTreeMap<K, V>;
-type HashSet<K> = BTreeSet<K>;
+// When no-std use `alloc`'s Hash collections. This is activated by default
+#[cfg(all(not(feature = "std"), not(feature = "hashbrown")))]
+mod collections {
+    #![allow(dead_code)]
+    pub type HashSet<K> = alloc::collections::BTreeSet<K>;
+    pub type HashMap<K, V> = alloc::collections::BTreeMap<K, V>;
+    pub use alloc::collections::*;
+}
+
+// When we have std use `std`'s all collections
+#[cfg(all(feature = "std", not(feature = "hashbrown")))]
+mod collections {
+    pub use std::collections::*;
+}
+
+// With special feature `hashbrown` use `hashbrown`'s hash collections, and else from `alloc`.
+#[cfg(feature = "hashbrown")]
+mod collections {
+    #![allow(dead_code)]
+    pub type HashSet<K> = hashbrown::HashSet<K>;
+    pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
+    pub use alloc::collections::*;
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PrevOuts {

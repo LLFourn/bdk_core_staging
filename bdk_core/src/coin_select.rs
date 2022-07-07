@@ -1,6 +1,6 @@
 use bitcoin::{Transaction, TxOut};
 
-use crate::{BTreeSet, Vec};
+use crate::{collections::BTreeSet, Vec};
 
 const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4 + 1) * 4;
 

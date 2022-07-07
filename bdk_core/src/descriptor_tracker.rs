@@ -1,9 +1,5 @@
-use crate::{BlockTime, CheckPoint, HashMap, HashSet, PrevOuts};
-use alloc::{
-    boxed::Box,
-    collections::{BTreeMap, BTreeSet},
-    vec::Vec,
-};
+use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use crate::{BlockTime, Box, CheckPoint, PrevOuts, Vec};
 use bitcoin::{
     self,
     hashes::{sha256, Hash, HashEngine},
