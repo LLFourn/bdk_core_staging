@@ -572,26 +572,36 @@ impl DescriptorTracker {
         }
     }
 
-    /// Iterate over transactions.
+    /// Iterate over transactions related to the descriptor.
     ///
-    /// This iterates transactions in the mempool first and then the rest are ordered starting from
-    /// most recently confirmed.
+    /// "related" means that the transactoin has an output with a script pubkey produced by the
+    /// descriptor or it spends from such an output.
     pub fn iter_tx(&self) -> impl Iterator<Item = (Txid, &AugmentedTx)> {
         self.txs.iter().map(|(txid, tx)| (*txid, tx))
     }
 
-    pub fn iter_tx_by_age(&self) -> impl DoubleEndedIterator<Item = (Txid, &AugmentedTx)> + '_ {
+    /// Iterates over all transactions related to the descriptor ordered by decending confirmation
+    /// with those transactions that are unconfirmed first.
+    ///
+    /// "related" means that the transactoin has an output with a script pubkey produced by the
+    /// descriptor or it spends from such an output.
+    pub fn iter_tx_by_confirmation_time(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (Txid, &AugmentedTx)> + '_ {
+        // collect the mempool transactions into a vector first since the mempool HashSet is not
+        // necessarily a DoubleEndedIterator.
         let mempool_tx = self
             .mempool
             .iter()
-            .map(|txid| (*txid, self.txs.get(txid).unwrap()));
+            .map(|txid| (*txid, self.txs.get(txid).unwrap()))
+            .collect::<Vec<_>>();
         let confirmed_tx = self.checkpointed_txs.iter().rev().flat_map(|(_, data)| {
             data.ordered_txids
                 .iter()
                 .map(|(_, txid)| (*txid, self.txs.get(txid).unwrap()))
         });
 
-        mempool_tx.chain(confirmed_tx)
+        mempool_tx.into_iter().chain(confirmed_tx)
     }
 
     pub fn iter_unspent(&self) -> impl Iterator<Item = LocalTxOut> + '_ {
