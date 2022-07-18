@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    CheckPoint, Update,
+    CheckPointRef, Update,
 };
 pub use ureq;
 use ureq::Agent;
@@ -120,7 +120,7 @@ impl Client {
             .map_err(|_| Error::Deserialization { url })?)
     }
 
-    pub fn tip(&self) -> Result<CheckPoint, Error> {
+    pub fn tip(&self) -> Result<CheckPointRef, Error> {
         let height = {
             let url = format!("{}/blocks/tip/height", self.base_url);
             let response = self.agent.get(&url).call()?;
@@ -139,10 +139,10 @@ impl Client {
                 .map_err(|_| Error::Deserialization { url })?
         };
 
-        Ok(CheckPoint { height, hash })
+        Ok(CheckPointRef { height, hash })
     }
 
-    fn is_block_present(&self, block: CheckPoint) -> Result<bool, ureq::Error> {
+    fn is_block_present(&self, block: CheckPointRef) -> Result<bool, ureq::Error> {
         use core::str::FromStr;
         let url = format!("{}/block-height/{}", self.base_url, block.height);
         let response = self.agent.get(&url).call()?;
@@ -168,7 +168,7 @@ impl Client {
         &self,
         mut scripts: impl Iterator<Item = (u32, Script)>,
         stop_gap: usize,
-        known_tips: impl Iterator<Item = CheckPoint>,
+        known_tips: impl Iterator<Item = CheckPointRef>,
     ) -> Result<Update, UpdateError> {
         let mut empty_scripts = 0;
         let mut transactions = vec![];
@@ -249,11 +249,11 @@ impl Client {
 
         let update = Update {
             transactions,
-            mempool_is_total_set: true,
             last_active_index,
             base_tip,
             invalidate,
             new_tip,
+            latest_blocktime: None, // TODO: This should be latest blocktime fetched from the client
         };
 
         Ok(update)
