@@ -24,7 +24,7 @@ extern crate std;
 extern crate hashbrown;
 
 /// Block height and timestamp of a block
-#[derive(Debug, Clone, PartialEq, Eq, Default, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Copy, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Deserialize, serde::Serialize),
@@ -37,15 +37,17 @@ pub struct BlockTime {
     pub time: u64,
 }
 
-/// A Blockhash and Blockheight denoting a Checkpoint in the Blockchain.
+/// A reference to a block in the cannonical chain.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Copy)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Deserialize, serde::Serialize),
     serde(crate = "serde_crate")
 )]
-pub struct CheckPoint {
+pub struct BlockId {
+    /// The height the block was confirmed at
     pub height: u32,
+    /// The hash of the block
     pub hash: BlockHash,
 }
 

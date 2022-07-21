@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    CheckPoint, Update,
+    BlockId, CheckpointCandidate,
 };
 pub use ureq;
 use ureq::Agent;
@@ -120,7 +120,7 @@ impl Client {
             .map_err(|_| Error::Deserialization { url })?)
     }
 
-    pub fn tip(&self) -> Result<CheckPoint, Error> {
+    pub fn tip(&self) -> Result<BlockId, Error> {
         let height = {
             let url = format!("{}/blocks/tip/height", self.base_url);
             let response = self.agent.get(&url).call()?;
@@ -139,10 +139,10 @@ impl Client {
                 .map_err(|_| Error::Deserialization { url })?
         };
 
-        Ok(CheckPoint { height, hash })
+        Ok(BlockId { height, hash })
     }
 
-    fn is_block_present(&self, block: CheckPoint) -> Result<bool, ureq::Error> {
+    fn is_block_present(&self, block: BlockId) -> Result<bool, ureq::Error> {
         use core::str::FromStr;
         let url = format!("{}/block-height/{}", self.base_url, block.height);
         let response = self.agent.get(&url).call()?;
@@ -163,13 +163,14 @@ impl Client {
         Ok(())
     }
 
-    /// TODO
-    pub fn fetch_related_transactions(
+    /// Create a new checkpoint with transactions spending from or to the scriptpubkeys in
+    /// `scripts`.
+    pub fn fetch_new_checkpoint(
         &self,
         mut scripts: impl Iterator<Item = (u32, Script)>,
         stop_gap: usize,
-        known_tips: impl Iterator<Item = CheckPoint>,
-    ) -> Result<Update, UpdateError> {
+        known_tips: impl Iterator<Item = BlockId>,
+    ) -> Result<CheckpointCandidate, UpdateError> {
         let mut empty_scripts = 0;
         let mut transactions = vec![];
         let mut last_active_index = None;
@@ -247,9 +248,8 @@ impl Client {
             return Err(UpdateError::TipChangeDuringUpdate);
         }
 
-        let update = Update {
+        let update = CheckpointCandidate {
             transactions,
-            mempool_is_total_set: true,
             last_active_index,
             base_tip,
             invalidate,

@@ -378,8 +378,8 @@ pub fn fully_sync_tracker(
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     eprint!("scanning {} addresses indexes ", name);
-    let update = client
-        .fetch_related_transactions(
+    let checkpoint = client
+        .fetch_new_checkpoint(
             tracker
                 .iter_all_scripts()
                 .enumerate()
@@ -394,6 +394,6 @@ pub fn fully_sync_tracker(
         )
         .context("fetching transactions")?;
     eprintln!("success! ({}ms)", start.elapsed().as_millis());
-    tracker.apply_update(update);
+    tracker.apply_checkpoint(checkpoint);
     Ok(())
 }
