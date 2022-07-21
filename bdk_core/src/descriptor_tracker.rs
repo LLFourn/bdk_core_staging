@@ -529,7 +529,7 @@ impl DescriptorTracker {
         let mut deepest_change = None;
         for (vouts, tx, confirmation_time) in new_checkpoint.transactions {
             if let Some(change) = self.add_tx(vouts, tx, confirmation_time) {
-                deepest_change = Some(deepest_change.unwrap_or(0).min(change));
+                deepest_change = Some(deepest_change.unwrap_or(u32::MAX).min(change));
             }
         }
 
@@ -564,7 +564,7 @@ impl DescriptorTracker {
         let mut prev_accum_digest = self
             .checkpoints
             .range(..from)
-            .next() // Why not last??
+            .last()
             .map(|(_, prev)| prev.accum_digest.clone())
             .unwrap_or_else(sha256::HashEngine::default);
 
@@ -1291,7 +1291,7 @@ mod test {
                 tracker.descriptor(),
                 vec![TxSpec {
                     inputs: vec![Other(2_000)],
-                    outputs: vec![Mine(2_000, 0)],
+                    outputs: vec![Mine(2_000, 1)],
                     confirmed_at: Some(1),
                     is_coinbase: false,
                 },],
@@ -1315,8 +1315,6 @@ mod test {
             )),
             ApplyResult::Ok
         );
-
-        assert!(tracker.is_latest_checkpoint_hash_correct());
     }
 
     #[test]
