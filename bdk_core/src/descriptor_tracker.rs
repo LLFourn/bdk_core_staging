@@ -9,7 +9,7 @@ use bitcoin::{
     BlockHash, OutPoint, Script, Transaction, TxIn, TxOut, Txid,
 };
 use miniscript::{
-    descriptor::DerivedDescriptorKey, psbt::PsbtInputExt, Descriptor, DescriptorPublicKey,
+    descriptor::DefiniteDescriptorKey, psbt::PsbtInputExt, Descriptor, DescriptorPublicKey,
 };
 
 #[derive(Clone, Debug)]
@@ -876,7 +876,7 @@ pub trait MultiTracker {
         &self,
         inputs: I,
         outputs: O,
-    ) -> (Psbt, BTreeMap<usize, Descriptor<DerivedDescriptorKey>>)
+    ) -> (Psbt, BTreeMap<usize, Descriptor<DefiniteDescriptorKey>>)
     where
         I: IntoIterator<Item = OutPoint>,
         O: IntoIterator<Item = TxOut>;
@@ -909,7 +909,7 @@ impl<'a> MultiTracker for [DescriptorTracker] {
         &self,
         inputs: I,
         outputs: O,
-    ) -> (Psbt, BTreeMap<usize, Descriptor<DerivedDescriptorKey>>)
+    ) -> (Psbt, BTreeMap<usize, Descriptor<DefiniteDescriptorKey>>)
     where
         I: IntoIterator<Item = OutPoint>,
         O: IntoIterator<Item = TxOut>,
@@ -952,7 +952,7 @@ impl<'a> MultiTracker for [DescriptorTracker] {
 
 #[derive(Debug, Clone)]
 pub struct PrimedInput {
-    pub descriptor: Descriptor<DerivedDescriptorKey>,
+    pub descriptor: Descriptor<DefiniteDescriptorKey>,
     pub psbt_input: psbt::Input,
 }
 
