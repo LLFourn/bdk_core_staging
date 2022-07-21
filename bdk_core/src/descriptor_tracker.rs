@@ -860,7 +860,7 @@ impl DescriptorTracker {
                 .iter_tx()
                 .filter(|(_, tx)| tx.confirmation_time.is_some())
                 .collect::<Vec<_>>();
-            txs.sort_by_key(|(_, tx)| tx.confirmation_time.unwrap().height);
+            txs.sort_by_key(|(_, tx)| (tx.confirmation_time.unwrap().height, tx.tx.txid()));
             let mut hasher = sha256::HashEngine::default();
             for (txid, _) in txs {
                 hasher.input(&txid);
@@ -1267,6 +1267,8 @@ mod test {
             ApplyResult::Ok
         );
 
+        assert!(tracker.is_latest_checkpoint_hash_correct());
+
         assert_eq!(
             tracker.apply_checkpoint(update_gen.create_update(
                 tracker.descriptor(),
@@ -1309,5 +1311,25 @@ mod test {
 
         assert_eq!(tracker.iter_tx().count(), 10);
         assert_eq!(tracker.iter_checkpoints().count(), 5);
+    }
+
+    #[test]
+    fn many_transactions_in_the_same_height() {
+        use IOSpec::*;
+        let mut update_gen = UpdateGen::default();
+        let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
+        let txs = (0..100)
+            .map(|_| TxSpec {
+                inputs: vec![Other(1_900)],
+                outputs: vec![Mine(2_000, 0)],
+                confirmed_at: Some(1),
+                is_coinbase: false,
+            })
+            .collect();
+
+        assert_eq!(
+            tracker.apply_checkpoint(update_gen.create_update(tracker.descriptor(), txs, 1,)),
+            ApplyResult::Ok
+        );
     }
 }
