@@ -377,15 +377,11 @@ impl DescriptorTracker {
                     .next()
                     .expect("the caller must have checked that no txs are outside of range");
 
-                if checkpoint_data
+                checkpoint_data
                     .ordered_txids
-                    .insert((confirmation_time.height, txid))
-                {
-                    // if we modify the checkpoint return the height we modified
-                    Some(*checkpoint_height)
-                } else {
-                    None
-                }
+                    .insert((confirmation_time.height, txid));
+
+                Some(*checkpoint_height)
             }
             None => {
                 self.mempool.insert(txid);
