@@ -16,7 +16,7 @@ jobs:
           - std
           - hashbrown
           - serde
-          - std,hasbrown
+          - std,hashbrown
     steps:
       - name: checkout
         uses: actions/checkout@v2
