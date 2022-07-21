@@ -404,11 +404,24 @@ impl DescriptorTracker {
     }
 
     /// Applies a new candidate checkpoint to the tracker.
-    pub fn apply_checkpoint(&mut self, new_checkpoint: CheckpointCandidate) -> ApplyResult {
+    pub fn apply_checkpoint(&mut self, mut new_checkpoint: CheckpointCandidate) -> ApplyResult {
         // Do consistency checks first so we don't mutate anything until we're sure the update is
         // valid. We check for two things
         // 1. There's no "known" transaction in the new checkpoint with same txid but different conf_time
         // 2. No transaction double spends one of our existing confirmed transactions.
+
+        // We simply ignore transactions in the checkpoint that have a confirmation time greater
+        // than the checkpoint height. I felt this was better for the caller than creating an error
+        // type.
+        new_checkpoint
+            .transactions
+            .retain(|(_, _, confirmation_time)| {
+                if let Some(confirmation_time) = confirmation_time {
+                    confirmation_time.height <= new_checkpoint.new_tip.height
+                } else {
+                    true
+                }
+            });
 
         // we set to u32::MAX in case of None since it means no tx will be excluded from conflict checks
         let invalidation_height = new_checkpoint
@@ -997,8 +1010,8 @@ mod test {
     const DESCRIPTOR: &'static str = "wpkh(xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL)";
 
     pub enum IOSpec {
-        Mine(u64, usize),
-        Other(u64),
+        Mine(/* value */ u64, /* the derivation index */ usize),
+        Other(/*value*/ u64),
     }
 
     pub struct TxSpec {
@@ -1241,6 +1254,30 @@ mod test {
 
         let txids = tracker.checkpoint_txids(tracker.checkpoint_at(3).unwrap());
         assert_eq!(txids.count(), 4);
+    }
+
+    #[test]
+    fn invalid_tx_confirmation_time() {
+        use IOSpec::*;
+        let mut update_gen = UpdateGen::default();
+        let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
+
+        assert_eq!(
+            tracker.apply_checkpoint(update_gen.create_update(
+                tracker.descriptor(),
+                vec![TxSpec {
+                    inputs: vec![Other(2_000)],
+                    outputs: vec![Mine(2_000, 1)],
+                    confirmed_at: Some(2),
+                    is_coinbase: false,
+                },],
+                1,
+            )),
+            ApplyResult::Ok
+        );
+
+        assert_eq!(tracker.iter_checkpoints().count(), 0);
+        assert_eq!(tracker.iter_tx().count(), 0);
     }
 
     #[test]
