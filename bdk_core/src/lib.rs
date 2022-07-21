@@ -37,15 +37,17 @@ pub struct BlockTime {
     pub time: u64,
 }
 
-/// A reference to a CheckPoint by specific Height and Hash.
+/// A reference to a block in the cannonical chain.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Copy)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Deserialize, serde::Serialize),
     serde(crate = "serde_crate")
 )]
-pub struct CheckPointRef {
+pub struct BlockId {
+    /// The height the block was confirmed at
     pub height: u32,
+    /// The hash of the block
     pub hash: BlockHash,
 }
 

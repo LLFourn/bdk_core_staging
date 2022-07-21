@@ -1,5 +1,5 @@
 use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use crate::{BlockTime, Box, CheckPointRef, PrevOuts, Vec};
+use crate::{BlockId, BlockTime, Box, PrevOuts, Vec};
 use bitcoin::{
     self,
     hashes::{sha256, Hash, HashEngine},
@@ -12,15 +12,12 @@ use miniscript::{
     descriptor::DefiniteDescriptorKey, psbt::PsbtInputExt, Descriptor, DescriptorPublicKey,
 };
 
-/// A [DescriptorTracker] is a collection of maps and lists, that contains
-/// every thing that needs to be stored to perform syncing and wallet operations
-/// for the all script pubkeys that can be derived from the descriptor.
 #[derive(Clone, Debug)]
 pub struct DescriptorTracker {
     /// The descriptor we are tracking
     descriptor: Descriptor<DescriptorPublicKey>,
-    /// A [CheckPointData] store indexed blockheight.
-    checkpoints: BTreeMap<u32, CheckPointData>,
+    /// Checkpoint data (txids)
+    checkpoints: BTreeMap<u32, CheckpointData>,
     /// Index the Outpoints owned by this tracker to the derivation index of script pubkey.
     txouts: BTreeMap<OutPoint, u32>,
     /// List of all known spends. Including our's and other's outpoints. Both confirmed and unconfirmed.
@@ -29,7 +26,7 @@ pub struct DescriptorTracker {
     /// Set of our unspent outpoints.
     unspent: HashSet<OutPoint>,
     /// Derived script_pubkeys ordered by derivation index.
-    derived_scripts: Vec<Script>,
+    scripts: Vec<Script>,
     /// A reverse lookup from out script_pubkeys to derivation index
     script_indexes: HashMap<Script, u32>,
     /// A lookup from script pubkey derivation index to related outpoints
@@ -40,53 +37,31 @@ pub struct DescriptorTracker {
     txs: HashMap<Txid, AugmentedTx>,
     /// A list of mempool [Txid]s
     mempool: HashSet<Txid>,
-    /// The latest known block heigh + time.
-    latest_blocktime: Option<BlockTime>,
     /// The maximum number of checkpoints that the descriptor should store. When a new checkpoint is
     /// added which would push it above the limit we merge the oldest two checkpoints together.
     checkpoint_limit: usize,
+    /// The last tip the tracker has seen. Useful since not every checkpoint applied actually
+    /// creates a checkpoint (we don't create empty checkpoints).
+    last_tip_seen: Option<BlockId>,
     /// A verify only secp context
     secp: Secp256k1<VerifyOnly>,
 }
 
-/// A [CheckPointData] is the structure containing all the necessary information
-/// required to describe a one CheckPoint.
-///
-/// A CheckPoint is defined as
-/// - The [BlockHash] this checkpoint points to
-/// - A set of ordered [Txid] in ascending order of blockheight, that are included in this checkpoint
-/// - An accumulated digest of all [Txid]s in this and all previous checkpoints.
-///
-/// The [Txid]s in the hash engine are ordered by confirmation time and then lexically.
-///
 /// We keep this for two reasons:
 ///
-/// 1. If we have two different [CheckPointData] sources that claims to follow the same descriptor we
+/// 1. If we have two different checkpoints that claims to follow the same descriptor we
 /// can tell quickly if they disagree and if so at which height do they disagree.
-/// 2. We want to be able to delete old checkpoints by merging their [Txid]s into a newer one.
+/// 2. We want to be able to delete old checkpoints by merging their Txids into a newer one.
 /// With this digest we can do that without changing the identity of the checkpoint that has
-/// the new [Txid]s merged into it.
+/// the new Txids merged into it.
 #[derive(Clone, Default)]
-pub struct CheckPointData {
+struct CheckpointData {
     block_hash: BlockHash,
     ordered_txids: BTreeSet<(u32, Txid)>,
     accum_digest: sha256::HashEngine,
 }
 
-impl CheckPointData {
-    /// Get the list of [Txid]s contained in this checkpoint
-    pub fn get_txids(&self) -> Vec<Txid> {
-        self.ordered_txids.iter().map(|(_, txid)| *txid).collect()
-    }
-
-    /// Calculate the checkpoint accumulation digest
-    /// Refer: [CheckPointData] for more info.
-    pub fn get_accum_digest(&self) -> sha256::Hash {
-        sha256::Hash::from_engine(self.accum_digest.clone())
-    }
-}
-
-impl core::fmt::Debug for CheckPointData {
+impl core::fmt::Debug for CheckpointData {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CheckpointData")
             .field("block_hash", &self.block_hash)
@@ -99,24 +74,24 @@ impl core::fmt::Debug for CheckPointData {
     }
 }
 
-/// Returned result of an attempted update
+/// The result of attempting to apply a checkpoint
 #[derive(Clone, Debug, PartialEq)]
-pub enum UpdateResult {
-    /// The update was applied successfully.
+pub enum ApplyResult {
+    /// The checkpoint was applied successfully.
     // TODO: return a diff
     Ok,
-    /// The update cannot be applied to the current state because it does not apply to the current
+    /// The checkpoint cannot be applied to the current state because it does not apply to the current
     /// tip of the tracker or does not invalidate the right checkpoint such that it does.
     // TDOD: Have a stale reason
     Stale,
-    /// The update you tried to apply was inconsistent with the current state.
+    /// The checkpoint you tried to apply was inconsistent with the current state.
     ///
-    /// To resolve the inconsistency you can treat the update as invalid and ignore it, or invalidate
-    /// the checkpoint and re-apply it.
+    /// To forcibly apply the checkpoint you must invalidate the checkpoint `at_checkpoint` and
+    /// reapply it.
     Inconsistent {
         txid: Txid,
         conflicts_with: Txid,
-        at_checkpoint: CheckPointRef,
+        at_checkpoint: BlockId,
     },
 }
 
@@ -130,36 +105,36 @@ impl DescriptorTracker {
             txouts: Default::default(),
             spends: Default::default(),
             unspent: Default::default(),
-            derived_scripts: Default::default(),
+            scripts: Default::default(),
             script_indexes: Default::default(),
             script_txouts: Default::default(),
             unused: Default::default(),
             txs: Default::default(),
             mempool: Default::default(),
-            latest_blocktime: Default::default(),
+            last_tip_seen: Default::default(),
             checkpoint_limit: usize::MAX,
         }
     }
 
     /// Set the checkpoint limit for this tracker.
-    /// If limit exceeds, the last two checkpoints are merged together recursively.
+    /// If the limit is exceeded the last two checkpoints are merged together.
     pub fn set_checkpoint_limit(&mut self, limit: usize) {
         assert!(limit > 0);
         self.checkpoint_limit = limit;
         self.apply_checkpoint_limit()
     }
 
-    // Keep merging first two checkpoints, until limit satisfies.
     fn apply_checkpoint_limit(&mut self) {
+        // we merge the oldest two checkpoints because they are least likely to be reverted.
         while self.checkpoints.len() > self.checkpoint_limit {
-            let first = *self.checkpoints.iter().next().unwrap().0;
-            self.merge_checkpoint(first);
+            let oldest = *self.checkpoints.iter().next().unwrap().0;
+            self.merge_checkpoint(oldest);
         }
     }
 
-    /// Get the latest [BlockTime] known by this tracker
-    pub fn latest_blocktime(&self) -> Option<BlockTime> {
-        self.latest_blocktime
+    /// Gets the last
+    pub fn last_tip_seen(&self) -> Option<BlockId> {
+        self.last_tip_seen
     }
 
     /// Get the descriptor this tracker is tracking for.
@@ -169,71 +144,89 @@ impl DescriptorTracker {
 
     /// Get the next index of underived script pubkey from the descriptor
     pub fn next_derivation_index(&self) -> u32 {
-        self.derived_scripts.len() as u32
+        self.scripts.len() as u32
     }
 
-    /// Get the transaction ids at that checkpoint
+    /// Get the transaction ids in a particular checkpoint.
     ///
     /// The `Txid`s are ordered first by their confirmation height (ascending) and then lexically by their `Txid`.
     ///
     /// ## Panics
     ///
-    /// This will panic if the checkpoint doesn't exist, or the reference BlockHash doesn't match.
-    pub fn checkpoint_txids(&self, at: CheckPointRef) -> Vec<Txid> {
+    /// This will panic if a checkpoint doesn't exist with `checkpoint_id`
+    pub fn checkpoint_txids(
+        &self,
+        checkpoint_id: BlockId,
+    ) -> impl DoubleEndedIterator<Item = Txid> + '_ {
         let data = self
             .checkpoints
-            .get(&at.height)
+            .get(&checkpoint_id.height)
             .expect("the tracker did not have a checkpoint at that height");
         assert_eq!(
-            data.block_hash, at.hash,
+            data.block_hash, checkpoint_id.hash,
             "tracker had a different block hash for checkpoint at that height"
         );
-        data.get_txids()
+
+        data.ordered_txids.iter().map(|(_, txid)| *txid)
     }
 
-    /// Get the [CheckPointRef] for the last known tip.
-    pub fn latest_checkpoint_ref(&self) -> Option<CheckPointRef> {
+    /// Gets the SHA256 hash of all the `Txid`s of all the transactions included in all checkpoints
+    /// up to and including `checkpoint_id`.
+    ///
+    /// ## Panics
+    ///
+    /// This will panic if a checkpoint doesn't exist with `checkpoint_id`
+    pub fn accum_digest_at(&self, checkpoint_id: BlockId) -> sha256::Hash {
+        let data = self
+            .checkpoints
+            .get(&checkpoint_id.height)
+            .expect("the tracker did not have a checkpoint at that height");
+        assert_eq!(
+            data.block_hash, checkpoint_id.hash,
+            "tracker had a different block hash for checkpoint at that height"
+        );
+
+        sha256::Hash::from_engine(data.accum_digest.clone())
+    }
+
+    /// Get the [BlockId] for the last known tip.
+    pub fn latest_checkpoint(&self) -> Option<BlockId> {
         self.checkpoints
             .iter()
             .last()
-            .map(|(height, data)| CheckPointRef {
+            .map(|(height, data)| BlockId {
                 height: *height,
                 hash: data.block_hash,
             })
     }
 
-    /// Get the [CheckPointRef] at the given height
-    pub fn checkpoint_ref_at(&self, height: u32) -> Option<CheckPointRef> {
+    /// Get the checkpoint id at the given height if it exists
+    pub fn checkpoint_at(&self, height: u32) -> Option<BlockId> {
         let data = self.checkpoints.get(&height)?;
-        Some(CheckPointRef {
+        Some(BlockId {
             height,
             hash: data.block_hash,
         })
     }
 
-    /// Get the checkpoint at given height, or at the next known height, if it doesn't exist at given height.
-    fn best_checkpoint_for(&self, height: u32) -> Option<CheckPointRef> {
+    /// Get the earliest checkpoint whose height is greater than or equal to height if it exists.
+    fn checkpoint_covering(&self, height: u32) -> Option<BlockId> {
         let (cp_height, data) = self.checkpoints.range(height..).next()?;
-        Some(CheckPointRef {
+        Some(BlockId {
             height: *cp_height,
             hash: data.block_hash,
         })
     }
 
-    /// Return an iterator over `[CheckPointRef] from newest to oldest, for this tracker
-    pub fn iter_checkpoints(&self) -> impl Iterator<Item = CheckPointRef> + '_ {
-        self.checkpoints
-            .iter()
-            .rev()
-            .map(|(height, data)| CheckPointRef {
-                height: *height,
-                hash: data.block_hash,
-            })
+    /// Return an iterator over [BlockId] from newest to oldest, for this tracker
+    pub fn iter_checkpoints(&self) -> impl Iterator<Item = BlockId> + '_ {
+        self.checkpoints.iter().rev().map(|(height, data)| BlockId {
+            height: *height,
+            hash: data.block_hash,
+        })
     }
 
-    // Performs removal of a transaction from the tracker maps
     fn remove_tx(&mut self, txid: Txid) {
-        // Try to get the transaction from our list,
         let aug_tx = match self.txs.remove(&txid) {
             Some(aug_tx) => aug_tx,
             None => {
@@ -243,9 +236,6 @@ impl DescriptorTracker {
         };
 
         // Input processing
-        //
-        // If this Tx was already recorded as a spend, remove it from the spend map
-        // If the Tx spent one of our own outputs, put back that output into the unspent map
         for input in &aug_tx.tx.input {
             if let Some((_, tx_that_spends)) = self.spends.remove(&input.previous_output) {
                 debug_assert_eq!(
@@ -260,10 +250,6 @@ impl DescriptorTracker {
         }
 
         // Output Processing
-        //
-        // If this Tx contained outputs that we recorded previously as ours
-        // - remove those outputs from our txouts map
-        // - remove those outputs from sctipt_txout lookup map
         for i in 0..aug_tx.tx.output.len() {
             let txout_to_remove = OutPoint {
                 vout: i as u32,
@@ -276,23 +262,14 @@ impl DescriptorTracker {
                     .remove(&txout_to_remove);
 
                 // TODO: Decide if we should enforce reversal of "used" script_pubkeys into "unused".
-                if self
-                    .script_txouts
-                    .get(&derivation_index)
-                    .expect("guaranteed to exist")
-                    .is_empty()
-                {
-                    self.script_txouts.remove(&derivation_index);
-                    self.unused.insert(derivation_index);
-                }
             }
         }
 
         self.mempool.remove(&txid);
     }
 
-    // Performs addition of transaction into tracker maps.
-    // Returns the checkpoint height at which it got added.
+    // Returns the checkpoint height at which it got added so we can recompute the txid digest from
+    // that point.
     fn add_tx(
         &mut self,
         inputs: PrevOuts,
@@ -301,7 +278,6 @@ impl DescriptorTracker {
     ) -> Option<u32> {
         let txid = tx.txid();
 
-        // Get sum of prev_outputs this Tx sends from
         let inputs_sum = match inputs {
             PrevOuts::Coinbase => {
                 debug_assert_eq!(tx.input.len(), 1);
@@ -312,16 +288,15 @@ impl DescriptorTracker {
             PrevOuts::Spend(txouts) => txouts.iter().map(|output| output.value).sum(),
         };
 
-        // Get the sum of created outputs of this Tx
         let outputs_sum: u64 = tx.output.iter().map(|out| out.value).sum();
         // we need to saturating sub since we want coinbase txs to map to 0 fee and
         // this subtraction will be negative for coinbase txs.
         let fee = inputs_sum.saturating_sub(outputs_sum);
         let feerate = fee as f32 / tx.weight() as f32;
 
-        // Find conflicts with this transaction in our maps
-        // Conflict = A previously known spent output, is being spent again by this transaction.
-        // All conflicting transactions in this case should be in mempool.
+        // Look for conflicts to determine whether we should add this transaction or remove the one
+        // it conflicts with. Note that the txids in conflicts will always be unconfirmed
+        // transactions (dealing with confirmed conflicts is done outside and is usually an error).
         let conflicts = tx
             .input
             .iter()
@@ -332,15 +307,13 @@ impl DescriptorTracker {
             })
             .collect::<Vec<_>>();
 
-        // Performs conflict removal
         if confirmation_time.is_some() {
-            // Because we made sure we only have mempool transactions in conflict list,
-            // if this one is already confirmed, its safe to remove them.
+            // Because we made sure we only have mempool transactions in conflict list, if this one
+            // is already confirmed, its safe to remove them.
             for conflicting_txid in conflicts {
                 self.remove_tx(conflicting_txid);
             }
         } else {
-            // If not confirmed, we remove the one with lower fees.
             let conflicing_tx_with_higher_feerate = conflicts.iter().find(|conflicting_txid| {
                 self.txs.get(*conflicting_txid).expect("must exist").feerate > feerate
             });
@@ -354,9 +327,6 @@ impl DescriptorTracker {
             }
         }
 
-        // Process the Tx Inputs
-        // - add the input into spends map.
-        // - try removing it from the unspent list.
         for (i, input) in tx.input.iter().enumerate() {
             let removed = self.spends.insert(input.previous_output, (i as u32, txid));
             debug_assert_eq!(
@@ -366,13 +336,6 @@ impl DescriptorTracker {
             self.unspent.remove(&input.previous_output);
         }
 
-        // process the transaction outputs
-        // - Check if its our script_pubkey
-        // - If yes, add the output to utxos map.
-        // - add the output to our utxos map.
-        // - add the output to unsent list.
-        // - add the output to scrip_txout map.
-        // - remove the spk from unused list.
         for (i, out) in tx.output.iter().enumerate() {
             if let Some(index) = self.index_of_derived_script(&out.script_pubkey) {
                 let outpoint = OutPoint {
@@ -403,7 +366,7 @@ impl DescriptorTracker {
             },
         );
 
-        // If this Tx is confirmed add it into the right CheckPointData
+        // If this Tx is confirmed add it into the right CheckpointData
         // If not, add it into mempool.
         match confirmation_time {
             Some(confirmation_time) => {
@@ -444,32 +407,43 @@ impl DescriptorTracker {
         }
     }
 
-    /// Apply a Given Update
-    pub fn apply_update(&mut self, update: Update) -> UpdateResult {
+    /// Applies a new candidate checkpoint to the tracker.
+    pub fn apply_checkpoint(&mut self, new_checkpoint: CheckpointCandidate) -> ApplyResult {
         // Do consistency checks first so we don't mutate anything until we're sure the update is
         // valid. We check for two things
-        // - Theres no "known" transaction in the Update list with same txid but different conf_time
-        // - Theres no conflicts with our existing spends map.
+        // 1. There's no "known" transaction in the new checkpoint with same txid but different conf_time
+        // 2. No transaction double spends one of our existing confirmed transactions.
 
-        // 1st Check
-        for (_, tx, confirmation_time) in &update.transactions {
+        // we set to u32::MAX in case of None since it means no tx will be excluded from conflict checks
+        let invalidation_height = new_checkpoint
+            .invalidate
+            .map(|bt| bt.height)
+            .unwrap_or(u32::MAX);
+
+        for (_, tx, confirmation_time) in &new_checkpoint.transactions {
             let txid = tx.txid();
             if let Some(existing) = self.txs.get(&tx.txid()) {
                 if let Some(existing_time) = existing.confirmation_time {
+                    // no need to consider conflicts for txs that are about to be invalidated
+                    if existing_time.height >= invalidation_height {
+                        continue;
+                    }
                     if confirmation_time != &Some(existing_time) {
-                        let at_checkpoint = self
-                            .best_checkpoint_for(existing_time.height)
-                            .expect("must exist since there's a confirmed tx");
-                        return UpdateResult::Inconsistent {
-                            txid,
-                            conflicts_with: existing.tx.txid(),
-                            at_checkpoint,
-                        };
+                        if existing_time.height < invalidation_height {
+                            let at_checkpoint = self
+                                .checkpoint_covering(existing_time.height)
+                                .expect("must exist since there's a confirmed tx");
+
+                            return ApplyResult::Inconsistent {
+                                txid,
+                                conflicts_with: existing.tx.txid(),
+                                at_checkpoint,
+                            };
+                        }
                     }
                 }
             }
 
-            // 2nd Check
             let conflicts = tx
                 .input
                 .iter()
@@ -481,12 +455,16 @@ impl DescriptorTracker {
                     .expect("must exist")
                     .confirmation_time
                 {
+                    // no need to consider conflicts for txs that are about to be invalidated
+                    if conflicting_conftime.height >= invalidation_height {
+                        continue;
+                    }
+
                     let at_checkpoint = self
-                        .best_checkpoint_for(conflicting_conftime.height)
+                        .checkpoint_covering(conflicting_conftime.height)
                         .expect("must exist since there's a confirmed tx");
-                    // TODO: Check if the conflicted checkpoint is in the update.invalidate
-                    // If true then return nothing, carry on.
-                    return UpdateResult::Inconsistent {
+
+                    return ApplyResult::Inconsistent {
                         txid,
                         conflicts_with: *conflicting_txid,
                         at_checkpoint,
@@ -495,66 +473,57 @@ impl DescriptorTracker {
             }
         }
 
-        // Now, first look for anything to invalidate , and only invalidate it if
-        // - Update's base is the one before that CheckPoint
-        // - Update's invalidating Checkpoint hash, doesn't match with out Checkpoint hash at that height.
-        // Return stale in all other combination cases.
-        match update.invalidate {
+        match new_checkpoint.invalidate {
             Some(checkpoint_reset) => match self.checkpoints.get(&checkpoint_reset.height) {
-                Some(checkpoint_data) => {
-                    if checkpoint_data.block_hash != checkpoint_reset.hash {
+                Some(existing_checkpoint) => {
+                    if existing_checkpoint.block_hash != checkpoint_reset.hash {
                         if self
                             .checkpoints
                             .range(..checkpoint_reset.height)
                             .last()
-                            .map(|(height, data)| CheckPointRef {
+                            .map(|(height, data)| BlockId {
                                 height: *height,
                                 hash: data.block_hash,
                             })
-                            == update.base_tip
+                            == new_checkpoint.base_tip
                         {
                             self.invalidate_checkpoint(checkpoint_reset.height);
                         } else {
-                            return UpdateResult::Stale;
+                            return ApplyResult::Stale;
                         }
                     } else {
-                        return UpdateResult::Stale;
+                        return ApplyResult::Stale;
                     }
                 }
-                None => return UpdateResult::Stale,
+                None => return ApplyResult::Stale,
             },
             None => {
-                if update.base_tip != self.latest_checkpoint_ref() {
-                    return UpdateResult::Stale;
+                if new_checkpoint.base_tip != self.latest_checkpoint() {
+                    return ApplyResult::Stale;
                 }
             }
         }
 
-        // Ensure scripts are derived up to latest_active_index of the update
-        // It's possible that we find a script derived at a higher index than what we have given out,
-        // in the case where another system is deriving from the same descriptor.
-        if let Some(last_active_index) = update.last_active_index {
+        // Derive all scripts up to the last active one so we find all the txos owned by this
+        // tracker.
+        if let Some(last_active_index) = new_checkpoint.last_active_index {
             self.derive_scripts(last_active_index);
         }
 
-        // Insert a new empty checkpoint at the update height
         self.checkpoints
-            .entry(update.new_tip.height)
-            .or_insert_with(|| CheckPointData {
-                block_hash: update.new_tip.hash,
+            .entry(new_checkpoint.new_tip.height)
+            .or_insert_with(|| CheckpointData {
+                block_hash: new_checkpoint.new_tip.hash,
                 ..Default::default()
             });
 
-        // Performs new transaction additions
-        // Get the deepest checkpoint where transactions are added
         let mut deepest_change = None;
-        for (vouts, tx, confirmation_time) in update.transactions {
+        for (vouts, tx, confirmation_time) in new_checkpoint.transactions {
             if let Some(change) = self.add_tx(vouts, tx, confirmation_time) {
                 deepest_change = Some(deepest_change.unwrap_or(0).min(change));
             }
         }
 
-        // Recompute digest from the lowest change height
         if let Some(change_depth) = deepest_change {
             self.recompute_txid_digests(change_depth);
         }
@@ -569,15 +538,15 @@ impl DescriptorTracker {
             .ordered_txids
             .is_empty()
         {
-            self.checkpoints.remove(&update.new_tip.height);
+            self.checkpoints.remove(&new_checkpoint.new_tip.height);
         }
 
-        // Performs remaining housekeeping and sanity checks
-        self.latest_blocktime = update.latest_blocktime.max(self.latest_blocktime);
+        self.last_tip_seen = Some(new_checkpoint.new_tip);
+
         self.apply_checkpoint_limit();
         debug_assert!(self.is_latest_checkpoint_hash_correct());
 
-        UpdateResult::Ok
+        ApplyResult::Ok
     }
 
     /// Performs recomputation of transaction digest of checkpoint data
@@ -605,8 +574,8 @@ impl DescriptorTracker {
         if let Some(checkpoint) = self.checkpoints.remove(&height) {
             match self.checkpoints.range_mut((height + 1)..).next() {
                 Some((_, next_one)) => next_one.ordered_txids.extend(checkpoint.ordered_txids),
-                // put it back
                 None => {
+                    // put it back because there's only one checkpoint.
                     self.checkpoints.insert(height, checkpoint);
                 }
             }
@@ -651,8 +620,7 @@ impl DescriptorTracker {
     pub fn iter_tx_by_confirmation_time(
         &self,
     ) -> impl DoubleEndedIterator<Item = (Txid, &AugmentedTx)> + '_ {
-        // collect the mempool transactions into a vector first since the mempool HashSet is not
-        // necessarily a DoubleEndedIterator.
+        // Since HashSet is not necessarily a DoubleEndedIterator we collect into a vector first.
         let mempool_tx = self
             .mempool
             .iter()
@@ -694,20 +662,21 @@ impl DescriptorTracker {
         }
     }
 
-    /// Iterate over all known [LocalTxOut]s
+    /// Iterate over all the transaction outputs discovered by the tracker with script pubkeys
+    /// matches those stored by the tracker.
     pub fn iter_txout(&self) -> impl Iterator<Item = LocalTxOut> + '_ {
         self.txouts
             .iter()
             .map(|(outpoint, data)| self.create_txout(*outpoint, *data))
     }
 
-    /// Get a [LocalTxOut] at given outpoint. [None] if not found.
-    pub fn get_txout(&self, txo: OutPoint) -> Option<LocalTxOut> {
-        let data = self.txouts.get(&txo)?;
-        Some(self.create_txout(txo, *data))
+    /// Get a transaction output at given outpoint.
+    pub fn get_txout(&self, outpoint: OutPoint) -> Option<LocalTxOut> {
+        let data = self.txouts.get(&outpoint)?;
+        Some(self.create_txout(outpoint, *data))
     }
 
-    /// Get a [AugmentedTx] at a given [Txid]. [None] if not found.
+    /// Get a stored transaction given its `Txid`.
     pub fn get_tx(&self, txid: Txid) -> Option<&AugmentedTx> {
         self.txs.get(&txid)
     }
@@ -716,7 +685,7 @@ impl DescriptorTracker {
     ///
     /// This method does **not** use the tracker's stored scripts and returned iterator does not
     /// hold a reference to the tracker. This allows it to be sent between threads. If the
-    /// descriptor `is_deriveable` then the iterator will derive and emit all non-hardened indexes
+    /// descriptor `has_wildcard` then the iterator will derive and emit all non-hardened indexes
     /// of the descriptor otherwise it will just have one script in it.
     ///
     /// **WARNING**: never turn these into addresses or send coins to them.
@@ -726,7 +695,7 @@ impl DescriptorTracker {
     /// [`derive_next`]: Self::derive_next
     pub fn iter_all_scripts(&self) -> impl Iterator<Item = Script> + Send {
         let descriptor = self.descriptor.clone();
-        let end = if self.descriptor.is_deriveable() {
+        let end = if self.descriptor.has_wildcard() {
             // Because we only iterate over non-hardened indexes there are 2^31 values
             (1 << 31) - 1
         } else {
@@ -736,7 +705,7 @@ impl DescriptorTracker {
         let secp = self.secp.clone();
         (0..=end).map(move |i| {
             descriptor
-                .derive(i)
+                .at_derivation_index(i)
                 .derived_descriptor(&secp)
                 .expect("the descritpor cannot need hardened derivation")
                 .script_pubkey()
@@ -745,9 +714,9 @@ impl DescriptorTracker {
 
     /// Returns the script that has been derived at the index.
     ///
-    /// If that index hasn't been derived yet it will return [None] instead.
+    /// If that index hasn't been derived yet it will return `None`.
     pub fn script_at_index(&self, index: u32) -> Option<&Script> {
-        self.derived_scripts.get(index as usize)
+        self.scripts.get(index as usize)
     }
 
     /// Derives a new script pubkey which can be turned into an address.
@@ -755,21 +724,21 @@ impl DescriptorTracker {
     /// The tracker returns a new address for each call to this method and stores it internally so
     /// it will be able to find transactions related to it.
     pub fn derive_new(&mut self) -> (u32, &Script) {
-        let next_derivation_index = if self.descriptor.is_deriveable() {
-            self.derived_scripts.len() as u32
+        let next_derivation_index = if self.descriptor.has_wildcard() {
+            self.scripts.len() as u32
         } else {
             0
         };
         self.derive_scripts(next_derivation_index);
         let script = self
-            .derived_scripts
+            .scripts
             .get(next_derivation_index as usize)
             .expect("we just derived to that index");
-        (self.derived_scripts.len() as u32, script)
+        (self.scripts.len() as u32, script)
     }
 
-    /// Derives and stores a new address only if we haven't already got one that hasn't been used
-    /// yet.
+    /// Derives and stores a new scriptpubkey only if we haven't already got one that hasn't received any
+    /// coins yet.
     pub fn derive_next_unused(&mut self) -> (u32, &Script) {
         let need_new = self.iter_unused_scripts().next().is_none();
         // this rather strange branch is needed because of some lifetime issues
@@ -782,11 +751,10 @@ impl DescriptorTracker {
 
     /// Iterate over the scripts that have been derived already
     pub fn iter_scripts(&self) -> impl Iterator<Item = &Script> {
-        self.derived_scripts.iter()
+        self.scripts.iter()
     }
 
-    /// Iterate over the scripts that have been derived but we have not seen a transaction spending
-    /// from it.
+    /// Iterate over the scripts that have been derived but do not have a transaction spending to them.
     pub fn iter_unused_scripts(&self) -> impl Iterator<Item = (u32, &Script)> {
         self.unused
             .iter()
@@ -798,27 +766,27 @@ impl DescriptorTracker {
     /// Will also return `false` if the script at `index` hasn't been derived yet (because we have
     /// no way of knowing if it has been used yet in that case).
     pub fn is_used(&self, index: u32) -> bool {
-        !self.unused.contains(&index) && (index as usize) < self.derived_scripts.len()
+        !self.unused.contains(&index) && (index as usize) < self.scripts.len()
     }
 
     /// Derives and stores all the scripts **up to and including** `end`.
     ///
-    /// Returns whether any new scripts needed deriving.
+    /// Returns whether any new were derived (or if they had already all been stored).
     pub fn derive_scripts(&mut self, end: u32) -> bool {
-        let end = match self.descriptor.is_deriveable() {
+        let end = match self.descriptor.has_wildcard() {
             false => 0,
             true => end,
         };
 
-        let needed = (end + 1).saturating_sub(self.derived_scripts.len() as u32);
-        for index in self.derived_scripts.len()..self.derived_scripts.len() + needed as usize {
+        let needed = (end + 1).saturating_sub(self.scripts.len() as u32);
+        for index in self.scripts.len()..self.scripts.len() + needed as usize {
             let script = self
                 .descriptor
-                .derive(index as u32)
+                .at_derivation_index(index as u32)
                 .derived_descriptor(&self.secp)
                 .expect("the descritpor cannot need hardened derivation")
                 .script_pubkey();
-            self.derived_scripts.push(script.clone());
+            self.scripts.push(script.clone());
             self.script_indexes.insert(script.clone(), index as u32);
             self.unused.insert(index as u32);
         }
@@ -834,7 +802,7 @@ impl DescriptorTracker {
     /// The maximum satisfaction weight of a descriptor
     pub fn max_satisfaction_weight(&self) -> u32 {
         self.descriptor
-            .derive(0)
+            .at_derivation_index(0)
             .max_satisfaction_weight()
             .expect("descriptor is well formed") as u32
     }
@@ -845,7 +813,7 @@ impl DescriptorTracker {
     /// this will not be relayed by the network.
     pub fn dust_value(&self) -> u64 {
         self.descriptor
-            .derive(0)
+            .at_derivation_index(0)
             .script_pubkey()
             .dust_value()
             .as_sat()
@@ -854,7 +822,7 @@ impl DescriptorTracker {
     /// Prepare an input for insertion into a PSBT
     pub fn prime_input(&self, op: OutPoint) -> Option<PrimedInput> {
         let derivation_index = self.txouts.get(&op)?;
-        let descriptor = self.descriptor().derive(*derivation_index);
+        let descriptor = self.descriptor().at_derivation_index(*derivation_index);
         let mut psbt_input = psbt::Input::default();
 
         let prev_tx = self
@@ -885,8 +853,9 @@ impl DescriptorTracker {
     }
 
     /// internal debug function to double check correctness of the accumulated digest at the tip
+    #[must_use]
     fn is_latest_checkpoint_hash_correct(&self) -> bool {
-        if let Some(tip) = self.latest_checkpoint_ref() {
+        if let Some(tip) = self.latest_checkpoint() {
             let mut txs = self
                 .iter_tx()
                 .filter(|(_, tx)| tx.confirmation_time.is_some())
@@ -897,36 +866,28 @@ impl DescriptorTracker {
                 hasher.input(&txid);
             }
             let txid_hash = sha256::Hash::from_engine(hasher);
-            self.checkpoints
-                .get(&tip.height)
-                .expect("Must exist, as the reference to it exists")
-                .get_accum_digest()
-                == txid_hash
+            self.accum_digest_at(tip) == txid_hash
         } else {
             true
         }
     }
 }
 
-/// An Update that is obtained after a sync and is ready to
-/// be applied in the DB.
-/// Setting each field of the Update performs different update mechanisms.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Update {
-    /// List of transactions to be applied with this Update.
-    /// They needs to be consistent with tracker's state.
+pub struct CheckpointCandidate {
+    /// List of transactions in this checkpoint. They needs to be consistent with tracker's state
+    /// for the new checkpoint to be included.
     pub transactions: Vec<(PrevOuts, Transaction, Option<BlockTime>)>,
     /// Update the last active index of the tracker to given value.
     pub last_active_index: Option<u32>,
-    /// The data in the update can be applied upon this checkpoint. If None then it is not
-    /// consistent with any particular tip (apart from new tip) and so should form the base
-    pub base_tip: Option<CheckPointRef>,
-    /// Optionally Invalidates a particular checkpoint
-    pub invalidate: Option<CheckPointRef>,
-    /// Adds a new checkpoint tip. Extends the chain. base_tip should our latest tip.
-    pub new_tip: CheckPointRef,
-    /// update last known [BlockTime]
-    pub latest_blocktime: Option<BlockTime>,
+    /// The new checkpoint can be applied upon this tip. A tracker will usually reject updates that
+    /// do not have `base_tip` equal to it's latest valid checkpoint.
+    pub base_tip: Option<BlockId>,
+    /// Invalidates a checkpoint before considering this checkpoint.
+    pub invalidate: Option<BlockId>,
+    /// Sets the tip that this checkpoint was creaed for. All data in this checkpoint must be valid
+    /// with respect to this tip.
+    pub new_tip: BlockId,
 }
 
 /// A transaction with extra metadata
@@ -952,7 +913,6 @@ pub struct LocalTxOut {
 pub trait MultiTracker {
     fn iter_unspent(&self) -> Box<dyn Iterator<Item = (usize, LocalTxOut)> + '_>;
     fn iter_txout(&self) -> Box<dyn Iterator<Item = (usize, LocalTxOut)> + '_>;
-    fn latest_blockheight(&self) -> Option<BlockTime>;
     fn create_psbt<I, O>(
         &self,
         inputs: I,
@@ -978,12 +938,6 @@ impl<'a> MultiTracker for [DescriptorTracker] {
                 .enumerate()
                 .flat_map(|(i, tracker)| tracker.iter_txout().map(move |u| (i, u))),
         )
-    }
-
-    fn latest_blockheight(&self) -> Option<BlockTime> {
-        self.into_iter()
-            .filter_map(|tracker| tracker.latest_blocktime())
-            .max()
     }
 
     fn create_psbt<I, O>(
@@ -1061,7 +1015,7 @@ mod test {
     #[derive(Default, Clone, Debug)]
     struct UpdateGen {
         vout_counter: u32,
-        prev_tip: Option<CheckPointRef>,
+        prev_tip: Option<BlockId>,
     }
 
     impl UpdateGen {
@@ -1082,7 +1036,7 @@ mod test {
             descriptor: &Descriptor<DescriptorPublicKey>,
             txs: Vec<TxSpec>,
             checkpoint_height: u32,
-        ) -> Update {
+        ) -> CheckpointCandidate {
             let secp = Secp256k1::verification_only();
             let last_active_index = txs.iter().fold(None, |lai, tx_spec| {
                 tx_spec
@@ -1108,7 +1062,7 @@ mod test {
                                         IOSpec::Mine(value, index) => TxOut {
                                             value: *value,
                                             script_pubkey: descriptor
-                                                .derive(*index as u32)
+                                                .at_derivation_index(*index as u32)
                                                 .derived_descriptor(&secp)
                                                 .unwrap()
                                                 .script_pubkey(),
@@ -1143,7 +1097,7 @@ mod test {
                                     IOSpec::Mine(value, index) => TxOut {
                                         value,
                                         script_pubkey: descriptor
-                                            .derive(index as u32)
+                                            .at_derivation_index(index as u32)
                                             .derived_descriptor(&secp)
                                             .unwrap()
                                             .script_pubkey(),
@@ -1159,18 +1113,17 @@ mod test {
                 })
                 .collect();
 
-            let new_tip = CheckPointRef {
+            let new_tip = BlockId {
                 height: checkpoint_height,
                 hash: BlockHash::default(),
             };
 
-            let update = Update {
+            let update = CheckpointCandidate {
                 transactions,
                 last_active_index,
                 new_tip,
                 invalidate: None,
                 base_tip: self.prev_tip,
-                latest_blocktime: Some(BlockTime::default()), // TODO: Set BlockTime correctly
             };
 
             self.prev_tip = Some(new_tip);
@@ -1185,7 +1138,7 @@ mod test {
         let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
         use IOSpec::*;
 
-        let mut update = update_gen.create_update(
+        let mut checkpoint = update_gen.create_update(
             tracker.descriptor(),
             vec![TxSpec {
                 inputs: vec![Other(2_000)],
@@ -1196,7 +1149,10 @@ mod test {
             0,
         );
 
-        assert_eq!(tracker.apply_update(update.clone()), UpdateResult::Ok);
+        assert_eq!(
+            tracker.apply_checkpoint(checkpoint.clone()),
+            ApplyResult::Ok
+        );
 
         let txouts = tracker.iter_txout().collect::<Vec<_>>();
         let txs = tracker.iter_tx().collect::<Vec<_>>();
@@ -1208,13 +1164,13 @@ mod test {
         assert_eq!(checkpoints.len(), 0);
         assert_eq!(txouts.len(), 1);
 
-        update.transactions[0].2 = Some(BlockTime { height: 1, time: 1 });
-        update.new_tip = CheckPointRef {
-            height: update.new_tip.height + 1,
-            hash: update.new_tip.hash,
+        checkpoint.transactions[0].2 = Some(BlockTime { height: 1, time: 1 });
+        checkpoint.new_tip = BlockId {
+            height: checkpoint.new_tip.height + 1,
+            hash: checkpoint.new_tip.hash,
         };
 
-        assert_eq!(tracker.apply_update(update), UpdateResult::Ok);
+        assert_eq!(tracker.apply_checkpoint(checkpoint), ApplyResult::Ok);
 
         let txs = tracker.iter_tx().collect::<Vec<_>>();
         let checkpoints = tracker.iter_checkpoints().collect::<Vec<_>>();
@@ -1222,7 +1178,7 @@ mod test {
         assert_eq!(checkpoints.len(), 1);
         assert_eq!(txouts.len(), 1);
         assert_eq!(
-            tracker.checkpoint_txids(checkpoints[0]),
+            tracker.checkpoint_txids(checkpoints[0]).collect::<Vec<_>>(),
             txs.iter().map(|(x, _)| *x).collect::<Vec<_>>()
         );
         assert!(tracker.is_latest_checkpoint_hash_correct());
@@ -1235,7 +1191,7 @@ mod test {
         let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
 
         assert_eq!(
-            tracker.apply_update(update_gen.create_update(
+            tracker.apply_checkpoint(update_gen.create_update(
                 tracker.descriptor(),
                 vec![
                     TxSpec {
@@ -1253,11 +1209,11 @@ mod test {
                 ],
                 1,
             )),
-            UpdateResult::Ok
+            ApplyResult::Ok
         );
 
         assert_eq!(
-            tracker.apply_update(update_gen.create_update(
+            tracker.apply_checkpoint(update_gen.create_update(
                 tracker.descriptor(),
                 vec![
                     TxSpec {
@@ -1275,7 +1231,7 @@ mod test {
                 ],
                 3,
             )),
-            UpdateResult::Ok
+            ApplyResult::Ok
         );
 
         assert_eq!(tracker.iter_txout().count(), 4);
@@ -1287,8 +1243,8 @@ mod test {
         tracker.merge_checkpoint(1);
         assert_eq!(tracker.iter_checkpoints().count(), 1);
 
-        let txdata = tracker.checkpoint_txids(tracker.checkpoint_ref_at(3).unwrap());
-        assert_eq!(txdata.len(), 4);
+        let txids = tracker.checkpoint_txids(tracker.checkpoint_at(3).unwrap());
+        assert_eq!(txids.count(), 4);
     }
 
     #[test]
@@ -1298,7 +1254,7 @@ mod test {
         let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
 
         assert_eq!(
-            tracker.apply_update(update_gen.create_update(
+            tracker.apply_checkpoint(update_gen.create_update(
                 tracker.descriptor(),
                 vec![TxSpec {
                     inputs: vec![Other(2_000)],
@@ -1308,11 +1264,11 @@ mod test {
                 },],
                 1,
             )),
-            UpdateResult::Ok
+            ApplyResult::Ok
         );
 
         assert_eq!(
-            tracker.apply_update(update_gen.create_update(
+            tracker.apply_checkpoint(update_gen.create_update(
                 tracker.descriptor(),
                 vec![TxSpec {
                     inputs: vec![Other(2_000)],
@@ -1322,7 +1278,7 @@ mod test {
                 },],
                 2,
             )),
-            UpdateResult::Ok
+            ApplyResult::Ok
         );
 
         assert!(tracker.is_latest_checkpoint_hash_correct());
@@ -1337,7 +1293,7 @@ mod test {
 
         for i in 0..10 {
             assert_eq!(
-                tracker.apply_update(update_gen.create_update(
+                tracker.apply_checkpoint(update_gen.create_update(
                     tracker.descriptor(),
                     vec![TxSpec {
                         inputs: vec![Other(2_000)],
@@ -1347,7 +1303,7 @@ mod test {
                     },],
                     i as u32,
                 )),
-                UpdateResult::Ok
+                ApplyResult::Ok
             );
         }
 
