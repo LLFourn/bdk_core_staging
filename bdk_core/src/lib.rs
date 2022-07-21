@@ -7,7 +7,9 @@ pub use miniscript;
 mod descriptor_tracker;
 pub use descriptor_tracker::*;
 pub mod coin_select;
+mod script_tracker;
 pub mod sign;
+pub use script_tracker::*;
 
 #[allow(unused_imports)]
 #[macro_use]
