@@ -36,7 +36,7 @@ pub struct BlockTime {
     /// confirmation block height
     pub height: u32,
     /// confirmation block timestamp
-    pub time: u64,
+    pub time: u32,
 }
 
 /// A reference to a block in the cannonical chain.

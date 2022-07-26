@@ -1,5 +1,5 @@
 use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use crate::{BlockId, BlockTime, PrevOuts, Vec};
+use crate::{BlockId, BlockTime, Vec};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::util::address::WitnessVersion;
 use bitcoin::{
@@ -8,7 +8,7 @@ use bitcoin::{
     util::psbt::{self, PartiallySignedTransaction as Psbt},
     BlockHash, OutPoint, Script, Transaction, Txid,
 };
-use bitcoin::{TxIn, TxOut};
+use bitcoin::{Block, TxIn, TxOut};
 use miniscript::psbt::PsbtInputExt;
 use miniscript::{DefiniteDescriptorKey, Descriptor, DescriptorPublicKey};
 
@@ -255,29 +255,24 @@ impl<I: Clone + Ord> ScriptTracker<I> {
 
     // Returns the checkpoint height at which it got added so we can recompute the txid digest from
     // that point.
-    fn add_tx(
-        &mut self,
-        inputs: PrevOuts,
-        tx: Transaction,
-        confirmation_time: Option<BlockTime>,
-    ) -> Option<u32> {
+    fn add_tx(&mut self, tx: Transaction, confirmation_time: Option<BlockTime>) -> Option<u32> {
         let txid = tx.txid();
 
-        let inputs_sum = match inputs {
-            PrevOuts::Coinbase => {
-                debug_assert_eq!(tx.input.len(), 1);
-                debug_assert!(tx.input[0].previous_output.is_null());
-                // HACK: set to 0. We only use this for fee which for coinbase is always 0.
-                0
-            }
-            PrevOuts::Spend(txouts) => txouts.iter().map(|output| output.value).sum(),
-        };
+        // let inputs_sum = match inputs {
+        //     PrevOuts::Coinbase => {
+        //         debug_assert_eq!(tx.input.len(), 1);
+        //         debug_assert!(tx.input[0].previous_output.is_null());
+        //         // HACK: set to 0. We only use this for fee which for coinbase is always 0.
+        //         0
+        //     }
+        //     PrevOuts::Spend(txouts) => txouts.iter().map(|output| output.value).sum(),
+        // };
 
-        let outputs_sum: u64 = tx.output.iter().map(|out| out.value).sum();
-        // we need to saturating sub since we want coinbase txs to map to 0 fee and
-        // this subtraction will be negative for coinbase txs.
-        let fee = inputs_sum.saturating_sub(outputs_sum);
-        let feerate = fee as f32 / tx.weight() as f32;
+        // let outputs_sum: u64 = tx.output.iter().map(|out| out.value).sum();
+        // // we need to saturating sub since we want coinbase txs to map to 0 fee and
+        // // this subtraction will be negative for coinbase txs.
+        // let fee = inputs_sum.saturating_sub(outputs_sum);
+        // let feerate = fee as f32 / tx.weight() as f32;
 
         // Look for conflicts to determine whether we should add this transaction or remove the one
         // it conflicts with. Note that the txids in conflicts will always be unconfirmed
@@ -299,8 +294,9 @@ impl<I: Clone + Ord> ScriptTracker<I> {
                 self.remove_tx(conflicting_txid);
             }
         } else {
-            let conflicing_tx_with_higher_feerate = conflicts.iter().find(|conflicting_txid| {
-                self.txs.get(*conflicting_txid).expect("must exist").feerate > feerate
+            let conflicing_tx_with_higher_feerate = conflicts.iter().find(|_conflicting_txid| {
+                // self.txs.get(*conflicting_txid).expect("must exist").feerate > feerate
+                false
             });
             if conflicing_tx_with_higher_feerate.is_none() {
                 for conflicting_txid in conflicts {
@@ -345,8 +341,8 @@ impl<I: Clone + Ord> ScriptTracker<I> {
             txid,
             AugmentedTx {
                 tx,
-                fee,
-                feerate,
+                // fee,
+                // feerate,
                 confirmation_time,
             },
         );
@@ -388,12 +384,55 @@ impl<I: Clone + Ord> ScriptTracker<I> {
         }
     }
 
+    pub fn apply_block(&mut self, height: u32, block: Block) -> ApplyResult {
+        let hash = block.block_hash();
+        let prev_hash = block.header.prev_blockhash;
+
+        if let Some(prev_tip) = self.last_tip_seen() {
+            if prev_tip.hash != prev_hash {
+                return ApplyResult::Stale;
+            }
+        }
+
+        let txs = block
+            .txdata
+            .into_iter()
+            .filter(|tx| {
+                tx.input
+                    .iter()
+                    .any(|txin| self.txouts.get(&txin.previous_output).is_some())
+                    || tx
+                        .output
+                        .iter()
+                        .any(|txout| self.script_indexes.contains_key(&txout.script_pubkey))
+            })
+            .map(|tx| {
+                (
+                    tx,
+                    Some(BlockTime {
+                        height,
+                        time: block.header.time,
+                    }),
+                )
+            })
+            .collect();
+
+        let candidate = CheckpointCandidate {
+            transactions: txs,
+            base_tip: self.last_tip_seen,
+            invalidate: None,
+            new_tip: BlockId { height, hash },
+        };
+
+        self.apply_checkpoint(candidate)
+    }
+
     /// Applies a new candidate checkpoint to the tracker.
     #[must_use]
     pub fn apply_checkpoint(&mut self, mut new_checkpoint: CheckpointCandidate) -> ApplyResult {
         new_checkpoint
             .transactions
-            .retain(|(_, _, confirmation_time)| {
+            .retain(|(_, confirmation_time)| {
                 if let Some(confirmation_time) = confirmation_time {
                     confirmation_time.height <= new_checkpoint.new_tip.height
                 } else {
@@ -416,7 +455,7 @@ impl<I: Clone + Ord> ScriptTracker<I> {
         // than the checkpoint height. I felt this was better for the caller than creating an error
         // type.
 
-        for (_, tx, confirmation_time) in &new_checkpoint.transactions {
+        for (tx, confirmation_time) in &new_checkpoint.transactions {
             let txid = tx.txid();
             if let Some(existing) = self.txs.get(&tx.txid()) {
                 if let Some(existing_time) = existing.confirmation_time {
@@ -510,8 +549,8 @@ impl<I: Clone + Ord> ScriptTracker<I> {
             });
 
         let mut deepest_change = None;
-        for (vouts, tx, confirmation_time) in new_checkpoint.transactions {
-            if let Some(change) = self.add_tx(vouts, tx, confirmation_time) {
+        for (tx, confirmation_time) in new_checkpoint.transactions {
+            if let Some(change) = self.add_tx(tx, confirmation_time) {
                 deepest_change = Some(deepest_change.unwrap_or(u32::MAX).min(change));
             }
         }
@@ -956,7 +995,7 @@ impl<K: Ord + Clone> ScriptTracker<(K, u32)> {
 pub struct CheckpointCandidate {
     /// List of transactions in this checkpoint. They needs to be consistent with tracker's state
     /// for the new checkpoint to be included.
-    pub transactions: Vec<(PrevOuts, Transaction, Option<BlockTime>)>,
+    pub transactions: Vec<(Transaction, Option<BlockTime>)>,
     /// The new checkpoint can be applied upon this tip. A tracker will usually reject updates that
     /// do not have `base_tip` equal to it's latest valid checkpoint.
     pub base_tip: Option<BlockId>,
@@ -971,8 +1010,6 @@ pub struct CheckpointCandidate {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AugmentedTx {
     pub tx: Transaction,
-    pub fee: u64,
-    pub feerate: f32,
     pub confirmation_time: Option<BlockTime>,
 }
 
@@ -1046,32 +1083,32 @@ mod test {
                 .into_iter()
                 .map(|tx_spec| {
                     (
-                        match tx_spec.is_coinbase {
-                            false => PrevOuts::Spend(
-                                tx_spec
-                                    .inputs
-                                    .iter()
-                                    .map(|in_spec| match in_spec {
-                                        IOSpec::Mine(value, index) => TxOut {
-                                            value: *value,
-                                            script_pubkey: self
-                                                .descriptor
-                                                .at_derivation_index(*index as u32)
-                                                .derived_descriptor(&secp)
-                                                .unwrap()
-                                                .script_pubkey(),
-                                        },
-                                        IOSpec::Other(value) => TxOut {
-                                            value: *value,
-                                            script_pubkey: Default::default(),
-                                        },
-                                    })
-                                    .collect(),
-                            ),
-                            true => {
-                                todo!()
-                            }
-                        },
+                        // match tx_spec.is_coinbase {
+                        //     false => PrevOuts::Spend(
+                        //         tx_spec
+                        //             .inputs
+                        //             .iter()
+                        //             .map(|in_spec| match in_spec {
+                        //                 IOSpec::Mine(value, index) => TxOut {
+                        //                     value: *value,
+                        //                     script_pubkey: self
+                        //                         .descriptor
+                        //                         .at_derivation_index(*index as u32)
+                        //                         .derived_descriptor(&secp)
+                        //                         .unwrap()
+                        //                         .script_pubkey(),
+                        //                 },
+                        //                 IOSpec::Other(value) => TxOut {
+                        //                     value: *value,
+                        //                     script_pubkey: Default::default(),
+                        //                 },
+                        //             })
+                        //             .collect(),
+                        //     ),
+                        //     true => {
+                        //         todo!()
+                        //     }
+                        // },
                         Transaction {
                             version: 1,
                             lock_time: 0,
@@ -1102,7 +1139,7 @@ mod test {
                         },
                         tx_spec.confirmed_at.map(|confirmed_at| BlockTime {
                             height: confirmed_at,
-                            time: confirmed_at as u64,
+                            time: confirmed_at,
                         }),
                     )
                 })
@@ -1159,7 +1196,7 @@ mod test {
         assert_eq!(checkpoints.len(), 0);
         assert_eq!(txouts.len(), 1);
 
-        checkpoint.transactions[0].2 = Some(BlockTime { height: 1, time: 1 });
+        checkpoint.transactions[0].1 = Some(BlockTime { height: 1, time: 1 });
         checkpoint.new_tip = BlockId {
             height: checkpoint.new_tip.height + 1,
             hash: checkpoint.new_tip.hash,

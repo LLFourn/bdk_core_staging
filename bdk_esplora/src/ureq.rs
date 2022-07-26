@@ -231,11 +231,7 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    transactions.push((
-                        tx.previous_outputs(),
-                        tx.to_tx(),
-                        tx.status.to_block_time(),
-                    ))
+                    transactions.push((tx.to_tx(), tx.status.to_block_time()))
                 }
             }
 

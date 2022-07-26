@@ -35,7 +35,7 @@ pub struct Vout {
 pub struct TxStatus {
     pub confirmed: bool,
     pub block_height: Option<u32>,
-    pub block_time: Option<u64>,
+    pub block_time: Option<u32>,
 }
 
 impl TxStatus {
