@@ -386,13 +386,6 @@ impl<I: Clone + Ord> ScriptTracker<I> {
 
     pub fn apply_block(&mut self, height: u32, block: Block) -> ApplyResult {
         let hash = block.block_hash();
-        let prev_hash = block.header.prev_blockhash;
-
-        if let Some(prev_tip) = self.last_tip_seen() {
-            if prev_tip.hash != prev_hash {
-                return ApplyResult::Stale;
-            }
-        }
 
         let txs = block
             .txdata
@@ -419,7 +412,7 @@ impl<I: Clone + Ord> ScriptTracker<I> {
 
         let candidate = CheckpointCandidate {
             transactions: txs,
-            base_tip: self.last_tip_seen,
+            base_tip: self.latest_checkpoint(),
             invalidate: None,
             new_tip: BlockId { height, hash },
         };
@@ -629,6 +622,7 @@ impl<I: Clone + Ord> ScriptTracker<I> {
         // clear it.
         // TODO: it would be nice if we could only delete those transactions that are
         // inconsistent by recording the latest block they were included in.
+        // TODO: shouldn't this disconnect checkpoint?
         self.clear_mempool();
         if let Some(checkpoint_data) = self.checkpoints.get(&block_height) {
             if checkpoint_data.block_hash == block_hash {
@@ -960,7 +954,11 @@ impl<K: Ord + Clone> ScriptTracker<(K, u32)> {
         descriptor: &Descriptor<DescriptorPublicKey>,
     ) -> (u32, &Script) {
         let next_derivation_index = if descriptor.has_wildcard() {
-            self.scripts.len() as u32
+            self.scripts
+                .range(&(keychain.clone(), u32::MIN)..=&(keychain.clone(), u32::MAX))
+                .last()
+                .map(|((_, last), _)| last + 1)
+                .unwrap_or(0)
         } else {
             0
         };

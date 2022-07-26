@@ -9,3 +9,6 @@ clap = { version = "3.2.5", features = ["derive", "env"] }
 bdk_core = { path = "../bdk_core"  }
 anyhow = "1"
 bdk_esplora = { path = "../bdk_esplora" }
+block-events = { path = "../../block-events", features = ["tls-secure", "esplora-backend"], default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+env_logger = "0.9"

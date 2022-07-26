@@ -16,6 +16,8 @@ use bdk_core::ApplyResult;
 use bdk_core::DescriptorExt;
 use bdk_core::ScriptTracker;
 use bdk_esplora::ureq::{ureq, Client};
+use block_events::api::BlockEvent;
+use block_events::tokio_stream::StreamExt;
 use clap::Parser;
 use clap::Subcommand;
 use std::cmp::Reverse;
@@ -55,6 +57,7 @@ enum Commands {
         #[clap(parse(try_from_str), short, default_value = "largest-first")]
         coin_select: CoinSelectionAlgo,
     },
+    Live,
 }
 
 #[derive(Clone, Debug)]
@@ -127,6 +130,7 @@ pub enum Keychain {
 }
 
 fn main() -> anyhow::Result<()> {
+    env_logger::init();
     let args = Args::parse();
     let secp = Secp256k1::default();
     let (descriptor, mut keymap) =
@@ -151,13 +155,13 @@ fn main() -> anyhow::Result<()> {
     }
 
     let esplora_url = match args.network {
-        Network::Bitcoin => "https://mempool.space/api",
-        Network::Testnet => "https://mempool.space/testnet/api",
+        Network::Bitcoin => "mempool.space",
+        Network::Testnet => "mempool.space/testnet",
         Network::Regtest => "http://localhost:3000",
-        Network::Signet => "https://mempool.space/signet/api",
+        Network::Signet => "mempool.space/signet",
     };
 
-    let mut client = Client::new(ureq::Agent::new(), esplora_url);
+    let mut client = Client::new(ureq::Agent::new(), &format!("https://{}/api", esplora_url));
     client.parallel_requests = 5;
 
     for keychain in [Keychain::Internal, Keychain::External] {
@@ -392,6 +396,47 @@ fn main() -> anyhow::Result<()> {
                 ),
             }
         }
+        Commands::Live => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+
+            rt.block_on(async {
+                let mut stream = Box::pin(block_events::subscribe_to_blocks(
+                    esplora_url,
+                    tracker
+                        .latest_checkpoint()
+                        .map(|blocktime| (blocktime.height, blocktime.hash)),
+                ).await?);
+
+                println!("starting streaming at {:?}", tracker.last_tip_seen());
+
+                while let Some(block_event) = stream.next().await {
+                    match block_event? {
+                        BlockEvent::Connected(new_block) => {
+                            let prev_hash = new_block.header.prev_blockhash;
+                            let hash = new_block.block_hash();
+                            let height = new_block.bip34_block_height().expect("height missing") as u32;
+                            match tracker.apply_block(height, new_block) {
+                                ApplyResult::Ok => {
+                                    println!("got new block {} {}", height, hash);
+                                    println!("latest checkpoint: {:?}", tracker.latest_checkpoint());
+                                    println!("txos:\n{}", tracker.iter_unspent().map(|txo| txo.outpoint.to_string()).collect::<Vec<_>>().join("\n"));
+                                },
+                                ApplyResult::Stale => {
+                                    eprintln!("the new block was not building on last tip seen: {:?}. Prev block: {:?}", tracker.latest_checkpoint(), prev_hash);
+                                },
+                                ApplyResult::Inconsistent { txid, conflicts_with, at_checkpoint } => {
+                                    eprintln!("the new block contained inconsistent info with {} conflicting with {} at checkpoint {:?}", txid, conflicts_with, at_checkpoint)
+                                },
+                            }
+                        },
+                        BlockEvent::Disconnected((height, hash)) => {
+                            tracker.disconnect_block(height, hash)
+                        }
+                    }
+                }
+                Ok::<(), anyhow::Error>(())
+            })?;
+        }
     }
     Ok(())
 }
@@ -420,6 +465,7 @@ pub fn fully_sync_keychain(
         )
         .context("fetching transactions")?;
     if let Some(last_active_index) = last_active_index {
+        dbg!(keychain, last_active_index);
         tracker.keychain_derive_scripts(keychain, descriptor, last_active_index);
     }
     match tracker.apply_checkpoint(checkpoint) {
