@@ -1,38 +1,36 @@
 use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use crate::{BlockId, BlockTime, Box, PrevOuts, Vec};
+use crate::{BlockId, BlockTime, PrevOuts, Vec};
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::util::address::WitnessVersion;
 use bitcoin::{
     self,
     hashes::{sha256, Hash, HashEngine},
-    psbt::{self, PartiallySignedTransaction as Psbt},
-    secp256k1::{Secp256k1, VerifyOnly},
-    util::address::WitnessVersion,
-    BlockHash, OutPoint, Script, Transaction, TxIn, TxOut, Txid,
+    util::psbt::{self, PartiallySignedTransaction as Psbt},
+    BlockHash, OutPoint, Script, Transaction, Txid,
 };
-use miniscript::{
-    descriptor::DefiniteDescriptorKey, psbt::PsbtInputExt, Descriptor, DescriptorPublicKey,
-};
+use bitcoin::{TxIn, TxOut};
+use miniscript::psbt::PsbtInputExt;
+use miniscript::{DefiniteDescriptorKey, Descriptor, DescriptorPublicKey};
 
 #[derive(Clone, Debug)]
-pub struct DescriptorTracker {
-    /// The descriptor we are tracking
-    descriptor: Descriptor<DescriptorPublicKey>,
+pub struct ScriptTracker<I> {
     /// Checkpoint data (txids)
     checkpoints: BTreeMap<u32, CheckpointData>,
     /// Index the Outpoints owned by this tracker to the derivation index of script pubkey.
-    txouts: BTreeMap<OutPoint, u32>,
+    txouts: BTreeMap<OutPoint, I>,
     /// List of all known spends. Including our's and other's outpoints. Both confirmed and unconfirmed.
     /// This is useful to track all inputs we might ever care about.
     spends: BTreeMap<OutPoint, (u32, Txid)>,
     /// Set of our unspent outpoints.
     unspent: HashSet<OutPoint>,
     /// Derived script_pubkeys ordered by derivation index.
-    scripts: Vec<Script>,
+    scripts: BTreeMap<I, Script>,
     /// A reverse lookup from out script_pubkeys to derivation index
-    script_indexes: HashMap<Script, u32>,
+    script_indexes: HashMap<Script, I>,
     /// A lookup from script pubkey derivation index to related outpoints
-    script_txouts: BTreeMap<u32, HashSet<OutPoint>>,
+    script_txouts: BTreeMap<I, HashSet<OutPoint>>,
     /// A set of unused derivation indices.
-    unused: BTreeSet<u32>,
+    unused: BTreeSet<I>,
     /// A transaction store of all potentially interesting transactions. Including ones in mempool.
     txs: HashMap<Txid, AugmentedTx>,
     /// A list of mempool [Txid]s
@@ -43,8 +41,6 @@ pub struct DescriptorTracker {
     /// The last tip the tracker has seen. Useful since not every checkpoint applied actually
     /// creates a checkpoint (we don't create empty checkpoints).
     last_tip_seen: Option<BlockId>,
-    /// A verify only secp context
-    secp: Secp256k1<VerifyOnly>,
 }
 
 /// We keep this for two reasons:
@@ -95,13 +91,10 @@ pub enum ApplyResult {
     },
 }
 
-impl DescriptorTracker {
-    /// Construct an empty tracker with given [DescriptorPublicKey]
-    pub fn new(descriptor: Descriptor<DescriptorPublicKey>) -> Self {
+impl<I> Default for ScriptTracker<I> {
+    fn default() -> Self {
         Self {
-            descriptor,
             checkpoints: Default::default(),
-            secp: Secp256k1::verification_only(),
             txouts: Default::default(),
             spends: Default::default(),
             unspent: Default::default(),
@@ -115,7 +108,9 @@ impl DescriptorTracker {
             checkpoint_limit: usize::MAX,
         }
     }
+}
 
+impl<I: Clone + Ord> ScriptTracker<I> {
     /// Set the checkpoint limit for this tracker.
     /// If the limit is exceeded the last two checkpoints are merged together.
     pub fn set_checkpoint_limit(&mut self, limit: usize) {
@@ -135,16 +130,6 @@ impl DescriptorTracker {
     /// Gets the last
     pub fn last_tip_seen(&self) -> Option<BlockId> {
         self.last_tip_seen
-    }
-
-    /// Get the descriptor this tracker is tracking for.
-    pub fn descriptor(&self) -> &Descriptor<DescriptorPublicKey> {
-        &self.descriptor
-    }
-
-    /// Get the next index of underived script pubkey from the descriptor
-    pub fn next_derivation_index(&self) -> u32 {
-        self.scripts.len() as u32
     }
 
     /// Get the transaction ids in a particular checkpoint.
@@ -337,19 +322,19 @@ impl DescriptorTracker {
         }
 
         for (i, out) in tx.output.iter().enumerate() {
-            if let Some(index) = self.index_of_derived_script(&out.script_pubkey) {
+            if let Some(index) = self.index_of_script(&out.script_pubkey).cloned() {
                 let outpoint = OutPoint {
                     txid,
                     vout: i as u32,
                 };
 
-                self.txouts.insert(outpoint, index);
+                self.txouts.insert(outpoint, index.clone());
 
                 if !self.spends.contains_key(&outpoint) {
                     self.unspent.insert(outpoint);
                 }
 
-                let txos_for_script = self.script_txouts.entry(index).or_default();
+                let txos_for_script = self.script_txouts.entry(index.clone()).or_default();
                 txos_for_script.insert(outpoint);
                 self.unused.remove(&index);
             }
@@ -404,15 +389,8 @@ impl DescriptorTracker {
     }
 
     /// Applies a new candidate checkpoint to the tracker.
+    #[must_use]
     pub fn apply_checkpoint(&mut self, mut new_checkpoint: CheckpointCandidate) -> ApplyResult {
-        // Do consistency checks first so we don't mutate anything until we're sure the update is
-        // valid. We check for two things
-        // 1. There's no "known" transaction in the new checkpoint with same txid but different conf_time
-        // 2. No transaction double spends one of our existing confirmed transactions.
-
-        // We simply ignore transactions in the checkpoint that have a confirmation time greater
-        // than the checkpoint height. I felt this was better for the caller than creating an error
-        // type.
         new_checkpoint
             .transactions
             .retain(|(_, _, confirmation_time)| {
@@ -428,6 +406,15 @@ impl DescriptorTracker {
             .invalidate
             .map(|bt| bt.height)
             .unwrap_or(u32::MAX);
+
+        // Do consistency checks first so we don't mutate anything until we're sure the update is
+        // valid. We check for two things
+        // 1. There's no "known" transaction in the new checkpoint with same txid but different conf_time
+        // 2. No transaction double spends one of our existing confirmed transactions.
+
+        // We simply ignore transactions in the checkpoint that have a confirmation time greater
+        // than the checkpoint height. I felt this was better for the caller than creating an error
+        // type.
 
         for (_, tx, confirmation_time) in &new_checkpoint.transactions {
             let txid = tx.txid();
@@ -456,7 +443,9 @@ impl DescriptorTracker {
             let conflicts = tx
                 .input
                 .iter()
-                .filter_map(|input| self.spends.get(&input.previous_output));
+                .filter_map(|input| self.spends.get(&input.previous_output))
+                .filter(|(_, conflict_txid)| *conflict_txid != tx.txid());
+
             for (_, conflicting_txid) in conflicts {
                 if let Some(conflicting_conftime) = self
                     .txs
@@ -511,12 +500,6 @@ impl DescriptorTracker {
                     return ApplyResult::Stale;
                 }
             }
-        }
-
-        // Derive all scripts up to the last active one so we find all the txos owned by this
-        // tracker.
-        if let Some(last_active_index) = new_checkpoint.last_active_index {
-            self.derive_scripts(last_active_index);
         }
 
         self.checkpoints
@@ -645,15 +628,15 @@ impl DescriptorTracker {
     }
 
     /// Iterate over unspent [LocalTxOut]s
-    pub fn iter_unspent(&self) -> impl Iterator<Item = LocalTxOut> + '_ {
+    pub fn iter_unspent(&self) -> impl Iterator<Item = LocalTxOut<I>> + '_ {
         self.unspent
             .iter()
             .map(|txo| (txo, self.txouts.get(txo).expect("txout must exist")))
-            .map(|(txo, index)| self.create_txout(*txo, *index))
+            .map(|(txo, index)| self.create_txout(*txo, index.clone()))
     }
 
     // Create a [LocalTxOut] given an outpoint and derivation index
-    fn create_txout(&self, outpoint: OutPoint, derivation_index: u32) -> LocalTxOut {
+    fn create_txout(&self, outpoint: OutPoint, spk_index: I) -> LocalTxOut<I> {
         let tx = self
             .txs
             .get(&outpoint.txid)
@@ -666,23 +649,23 @@ impl DescriptorTracker {
             value,
             spent_by,
             outpoint,
-            derivation_index,
+            spk_index,
             confirmed_at: tx.confirmation_time,
         }
     }
 
     /// Iterate over all the transaction outputs discovered by the tracker with script pubkeys
     /// matches those stored by the tracker.
-    pub fn iter_txout(&self) -> impl Iterator<Item = LocalTxOut> + '_ {
+    pub fn iter_txout(&self) -> impl Iterator<Item = LocalTxOut<I>> + '_ {
         self.txouts
             .iter()
-            .map(|(outpoint, data)| self.create_txout(*outpoint, *data))
+            .map(|(outpoint, script_index)| self.create_txout(*outpoint, script_index.clone()))
     }
 
     /// Get a transaction output at given outpoint.
-    pub fn get_txout(&self, outpoint: OutPoint) -> Option<LocalTxOut> {
+    pub fn get_txout(&self, outpoint: OutPoint) -> Option<LocalTxOut<I>> {
         let data = self.txouts.get(&outpoint)?;
-        Some(self.create_txout(outpoint, *data))
+        Some(self.create_txout(outpoint, data.clone()))
     }
 
     /// Get a stored transaction given its `Txid`.
@@ -690,164 +673,51 @@ impl DescriptorTracker {
         self.txs.get(&txid)
     }
 
-    /// Iterates over all the scriptpubkeys of a descriptor.
-    pub fn iter_all_scripts(&self) -> impl Iterator<Item = Script> + Send {
-        let descriptor = self.descriptor.clone();
-        let end = if self.descriptor.has_wildcard() {
-            // Because we only iterate over non-hardened indexes there are 2^31 values
-            (1 << 31) - 1
-        } else {
-            0
-        };
-
-        let secp = self.secp.clone();
-        (0..=end).map(move |i| {
-            descriptor
-                .at_derivation_index(i)
-                .derived_descriptor(&secp)
-                .expect("the descritpor cannot need hardened derivation")
-                .script_pubkey()
-        })
-    }
-
     /// Returns the script that has been derived at the index.
     ///
     /// If that index hasn't been derived yet it will return `None`.
-    pub fn script_at_index(&self, index: u32) -> Option<&Script> {
-        self.scripts.get(index as usize)
-    }
-
-    /// Derives a new script pubkey which can be turned into an address.
-    ///
-    /// The tracker returns a new address for each call to this method and stores it internally so
-    /// it will be able to find transactions related to it.
-    pub fn derive_new(&mut self) -> (u32, &Script) {
-        let next_derivation_index = if self.descriptor.has_wildcard() {
-            self.scripts.len() as u32
-        } else {
-            0
-        };
-        self.derive_scripts(next_derivation_index);
-        let script = self
-            .scripts
-            .get(next_derivation_index as usize)
-            .expect("we just derived to that index");
-        (self.scripts.len() as u32, script)
-    }
-
-    /// Derives and stores a new scriptpubkey only if we haven't already got one that hasn't received any
-    /// coins yet.
-    pub fn derive_next_unused(&mut self) -> (u32, &Script) {
-        let need_new = self.iter_unused_scripts().next().is_none();
-        // this rather strange branch is needed because of some lifetime issues
-        if need_new {
-            self.derive_new()
-        } else {
-            self.iter_unused_scripts().next().unwrap()
-        }
+    pub fn script_at_index(&self, index: &I) -> Option<&Script> {
+        self.scripts.get(index)
     }
 
     /// Iterate over the scripts that have been derived already
-    pub fn iter_scripts(&self) -> impl Iterator<Item = &Script> {
-        self.scripts.iter()
+    pub fn scripts(&self) -> &BTreeMap<I, Script> {
+        &self.scripts
+    }
+
+    /// Adds a script to the script tracker.
+    ///
+    /// The tracker will look for transactions spending to/from this scriptpubkey on all checkpoints
+    /// that are subsequently added.
+    pub fn add_script(&mut self, index: I, spk: Script) {
+        self.script_indexes.insert(spk.clone(), index.clone());
+        self.scripts.insert(index.clone(), spk);
+        self.unused.insert(index);
     }
 
     /// Iterate over the scripts that have been derived but do not have a transaction spending to them.
-    pub fn iter_unused_scripts(&self) -> impl Iterator<Item = (u32, &Script)> {
-        self.unused
-            .iter()
-            .map(|index| (*index, self.script_at_index(*index).expect("must exist")))
+    pub fn iter_unused_scripts(&self) -> impl Iterator<Item = (I, &Script)> {
+        self.unused.iter().map(|index| {
+            (
+                index.clone(),
+                self.script_at_index(index).expect("must exist"),
+            )
+        })
     }
 
     /// Returns whether the script at index `index` has been used or not.
     ///
-    /// Will also return `false` if the script at `index` hasn't been derived yet (because we have
-    /// no way of knowing if it has been used yet in that case).
-    pub fn is_used(&self, index: u32) -> bool {
-        !self.unused.contains(&index) && (index as usize) < self.scripts.len()
-    }
-
-    /// Derives and stores all the scripts **up to and including** `end`.
-    ///
-    /// Returns whether any new were derived (or if they had already all been stored).
-    pub fn derive_scripts(&mut self, end: u32) -> bool {
-        let end = match self.descriptor.has_wildcard() {
-            false => 0,
-            true => end,
-        };
-
-        let needed = (end + 1).saturating_sub(self.scripts.len() as u32);
-        for index in self.scripts.len()..self.scripts.len() + needed as usize {
-            let script = self
-                .descriptor
-                .at_derivation_index(index as u32)
-                .derived_descriptor(&self.secp)
-                .expect("the descritpor cannot need hardened derivation")
-                .script_pubkey();
-            self.scripts.push(script.clone());
-            self.script_indexes.insert(script.clone(), index as u32);
-            self.unused.insert(index as u32);
-        }
-
-        needed == 0
+    /// i.e. has a transaction which spends to it.
+    pub fn is_used(&self, index: I) -> bool {
+        self.script_txouts
+            .get(&index)
+            .map(|set| !set.is_empty())
+            .unwrap_or(false)
     }
 
     /// Returns at what derivation index a script pubkey was derived at.
-    pub fn index_of_derived_script(&self, script: &Script) -> Option<u32> {
-        self.script_indexes.get(script).cloned()
-    }
-
-    /// The maximum satisfaction weight of a descriptor
-    pub fn max_satisfaction_weight(&self) -> u32 {
-        self.descriptor
-            .at_derivation_index(0)
-            .max_satisfaction_weight()
-            .expect("descriptor is well formed") as u32
-    }
-
-    /// The dust value for any script used as a script pubkey on the network.
-    ///
-    /// Transactions with output containing script pubkeys from this descriptor with values below
-    /// this will not be relayed by the network.
-    pub fn dust_value(&self) -> u64 {
-        self.descriptor
-            .at_derivation_index(0)
-            .script_pubkey()
-            .dust_value()
-            .as_sat()
-    }
-
-    /// Prepare an input for insertion into a PSBT
-    pub fn prime_input(&self, op: OutPoint) -> Option<PrimedInput> {
-        let derivation_index = self.txouts.get(&op)?;
-        let descriptor = self.descriptor().at_derivation_index(*derivation_index);
-        let mut psbt_input = psbt::Input::default();
-
-        let prev_tx = self
-            .txs
-            .get(&op.txid)
-            .expect("since the txout exists so mus the transaction");
-
-        match self.descriptor().desc_type().segwit_version() {
-            Some(version) => {
-                if version < WitnessVersion::V1 {
-                    psbt_input.non_witness_utxo = Some(prev_tx.tx.clone());
-                }
-                psbt_input.witness_utxo = Some(prev_tx.tx.output[op.vout as usize].clone());
-            }
-            None => psbt_input.non_witness_utxo = Some(prev_tx.tx.clone()),
-        }
-
-        psbt_input
-            .update_with_descriptor_unchecked(&descriptor)
-            .expect("conversion error cannot happen if descriptor is well formed");
-
-        let primed_input = PrimedInput {
-            descriptor,
-            psbt_input,
-        };
-
-        Some(primed_input)
+    pub fn index_of_script(&self, script: &Script) -> Option<&I> {
+        self.script_indexes.get(script)
     }
 
     /// internal debug function to double check correctness of the accumulated digest at the tip
@@ -869,6 +739,217 @@ impl DescriptorTracker {
             true
         }
     }
+
+    pub fn create_psbt(
+        &self,
+        inputs: impl IntoIterator<Item = OutPoint>,
+        outputs: impl IntoIterator<Item = TxOut>,
+        lookup_descriptor: impl Fn(I) -> Option<Descriptor<DefiniteDescriptorKey>>,
+    ) -> (Psbt, BTreeMap<usize, Descriptor<DefiniteDescriptorKey>>) {
+        let unsigned_tx = Transaction {
+            version: 0x01,
+            lock_time: 0x00,
+            input: inputs
+                .into_iter()
+                .map(|previous_output| TxIn {
+                    previous_output,
+                    ..Default::default()
+                })
+                .collect(),
+            output: outputs.into_iter().collect(),
+        };
+
+        let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).unwrap();
+        let mut definite_descriptors = BTreeMap::new();
+
+        for ((input_index, psbt_input), txin) in psbt
+            .inputs
+            .iter_mut()
+            .enumerate()
+            .zip(&psbt.unsigned_tx.input)
+        {
+            let definite_descriptor = self
+                .txouts
+                .get(&txin.previous_output)
+                .cloned()
+                .and_then(|index| lookup_descriptor(index));
+            if let Some(definite_descriptor) = definite_descriptor {
+                let prev_tx = self
+                    .txs
+                    .get(&txin.previous_output.txid)
+                    .expect("since the txout exists so must the transaction");
+                match definite_descriptor.desc_type().segwit_version() {
+                    Some(version) => {
+                        if version < WitnessVersion::V1 {
+                            psbt_input.non_witness_utxo = Some(prev_tx.tx.clone());
+                        }
+                        psbt_input.witness_utxo =
+                            Some(prev_tx.tx.output[txin.previous_output.vout as usize].clone());
+                    }
+                    None => psbt_input.non_witness_utxo = Some(prev_tx.tx.clone()),
+                }
+
+                psbt_input
+                    .update_with_descriptor_unchecked(&definite_descriptor)
+                    .expect("conversion error cannot happen if descriptor is well formed");
+                definite_descriptors.insert(input_index, definite_descriptor);
+            }
+        }
+
+        (psbt, definite_descriptors)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PrimedInput {
+    pub descriptor: Descriptor<DefiniteDescriptorKey>,
+    pub psbt_input: psbt::Input,
+}
+
+impl ScriptTracker<u32> {
+    /// Derives scriptpubkeys from the descriptor **up to and including** `end` and stores them
+    /// unless a script already exists in that index.
+    ///
+    /// Returns whether any new were derived (or if they had already all been stored).
+    pub fn derive_scripts(
+        &mut self,
+        descriptor: &Descriptor<DescriptorPublicKey>,
+        end: u32,
+    ) -> bool {
+        let secp = Secp256k1::verification_only();
+        let end = match descriptor.has_wildcard() {
+            false => 0,
+            true => end,
+        };
+
+        let needed = (end + 1).saturating_sub(self.scripts.len() as u32);
+        for index in self.scripts.len()..self.scripts.len() + needed as usize {
+            let spk = descriptor
+                .at_derivation_index(index as u32)
+                .derived_descriptor(&secp)
+                .expect("the descritpor cannot need hardened derivation")
+                .script_pubkey();
+            self.add_script(index as u32, spk);
+        }
+
+        needed == 0
+    }
+
+    /// Derives a new script pubkey which can be turned into an address.
+    ///
+    /// The tracker returns a new address for each call to this method and stores it internally so
+    /// it will be able to find transactions related to it.
+    pub fn derive_new(&mut self, descriptor: &Descriptor<DescriptorPublicKey>) -> (u32, &Script) {
+        let next_derivation_index = if descriptor.has_wildcard() {
+            self.scripts.len() as u32
+        } else {
+            0
+        };
+        self.derive_scripts(descriptor, next_derivation_index);
+        let script = self
+            .scripts
+            .get(&next_derivation_index)
+            .expect("we just derived to that index");
+        (next_derivation_index, script)
+    }
+
+    /// Derives and stores a new scriptpubkey only if we haven't already got one that hasn't received any
+    /// coins yet.
+    pub fn derive_next_unused(
+        &mut self,
+        descriptor: &Descriptor<DescriptorPublicKey>,
+    ) -> (u32, &Script) {
+        let need_new = self.iter_unused_scripts().next().is_none();
+        // this rather strange branch is needed because of some lifetime issues
+        if need_new {
+            self.derive_new(descriptor)
+        } else {
+            self.iter_unused_scripts()
+                .map(|(i, script)| (i, script))
+                .next()
+                .unwrap()
+        }
+    }
+}
+
+impl<K: Ord + Clone> ScriptTracker<(K, u32)> {
+    /// Derives scriptpubkeys from the descriptor **up to and including** `end` and stores them
+    /// unless a script already exists in that index.
+    ///
+    /// Returns whether any new were derived (or if they had already all been stored).
+    pub fn keychain_derive_scripts(
+        &mut self,
+        keychain: K,
+        descriptor: &Descriptor<DescriptorPublicKey>,
+        end: u32,
+    ) -> bool {
+        let secp = Secp256k1::verification_only();
+        let end = match descriptor.has_wildcard() {
+            false => 0,
+            true => end,
+        };
+        let next_to_derive = self
+            .scripts
+            .range(&(keychain.clone(), u32::MIN)..=&(keychain.clone(), u32::MAX))
+            .last()
+            .map(|((_, last), _)| last + 1)
+            .unwrap_or(0);
+
+        if next_to_derive > end {
+            return false;
+        }
+
+        for index in next_to_derive..=end {
+            let spk = descriptor
+                .at_derivation_index(index as u32)
+                .derived_descriptor(&secp)
+                .expect("the descritpor cannot need hardened derivation")
+                .script_pubkey();
+            self.add_script((keychain.clone(), index as u32), spk);
+        }
+
+        true
+    }
+
+    /// Derives a new scriptpubkey for a keychain.
+    ///
+    /// The tracker returns a new scriptpubkey for each call to this method and stores it internally so
+    /// it will be able to find transactions related to it.
+    pub fn keychain_derive_new(
+        &mut self,
+        keychain: K,
+        descriptor: &Descriptor<DescriptorPublicKey>,
+    ) -> (u32, &Script) {
+        let next_derivation_index = if descriptor.has_wildcard() {
+            self.scripts.len() as u32
+        } else {
+            0
+        };
+        self.keychain_derive_scripts(keychain.clone(), descriptor, next_derivation_index);
+        let script = self
+            .scripts
+            .get(&(keychain, next_derivation_index))
+            .expect("we just derived to that index");
+        (next_derivation_index, script)
+    }
+
+    pub fn keychain_derive_next_unused(
+        &mut self,
+        keychain: K,
+        descriptor: &Descriptor<DescriptorPublicKey>,
+    ) -> (u32, &Script) {
+        let need_new = self.iter_unused_scripts().next().is_none();
+        // this rather strange branch is needed because of some lifetime issues
+        if need_new {
+            self.keychain_derive_new(keychain, descriptor)
+        } else {
+            self.iter_unused_scripts()
+                .filter(|((kc, _), _)| kc == &keychain)
+                .map(|((_, i), script)| (i, script))
+                .next()
+                .unwrap()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -876,8 +957,6 @@ pub struct CheckpointCandidate {
     /// List of transactions in this checkpoint. They needs to be consistent with tracker's state
     /// for the new checkpoint to be included.
     pub transactions: Vec<(PrevOuts, Transaction, Option<BlockTime>)>,
-    /// Update the last active index of the tracker to given value.
-    pub last_active_index: Option<u32>,
     /// The new checkpoint can be applied upon this tip. A tracker will usually reject updates that
     /// do not have `base_tip` equal to it's latest valid checkpoint.
     pub base_tip: Option<BlockId>,
@@ -899,100 +978,18 @@ pub struct AugmentedTx {
 
 /// An UTXO with extra metadata
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LocalTxOut {
+pub struct LocalTxOut<I> {
     pub value: u64,
     pub spent_by: Option<(u32, Txid)>,
     pub outpoint: OutPoint,
-    pub derivation_index: u32,
+    pub spk_index: I,
     pub confirmed_at: Option<BlockTime>,
-}
-
-/// A trait implementing multiple descriptor tracker.
-pub trait MultiTracker {
-    fn iter_unspent(&self) -> Box<dyn Iterator<Item = (usize, LocalTxOut)> + '_>;
-    fn iter_txout(&self) -> Box<dyn Iterator<Item = (usize, LocalTxOut)> + '_>;
-    fn create_psbt<I, O>(
-        &self,
-        inputs: I,
-        outputs: O,
-    ) -> (Psbt, BTreeMap<usize, Descriptor<DefiniteDescriptorKey>>)
-    where
-        I: IntoIterator<Item = OutPoint>,
-        O: IntoIterator<Item = TxOut>;
-}
-
-impl<'a> MultiTracker for [DescriptorTracker] {
-    fn iter_unspent(&self) -> Box<dyn Iterator<Item = (usize, LocalTxOut)> + '_> {
-        Box::new(
-            self.into_iter()
-                .enumerate()
-                .flat_map(|(i, tracker)| tracker.iter_unspent().map(move |u| (i, u))),
-        )
-    }
-
-    fn iter_txout(&self) -> Box<dyn Iterator<Item = (usize, LocalTxOut)> + '_> {
-        Box::new(
-            self.into_iter()
-                .enumerate()
-                .flat_map(|(i, tracker)| tracker.iter_txout().map(move |u| (i, u))),
-        )
-    }
-
-    fn create_psbt<I, O>(
-        &self,
-        inputs: I,
-        outputs: O,
-    ) -> (Psbt, BTreeMap<usize, Descriptor<DefiniteDescriptorKey>>)
-    where
-        I: IntoIterator<Item = OutPoint>,
-        O: IntoIterator<Item = TxOut>,
-    {
-        let unsigned_tx = Transaction {
-            version: 0x01,
-            lock_time: 0x00,
-            input: inputs
-                .into_iter()
-                .map(|previous_output| TxIn {
-                    previous_output,
-                    ..Default::default()
-                })
-                .collect(),
-            output: outputs.into_iter().collect(),
-        };
-
-        let mut descriptors = BTreeMap::new();
-
-        let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).unwrap();
-
-        for ((input_index, psbt_input), txin) in psbt
-            .inputs
-            .iter_mut()
-            .enumerate()
-            .zip(&psbt.unsigned_tx.input)
-        {
-            if let Some(primed_input) = self
-                .iter()
-                .find_map(|tracker| tracker.prime_input(txin.previous_output))
-            {
-                *psbt_input = primed_input.psbt_input;
-                descriptors.insert(input_index, primed_input.descriptor);
-            }
-        }
-
-        (psbt, descriptors)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PrimedInput {
-    pub descriptor: Descriptor<DefiniteDescriptorKey>,
-    pub psbt_input: psbt::Input,
 }
 
 #[cfg(test)]
 mod test {
-    use bitcoin::{BlockHash, Transaction, TxIn, TxOut};
-    use core::cmp::max;
+    use bitcoin::{secp256k1::Secp256k1, BlockHash, Transaction, TxIn, TxOut};
+    use miniscript::{Descriptor, DescriptorPublicKey};
 
     use super::*;
 
@@ -1010,13 +1007,22 @@ mod test {
         is_coinbase: bool,
     }
 
-    #[derive(Default, Clone, Debug)]
+    #[derive(Clone, Debug)]
     struct UpdateGen {
-        vout_counter: u32,
-        prev_tip: Option<BlockId>,
+        pub vout_counter: u32,
+        pub prev_tip: Option<BlockId>,
+        pub descriptor: Descriptor<DescriptorPublicKey>,
     }
 
     impl UpdateGen {
+        pub fn new() -> Self {
+            Self {
+                vout_counter: 0,
+                prev_tip: None,
+                descriptor: DESCRIPTOR.parse().unwrap(),
+            }
+        }
+
         fn next_txin(&mut self) -> TxIn {
             let txin = TxIn {
                 previous_output: OutPoint {
@@ -1031,22 +1037,11 @@ mod test {
 
         fn create_update(
             &mut self,
-            descriptor: &Descriptor<DescriptorPublicKey>,
             txs: Vec<TxSpec>,
             checkpoint_height: u32,
         ) -> CheckpointCandidate {
             let secp = Secp256k1::verification_only();
-            let last_active_index = txs.iter().fold(None, |lai, tx_spec| {
-                tx_spec
-                    .inputs
-                    .iter()
-                    .chain(tx_spec.outputs.iter())
-                    .fold(lai, |lai, spec| match (lai, spec) {
-                        (Some(lai), IOSpec::Mine(_, index)) => Some(max(*index as u32, lai)),
-                        (None, IOSpec::Mine(_, index)) => Some(*index as u32),
-                        _ => lai,
-                    })
-            });
+
             let transactions = txs
                 .into_iter()
                 .map(|tx_spec| {
@@ -1059,7 +1054,8 @@ mod test {
                                     .map(|in_spec| match in_spec {
                                         IOSpec::Mine(value, index) => TxOut {
                                             value: *value,
-                                            script_pubkey: descriptor
+                                            script_pubkey: self
+                                                .descriptor
                                                 .at_derivation_index(*index as u32)
                                                 .derived_descriptor(&secp)
                                                 .unwrap()
@@ -1094,7 +1090,8 @@ mod test {
                                     },
                                     IOSpec::Mine(value, index) => TxOut {
                                         value,
-                                        script_pubkey: descriptor
+                                        script_pubkey: self
+                                            .descriptor
                                             .at_derivation_index(index as u32)
                                             .derived_descriptor(&secp)
                                             .unwrap()
@@ -1118,7 +1115,6 @@ mod test {
 
             let update = CheckpointCandidate {
                 transactions,
-                last_active_index,
                 new_tip,
                 invalidate: None,
                 base_tip: self.prev_tip,
@@ -1132,12 +1128,13 @@ mod test {
 
     #[test]
     fn no_checkpoint_and_then_confirm() {
-        let mut update_gen = UpdateGen::default();
-        let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
         use IOSpec::*;
 
+        let mut update_gen = UpdateGen::new();
+        let mut tracker = ScriptTracker::default();
+        tracker.derive_scripts(&update_gen.descriptor, 0);
+
         let mut checkpoint = update_gen.create_update(
-            tracker.descriptor(),
             vec![TxSpec {
                 inputs: vec![Other(2_000)],
                 outputs: vec![Mine(1_000, 0), Other(1_800)],
@@ -1185,12 +1182,12 @@ mod test {
     #[test]
     fn two_checkpoints_then_merege() {
         use IOSpec::*;
-        let mut update_gen = UpdateGen::default();
-        let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
+        let mut update_gen = UpdateGen::new();
+        let mut tracker = ScriptTracker::<u32>::default();
+        tracker.derive_scripts(&update_gen.descriptor, 3);
 
         assert_eq!(
             tracker.apply_checkpoint(update_gen.create_update(
-                tracker.descriptor(),
                 vec![
                     TxSpec {
                         inputs: vec![Other(2_000)],
@@ -1212,7 +1209,6 @@ mod test {
 
         assert_eq!(
             tracker.apply_checkpoint(update_gen.create_update(
-                tracker.descriptor(),
                 vec![
                     TxSpec {
                         inputs: vec![Other(3_000)],
@@ -1248,12 +1244,11 @@ mod test {
     #[test]
     fn invalid_tx_confirmation_time() {
         use IOSpec::*;
-        let mut update_gen = UpdateGen::default();
-        let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
+        let mut update_gen = UpdateGen::new();
+        let mut tracker = ScriptTracker::<u32>::default();
 
         assert_eq!(
             tracker.apply_checkpoint(update_gen.create_update(
-                tracker.descriptor(),
                 vec![TxSpec {
                     inputs: vec![Other(2_000)],
                     outputs: vec![Mine(2_000, 1)],
@@ -1272,12 +1267,11 @@ mod test {
     #[test]
     fn out_of_order_tx_is_before_first_checkpoint() {
         use IOSpec::*;
-        let mut update_gen = UpdateGen::default();
-        let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
+        let mut update_gen = UpdateGen::new();
+        let mut tracker = ScriptTracker::<u32>::default();
 
         assert_eq!(
             tracker.apply_checkpoint(update_gen.create_update(
-                tracker.descriptor(),
                 vec![TxSpec {
                     inputs: vec![Other(2_000)],
                     outputs: vec![Mine(2_000, 1)],
@@ -1293,7 +1287,6 @@ mod test {
 
         assert_eq!(
             tracker.apply_checkpoint(update_gen.create_update(
-                tracker.descriptor(),
                 vec![TxSpec {
                     inputs: vec![Other(2_000)],
                     outputs: vec![Mine(2_000, 1)],
@@ -1309,14 +1302,13 @@ mod test {
     #[test]
     fn checkpoint_limit_is_applied() {
         use IOSpec::*;
-        let mut update_gen = UpdateGen::default();
-        let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
+        let mut update_gen = UpdateGen::new();
+        let mut tracker = ScriptTracker::<u32>::default();
         tracker.set_checkpoint_limit(5);
 
         for i in 0..10 {
             assert_eq!(
                 tracker.apply_checkpoint(update_gen.create_update(
-                    tracker.descriptor(),
                     vec![TxSpec {
                         inputs: vec![Other(2_000)],
                         outputs: vec![Mine(2_000, i)],
@@ -1336,8 +1328,8 @@ mod test {
     #[test]
     fn many_transactions_in_the_same_height() {
         use IOSpec::*;
-        let mut update_gen = UpdateGen::default();
-        let mut tracker = DescriptorTracker::new(DESCRIPTOR.parse().unwrap());
+        let mut update_gen = UpdateGen::new();
+        let mut tracker = ScriptTracker::<u32>::default();
         let txs = (0..100)
             .map(|_| TxSpec {
                 inputs: vec![Other(1_900)],
@@ -1348,8 +1340,28 @@ mod test {
             .collect();
 
         assert_eq!(
-            tracker.apply_checkpoint(update_gen.create_update(tracker.descriptor(), txs, 1,)),
+            tracker.apply_checkpoint(update_gen.create_update(txs, 1,)),
             ApplyResult::Ok
         );
+    }
+
+    #[test]
+    fn same_checkpoint_twice_should_be_stale() {
+        use IOSpec::*;
+        let mut update_gen = UpdateGen::new();
+        let mut tracker = ScriptTracker::<u32>::default();
+
+        let update = update_gen.create_update(
+            vec![TxSpec {
+                inputs: vec![Other(1_900)],
+                outputs: vec![Mine(2_000, 0)],
+                confirmed_at: Some(0),
+                is_coinbase: false,
+            }],
+            0,
+        );
+
+        assert_eq!(tracker.apply_checkpoint(update.clone()), ApplyResult::Ok);
+        assert_eq!(tracker.apply_checkpoint(update), ApplyResult::Stale);
     }
 }
