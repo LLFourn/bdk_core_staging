@@ -12,7 +12,9 @@ use bdk_core::coin_select::{CoinSelector, CoinSelectorOpt};
 use bdk_core::miniscript::psbt::PsbtInputSatisfier;
 use bdk_core::miniscript::Descriptor;
 use bdk_core::miniscript::DescriptorPublicKey;
-use bdk_core::{DescriptorTracker, MultiTracker};
+use bdk_core::ApplyResult;
+use bdk_core::DescriptorExt;
+use bdk_core::SpkTracker;
 use bdk_esplora::ureq::{ureq, Client};
 use clap::Parser;
 use clap::Subcommand;
@@ -118,28 +120,34 @@ pub enum TxoCmd {
     List,
 }
 
+#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
+pub enum Keychain {
+    Internal,
+    External,
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let secp = Secp256k1::default();
-    let (descriptor, keymap) =
+    let (descriptor, mut keymap) =
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
     // external tracker
-    let tracker = DescriptorTracker::new(descriptor);
-    let change_tracker = args
+    let mut tracker = SpkTracker::<(Keychain, u32)>::default();
+
+    let mut descriptors = vec![descriptor];
+
+    let internal = args
         .change_descriptor
-        .map(|descriptor| {
-            let (descriptor, _key_map) =
-                Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &descriptor)?;
-            Ok::<_, bdk_core::miniscript::Error>(DescriptorTracker::new(descriptor))
-        })
+        .map(|descriptor| Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &descriptor))
         .transpose()?;
 
-    // trackers are in a Vec<DescriptorTracker> which has methods attached to it via extension traits
-    // 0 -> external tacker
-    // 1 -> internal tracker
-    let mut trackers = vec![tracker];
-    if let Some(change_tracker) = change_tracker {
-        trackers.push(change_tracker);
+    // // trackers are in a Vec<DescriptorTracker> which has methods attached to it via extension traits
+    // // 0 -> external tacker
+    // // 1 -> internal tracker
+    // let mut trackers = vec![tracker];
+    if let Some((internal_descriptor, internal_keymap)) = internal {
+        keymap.extend(internal_keymap);
+        descriptors.push(internal_descriptor);
     }
 
     let esplora_url = match args.network {
@@ -152,22 +160,26 @@ fn main() -> anyhow::Result<()> {
     let mut client = Client::new(ureq::Agent::new(), esplora_url);
     client.parallel_requests = 5;
 
-    for (i, tracker) in trackers.iter_mut().enumerate() {
-        fully_sync_tracker(
-            match i {
-                1 => "internal",
-                _ => "external",
-            },
+    for keychain in [Keychain::Internal, Keychain::External] {
+        fully_sync_keychain(
+            keychain,
+            &descriptors[keychain as usize],
             &client,
-            tracker,
+            &mut tracker,
         )?;
     }
 
     match args.command {
         Commands::Address { addr_cmd } => {
             let new_address = match addr_cmd {
-                AddressCmd::Next => Some(trackers[0].derive_next_unused()),
-                AddressCmd::New => Some(trackers[0].derive_new()),
+                AddressCmd::Next => Some(tracker.derive_next_unused(
+                    Keychain::External,
+                    &descriptors[Keychain::External as usize],
+                )),
+                AddressCmd::New => Some(tracker.derive_new(
+                    Keychain::External,
+                    &descriptors[Keychain::External as usize],
+                )),
                 _ => None,
             };
 
@@ -181,49 +193,44 @@ fn main() -> anyhow::Result<()> {
             match addr_cmd {
                 AddressCmd::Next | AddressCmd::New => { /* covered */ }
                 AddressCmd::List { change } => {
-                    let tracker = if change {
-                        trackers
-                            .get(1)
-                            .ok_or(anyhow!("you havent set a change descriptor"))?
-                    } else {
-                        &trackers[0]
+                    let target_keychain = match change {
+                        true => Keychain::Internal,
+                        false => Keychain::External,
                     };
-
-                    for (i, spk) in tracker.iter_scripts().enumerate() {
-                        let address = Address::from_script(&spk, args.network)
-                            .expect("should always be able to derive address");
-                        println!("{} used:{}", address, tracker.is_used(i as u32));
+                    for (index, spk) in tracker.script_pubkeys() {
+                        if index.0 == target_keychain {
+                            let address = Address::from_script(&spk, args.network)
+                                .expect("should always be able to derive address");
+                            println!("{} used:{}", address, tracker.is_used(*index));
+                        }
                     }
                 }
             }
         }
         Commands::Balance => {
-            let utxos = trackers
-                .iter_unspent()
-                .map(|(tracker_id, utxo)| (tracker_id == 1, utxo));
             let (confirmed, unconfirmed) =
-                utxos.fold((0, 0), |(confirmed, unconfirmed), (is_change, utxo)| {
-                    if utxo.confirmed_at.is_some() || is_change {
-                        (confirmed + utxo.value, unconfirmed)
-                    } else {
-                        (confirmed, unconfirmed + utxo.value)
-                    }
-                });
+                tracker
+                    .iter_unspent()
+                    .fold((0, 0), |(confirmed, unconfirmed), utxo| {
+                        if utxo.confirmed_at.is_some() || utxo.spk_index.0 == Keychain::Internal {
+                            (confirmed + utxo.value, unconfirmed)
+                        } else {
+                            (confirmed, unconfirmed + utxo.value)
+                        }
+                    });
 
             println!("confirmed: {}", confirmed);
             println!("unconfirmed: {}", unconfirmed);
         }
         Commands::Txo { utxo_cmd } => match utxo_cmd {
             TxoCmd::List => {
-                for (tracker_index, txout) in trackers.iter_txout() {
-                    let script = trackers[tracker_index]
-                        .script_at_index(txout.derivation_index)
-                        .unwrap();
+                for txout in tracker.iter_txout() {
+                    let script = tracker.spk_at_index(&txout.spk_index).unwrap();
                     let address = Address::from_script(script, args.network).unwrap();
 
                     println!(
-                        "keychain:{} {} {} {} spent:{:?}",
-                        tracker_index, txout.value, txout.outpoint, address, txout.spent_by
+                        "{:?} {} {} {} spent:{:?}",
+                        txout.spk_index, txout.value, txout.outpoint, address, txout.spent_by
                     )
                 }
             }
@@ -233,20 +240,20 @@ fn main() -> anyhow::Result<()> {
             address,
             coin_select,
         } => {
-            let mut candidates = trackers.iter_unspent().collect::<Vec<_>>();
+            let mut candidates = tracker.iter_unspent().collect::<Vec<_>>();
 
             // apply coin selection algorithm
             match coin_select {
                 CoinSelectionAlgo::LargestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.value))
+                    candidates.sort_by_key(|utxo| Reverse(utxo.value))
                 }
-                CoinSelectionAlgo::SmallestFirst => candidates.sort_by_key(|(_, utxo)| utxo.value),
-                CoinSelectionAlgo::OldestFirst => candidates.sort_by_key(|(_, utxo)| {
+                CoinSelectionAlgo::SmallestFirst => candidates.sort_by_key(|utxo| utxo.value),
+                CoinSelectionAlgo::OldestFirst => candidates.sort_by_key(|utxo| {
                     utxo.confirmed_at
                         .map(|utxo| utxo.height)
                         .unwrap_or(u32::MAX)
                 }),
-                CoinSelectionAlgo::NewestFirst => candidates.sort_by_key(|(_, utxo)| {
+                CoinSelectionAlgo::NewestFirst => candidates.sort_by_key(|utxo| {
                     Reverse(
                         utxo.confirmed_at
                             .map(|utxo| utxo.height)
@@ -259,9 +266,11 @@ fn main() -> anyhow::Result<()> {
             // turn the txos we chose into a weight and value
             let wv_candidates = candidates
                 .iter()
-                .map(|(tracker_index, utxo)| WeightedValue {
+                .map(|utxo| WeightedValue {
                     value: utxo.value,
-                    weight: trackers[*tracker_index].max_satisfaction_weight(),
+                    weight: descriptors[utxo.spk_index.0 as usize]
+                        .max_satisfaction_weight()
+                        .unwrap() as u32,
                 })
                 .collect();
 
@@ -270,10 +279,21 @@ fn main() -> anyhow::Result<()> {
                 script_pubkey: address.script_pubkey(),
             }];
 
+            let mut change_output = TxOut {
+                value: 0,
+                script_pubkey: tracker
+                    .derive_next_unused(
+                        Keychain::Internal,
+                        &descriptors[Keychain::Internal as usize],
+                    )
+                    .1
+                    .clone(),
+            };
+
             // apply coin selection by saying we need to fund these outputs
             let mut coin_selector = CoinSelector::new(
                 wv_candidates,
-                CoinSelectorOpt::fund_outputs(&outputs, trackers[1].max_satisfaction_weight()),
+                CoinSelectorOpt::fund_outputs(&outputs, &change_output),
             );
 
             // just select coins in the order provided until we have enough
@@ -291,14 +311,12 @@ fn main() -> anyhow::Result<()> {
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
-            let change_tracker = trackers.last_mut().unwrap();
-
-            if selection.use_change && selection.excess >= change_tracker.dust_value() {
+            if selection.use_change
+                && selection.excess >= descriptors[Keychain::Internal as usize].dust_value()
+            {
+                change_output.value = selection.excess;
                 // if the selection tells us to use change and the change value is sufficient we add it as an output
-                outputs.push(TxOut {
-                    value: selection.excess,
-                    script_pubkey: change_tracker.derive_new().1.clone(),
-                })
+                outputs.push(change_output)
             }
 
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
@@ -306,8 +324,13 @@ fn main() -> anyhow::Result<()> {
             // With the selected utxos and outputs create our PSBT and return the descriptor for the
             // spk of each selected input. We will need the descriptors to build the witness
             // properly with ".satisfy".
-            let (mut psbt, definite_descriptors) =
-                trackers.create_psbt(selected_txos.iter().map(|(_, txo)| txo.outpoint), outputs);
+            let (mut psbt, definite_descriptors) = tracker.create_psbt(
+                selected_txos.iter().map(|txo| txo.outpoint),
+                outputs,
+                |(keychain, derivation_index)| {
+                    Some(descriptors[keychain as usize].at_derivation_index(derivation_index))
+                },
+            );
 
             let cache_tx = psbt.unsigned_tx.clone();
             let mut sighash_cache = SighashCache::new(&cache_tx);
@@ -317,7 +340,7 @@ fn main() -> anyhow::Result<()> {
             //
             // TODO: It would be great to be able to make this easier.
             // I think the solution lies in integrating the "policy" module of existing bdk.
-            for (input_index, (_, selected_txo)) in selected_txos.iter().enumerate() {
+            for (input_index, selected_txo) in selected_txos.iter().enumerate() {
                 if let Some(definite_descriptor) = definite_descriptors.get(&input_index) {
                     eprintln!("signing input {}", selected_txo.outpoint);
                     for (pk, sk) in &keymap {
@@ -371,16 +394,17 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn fully_sync_tracker(
-    name: &str,
+pub fn fully_sync_keychain(
+    keychain: Keychain,
+    descriptor: &Descriptor<DescriptorPublicKey>,
     client: &Client,
-    tracker: &mut DescriptorTracker,
+    tracker: &mut SpkTracker<(Keychain, u32)>,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
-    eprint!("scanning {} addresses indexes ", name);
-    let checkpoint = client
+    eprint!("scanning {:?} addresses indexes ", keychain);
+    let (last_active_index, checkpoint) = client
         .fetch_new_checkpoint(
-            tracker
+            descriptor
                 .iter_all_scripts()
                 .enumerate()
                 .map(|(i, script)| (i as u32, script))
@@ -390,10 +414,27 @@ pub fn fully_sync_tracker(
                     let _ = io::stdout().flush();
                 }),
             2,
-            core::iter::empty(),
+            tracker.iter_checkpoints(),
         )
         .context("fetching transactions")?;
-    eprintln!("success! ({}ms)", start.elapsed().as_millis());
-    tracker.apply_checkpoint(checkpoint);
+    if let Some(last_active_index) = last_active_index {
+        tracker.derive_spks(keychain, descriptor, last_active_index);
+    }
+    match tracker.apply_checkpoint(checkpoint) {
+        ApplyResult::Ok => eprintln!("success! ({}ms)", start.elapsed().as_millis()),
+        ApplyResult::Stale => unreachable!("we are the only ones accessing the tracker"),
+        ApplyResult::Inconsistent {
+            txid,
+            conflicts_with,
+            at_checkpoint,
+        } => {
+            return Err(anyhow!(
+                "blockchain backend returned conflicting info: {} conflicts with {} at {:?}",
+                txid,
+                conflicts_with,
+                at_checkpoint
+            ))
+        }
+    }
     Ok(())
 }
