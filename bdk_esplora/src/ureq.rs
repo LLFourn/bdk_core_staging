@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    BlockId, CheckpointCandidate,
+    BlockId, CheckpointCandidate, TxAtBlock,
 };
 pub use ureq;
 use ureq::Agent;
@@ -231,11 +231,10 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    transactions.push((
-                        tx.previous_outputs(),
-                        tx.to_tx(),
-                        tx.status.to_block_time(),
-                    ))
+                    transactions.push(TxAtBlock {
+                        tx: tx.to_tx(),
+                        confirmation_time: tx.status.to_block_time(),
+                    })
                 }
             }
 
