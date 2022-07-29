@@ -14,7 +14,7 @@ use bdk_core::miniscript::Descriptor;
 use bdk_core::miniscript::DescriptorPublicKey;
 use bdk_core::ApplyResult;
 use bdk_core::DescriptorExt;
-use bdk_core::SpkTracker;
+use bdk_core::KeychainTracker;
 use bdk_esplora::ureq::{ureq, Client};
 use clap::Parser;
 use clap::Subcommand;
@@ -122,8 +122,8 @@ pub enum TxoCmd {
 
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 pub enum Keychain {
-    Internal,
     External,
+    Internal,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -131,23 +131,18 @@ fn main() -> anyhow::Result<()> {
     let secp = Secp256k1::default();
     let (descriptor, mut keymap) =
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
-    // external tracker
-    let mut tracker = SpkTracker::<(Keychain, u32)>::default();
 
-    let mut descriptors = vec![descriptor];
+    let mut tracker = KeychainTracker::default();
+    tracker.add_keychain(Keychain::External, descriptor);
 
     let internal = args
         .change_descriptor
         .map(|descriptor| Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &descriptor))
         .transpose()?;
 
-    // // trackers are in a Vec<DescriptorTracker> which has methods attached to it via extension traits
-    // // 0 -> external tacker
-    // // 1 -> internal tracker
-    // let mut trackers = vec![tracker];
     if let Some((internal_descriptor, internal_keymap)) = internal {
         keymap.extend(internal_keymap);
-        descriptors.push(internal_descriptor);
+        tracker.add_keychain(Keychain::Internal, internal_descriptor);
     }
 
     let esplora_url = match args.network {
@@ -161,25 +156,14 @@ fn main() -> anyhow::Result<()> {
     client.parallel_requests = 5;
 
     for keychain in [Keychain::Internal, Keychain::External] {
-        fully_sync_keychain(
-            keychain,
-            &descriptors[keychain as usize],
-            &client,
-            &mut tracker,
-        )?;
+        fully_sync_keychain(keychain, &client, &mut tracker)?;
     }
 
     match args.command {
         Commands::Address { addr_cmd } => {
             let new_address = match addr_cmd {
-                AddressCmd::Next => Some(tracker.derive_next_unused(
-                    Keychain::External,
-                    &descriptors[Keychain::External as usize],
-                )),
-                AddressCmd::New => Some(tracker.derive_new(
-                    Keychain::External,
-                    &descriptors[Keychain::External as usize],
-                )),
+                AddressCmd::Next => Some(tracker.derive_next_unused(Keychain::External)),
+                AddressCmd::New => Some(tracker.derive_new(Keychain::External)),
                 _ => None,
             };
 
@@ -268,7 +252,8 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|utxo| WeightedValue {
                     value: utxo.value,
-                    weight: descriptors[utxo.spk_index.0 as usize]
+                    weight: tracker
+                        .descriptor(utxo.spk_index.0)
                         .max_satisfaction_weight()
                         .unwrap() as u32,
                 })
@@ -281,13 +266,7 @@ fn main() -> anyhow::Result<()> {
 
             let mut change_output = TxOut {
                 value: 0,
-                script_pubkey: tracker
-                    .derive_next_unused(
-                        Keychain::Internal,
-                        &descriptors[Keychain::Internal as usize],
-                    )
-                    .1
-                    .clone(),
+                script_pubkey: tracker.derive_next_unused(Keychain::Internal).1.clone(),
             };
 
             // apply coin selection by saying we need to fund these outputs
@@ -312,7 +291,7 @@ fn main() -> anyhow::Result<()> {
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
             if selection.use_change
-                && selection.excess >= descriptors[Keychain::Internal as usize].dust_value()
+                && selection.excess >= tracker.descriptor(Keychain::Internal).dust_value()
             {
                 change_output.value = selection.excess;
                 // if the selection tells us to use change and the change value is sufficient we add it as an output
@@ -324,13 +303,8 @@ fn main() -> anyhow::Result<()> {
             // With the selected utxos and outputs create our PSBT and return the descriptor for the
             // spk of each selected input. We will need the descriptors to build the witness
             // properly with ".satisfy".
-            let (mut psbt, definite_descriptors) = tracker.create_psbt(
-                selected_txos.iter().map(|txo| txo.outpoint),
-                outputs,
-                |(keychain, derivation_index)| {
-                    Some(descriptors[keychain as usize].at_derivation_index(derivation_index))
-                },
-            );
+            let (mut psbt, definite_descriptors) =
+                tracker.create_psbt(selected_txos.iter().map(|txo| txo.outpoint), outputs);
 
             let cache_tx = psbt.unsigned_tx.clone();
             let mut sighash_cache = SighashCache::new(&cache_tx);
@@ -396,15 +370,15 @@ fn main() -> anyhow::Result<()> {
 
 pub fn fully_sync_keychain(
     keychain: Keychain,
-    descriptor: &Descriptor<DescriptorPublicKey>,
     client: &Client,
-    tracker: &mut SpkTracker<(Keychain, u32)>,
+    tracker: &mut KeychainTracker<Keychain>,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     eprint!("scanning {:?} addresses indexes ", keychain);
     let (last_active_index, checkpoint) = client
         .fetch_new_checkpoint(
-            descriptor
+            tracker
+                .descriptor(keychain)
                 .iter_all_scripts()
                 .enumerate()
                 .map(|(i, script)| (i as u32, script))
@@ -418,7 +392,7 @@ pub fn fully_sync_keychain(
         )
         .context("fetching transactions")?;
     if let Some(last_active_index) = last_active_index {
-        tracker.derive_spks(keychain, descriptor, last_active_index);
+        tracker.derive_spks(keychain, last_active_index);
     }
     match tracker.apply_checkpoint(checkpoint) {
         ApplyResult::Ok => eprintln!("success! ({}ms)", start.elapsed().as_millis()),

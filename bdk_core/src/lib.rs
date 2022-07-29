@@ -6,6 +6,8 @@ use bitcoin::{BlockHash, TxOut};
 pub use miniscript;
 mod spk_tracker;
 pub use spk_tracker::*;
+mod keychain_tracker;
+pub use keychain_tracker::*;
 pub mod coin_select;
 mod descriptor_ext;
 pub mod sign;
