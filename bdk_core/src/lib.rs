@@ -4,10 +4,14 @@ pub use alloc::vec::Vec;
 pub use bitcoin;
 use bitcoin::{BlockHash, TxOut};
 pub use miniscript;
-mod descriptor_tracker;
-pub use descriptor_tracker::*;
+mod spk_tracker;
+pub use spk_tracker::*;
+mod keychain_tracker;
+pub use keychain_tracker::*;
 pub mod coin_select;
+mod descriptor_ext;
 pub mod sign;
+pub use descriptor_ext::*;
 
 #[allow(unused_imports)]
 #[macro_use]

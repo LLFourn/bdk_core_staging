@@ -156,7 +156,7 @@ impl Client {
             .post(&url)
             .send_string(&consensus::serialize(tx).to_hex());
         // if let Err(e) = resp {
-        //     dbg!(e.clone().into_response().unwrap().into_string().unwrap());
+        //     dbg!(e.into_response().unwrap().into_string().unwrap());
         // }
         // TODO: make broadcast errors really good!
         resp?;
@@ -170,7 +170,7 @@ impl Client {
         mut scripts: impl Iterator<Item = (u32, Script)>,
         stop_gap: usize,
         known_tips: impl Iterator<Item = BlockId>,
-    ) -> Result<CheckpointCandidate, UpdateError> {
+    ) -> Result<(Option<u32>, CheckpointCandidate), UpdateError> {
         let mut empty_scripts = 0;
         let mut transactions = vec![];
         let mut last_active_index = None;
@@ -250,12 +250,11 @@ impl Client {
 
         let update = CheckpointCandidate {
             transactions,
-            last_active_index,
             base_tip,
             invalidate,
             new_tip,
         };
 
-        Ok(update)
+        Ok((last_active_index, update))
     }
 }

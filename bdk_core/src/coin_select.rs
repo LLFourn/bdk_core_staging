@@ -37,8 +37,8 @@ impl CoinSelectorOpt {
     pub fn from_weights(base_weight: u32, drain_weight: u32) -> Self {
         Self {
             target_value: 0,
-            // by defualt 1 sat per byte (i.e. 4 per wu)
-            target_feerate: 4.0,
+            // 0.25 per wu i.e. 1 sat per byte
+            target_feerate: 0.25,
             min_absolute_fee: 0,
             base_weight,
             drain_weight,
@@ -46,16 +46,22 @@ impl CoinSelectorOpt {
         }
     }
 
-    pub fn fund_outputs(txouts: &[TxOut], drain_weight: u32) -> Self {
-        let tx = Transaction {
+    pub fn fund_outputs(txouts: &[TxOut], change_output: &TxOut) -> Self {
+        let mut tx = Transaction {
             input: vec![],
             version: 1,
             lock_time: 0,
             output: txouts.to_vec(),
         };
+        let base_weight = tx.weight();
+        // this awkward aglorithm is necessary since TxOut doesn't have \.weight()
+        let change_weight = {
+            tx.output.push(change_output.clone());
+            tx.weight() - base_weight
+        };
         Self {
             target_value: txouts.iter().map(|txout| txout.value).sum(),
-            ..Self::from_weights(tx.weight() as u32, drain_weight)
+            ..Self::from_weights(base_weight as u32, change_weight as u32)
         }
     }
 }
