@@ -191,16 +191,16 @@ fn spend_unspent_in_reorg() {
 
     assert_eq!(chain.apply_checkpoint(first), ApplyResult::Ok);
     tracker.sync(&chain);
-    assert_eq!(tracker.iter_unspent().count(), 1);
+    assert_eq!(tracker.iter_unspent(&chain).count(), 1);
     assert_eq!(tracker.iter_txout(&chain).count(), 1);
 
     assert_eq!(chain.apply_checkpoint(second), ApplyResult::Ok);
     tracker.sync(&chain);
-    assert_eq!(tracker.iter_unspent().count(), 2);
+    assert_eq!(tracker.iter_unspent(&chain).count(), 2);
     assert_eq!(tracker.iter_txout(&chain).count(), 2);
 
     assert_eq!(chain.apply_checkpoint(third), ApplyResult::Ok);
     tracker.sync(&chain);
-    assert_eq!(tracker.iter_unspent().count(), 0);
+    assert_eq!(tracker.iter_unspent(&chain).count(), 0);
     assert_eq!(tracker.iter_txout(&chain).count(), 1);
 }

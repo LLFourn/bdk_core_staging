@@ -10,8 +10,6 @@ use bitcoin::{Script, Txid};
 pub struct SparseChain {
     /// Checkpoint data indexed by height
     checkpoints: BTreeMap<u32, CheckpointData>,
-    /// Checkpoint height indexed by txid digest
-    txid_digests: HashMap<sha256::Hash, u32>,
     /// List of all known spends. Including our's and other's outpoints. Both confirmed and unconfirmed.
     /// This is useful to track all inputs we might ever care about.
     spends: BTreeMap<OutPoint, Txid>,
@@ -156,13 +154,6 @@ impl SparseChain {
         sha256::Hash::from_engine(data.txid_digest.clone())
     }
 
-    pub fn checkpoint_with_txid_digest(&self, digest: sha256::Hash) -> Option<BlockId> {
-        Some(
-            self.checkpoint_at(*self.txid_digests.get(&digest)?)
-                .expect("must exist"),
-        )
-    }
-
     /// Get the BlockId for the last known tip.
     pub fn latest_checkpoint(&self) -> Option<BlockId> {
         self.checkpoints
@@ -304,7 +295,6 @@ impl SparseChain {
         self.apply_checkpoint_limit();
 
         debug_assert!(self.is_latest_checkpoint_hash_correct());
-        debug_assert!(self.reverse_index_exists_for_every_checkpoint());
 
         ApplyResult::Ok
     }
@@ -376,17 +366,11 @@ impl SparseChain {
             .map(|(_, prev)| prev.txid_digest.clone())
             .unwrap_or_else(sha256::HashEngine::default);
 
-        for (height, data) in self.checkpoints.range_mut(from..) {
-            let stale_digest = sha256::Hash::from_engine(data.txid_digest.clone());
-            self.txid_digests.remove(&stale_digest);
-
+        for (_height, data) in self.checkpoints.range_mut(from..) {
             let mut txid_digest = prev_accum_digest.clone();
             for (_, txid) in &data.ordered_txids {
                 txid_digest.input(txid);
             }
-
-            let fresh_digest = sha256::Hash::from_engine(txid_digest.clone());
-            self.txid_digests.insert(fresh_digest, *height);
 
             data.txid_digest = txid_digest.clone();
             prev_accum_digest = txid_digest;
@@ -399,11 +383,6 @@ impl SparseChain {
             match self.checkpoints.range_mut((height + 1)..).next() {
                 Some((_, next_one)) => {
                     next_one.ordered_txids.extend(checkpoint.ordered_txids);
-                    assert_eq!(
-                        self.txid_digests
-                            .remove(&sha256::Hash::from_engine(checkpoint.txid_digest)),
-                        Some(height)
-                    );
                 }
                 None => {
                     // put it back because there's no checkpoint greater than it
@@ -536,17 +515,10 @@ impl SparseChain {
     fn invalidate_checkpoint(&mut self, height: u32) {
         let removed = self.checkpoints.split_off(&height);
 
-        for (height, data) in removed {
+        for (_height, data) in removed {
             for (_, txid) in data.ordered_txids {
                 self.remove_tx(txid);
             }
-
-            assert_eq!(
-                self.txid_digests
-                    .remove(&sha256::Hash::from_engine(data.txid_digest)),
-                Some(height),
-                "reverse index should be there"
-            )
         }
     }
 
@@ -621,20 +593,6 @@ impl SparseChain {
         } else {
             true
         }
-    }
-
-    #[must_use]
-    fn reverse_index_exists_for_every_checkpoint(&self) -> bool {
-        for (height, data) in &self.checkpoints {
-            if self
-                .txid_digests
-                .get(&sha256::Hash::from_engine(data.txid_digest.clone()))
-                != Some(&height)
-            {
-                return false;
-            }
-        }
-        true
     }
 }
 
