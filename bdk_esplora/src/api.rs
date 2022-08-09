@@ -22,7 +22,6 @@ pub struct Vin {
     #[serde(deserialize_with = "deserialize_witness", default)]
     pub witness: Vec<Vec<u8>>,
     pub sequence: u32,
-    pub is_coinbase: bool,
 }
 
 #[derive(serde::Deserialize, Clone, Debug)]

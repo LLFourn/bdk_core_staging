@@ -12,6 +12,8 @@ pub mod coin_select;
 mod descriptor_ext;
 pub mod sign;
 pub use descriptor_ext::*;
+mod sparse_chain;
+pub use sparse_chain::*;
 
 #[allow(unused_imports)]
 #[macro_use]

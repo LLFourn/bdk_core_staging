@@ -15,6 +15,7 @@ use bdk_core::miniscript::DescriptorPublicKey;
 use bdk_core::ApplyResult;
 use bdk_core::DescriptorExt;
 use bdk_core::KeychainTracker;
+use bdk_core::SparseChain;
 use bdk_esplora::ureq::{ureq, Client};
 use clap::Parser;
 use clap::Subcommand;
@@ -133,6 +134,7 @@ fn main() -> anyhow::Result<()> {
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
 
     let mut tracker = KeychainTracker::default();
+    let mut chain = SparseChain::default();
     tracker.add_keychain(Keychain::External, descriptor);
 
     let internal = args
@@ -155,9 +157,7 @@ fn main() -> anyhow::Result<()> {
     let mut client = Client::new(ureq::Agent::new(), esplora_url);
     client.parallel_requests = 5;
 
-    for keychain in [Keychain::Internal, Keychain::External] {
-        fully_sync_keychain(keychain, &client, &mut tracker)?;
-    }
+    fully_sync(&client, &mut tracker, &mut chain)?;
 
     match args.command {
         Commands::Address { addr_cmd } => {
@@ -192,29 +192,29 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Balance => {
-            let (confirmed, unconfirmed) =
-                tracker
-                    .iter_unspent()
-                    .fold((0, 0), |(confirmed, unconfirmed), utxo| {
-                        if utxo.confirmed_at.is_some() || utxo.spk_index.0 == Keychain::Internal {
-                            (confirmed + utxo.value, unconfirmed)
-                        } else {
-                            (confirmed, unconfirmed + utxo.value)
-                        }
-                    });
+            let (confirmed, unconfirmed) = tracker.iter_unspent_full(&chain).fold(
+                (0, 0),
+                |(confirmed, unconfirmed), (spk_index, utxo)| {
+                    if utxo.confirmed_at.is_some() || spk_index.0 == Keychain::Internal {
+                        (confirmed + utxo.value, unconfirmed)
+                    } else {
+                        (confirmed, unconfirmed + utxo.value)
+                    }
+                },
+            );
 
             println!("confirmed: {}", confirmed);
             println!("unconfirmed: {}", unconfirmed);
         }
         Commands::Txo { utxo_cmd } => match utxo_cmd {
             TxoCmd::List => {
-                for txout in tracker.iter_txout() {
-                    let script = tracker.spk_at_index(&txout.spk_index).unwrap();
+                for (spk_index, txout) in tracker.iter_txout_full(&chain) {
+                    let script = tracker.spk_at_index(spk_index).unwrap();
                     let address = Address::from_script(script, args.network).unwrap();
 
                     println!(
                         "{:?} {} {} {} spent:{:?}",
-                        txout.spk_index, txout.value, txout.outpoint, address, txout.spent_by
+                        spk_index, txout.value, txout.outpoint, address, txout.spent_by
                     )
                 }
             }
@@ -224,20 +224,20 @@ fn main() -> anyhow::Result<()> {
             address,
             coin_select,
         } => {
-            let mut candidates = tracker.iter_unspent().collect::<Vec<_>>();
+            let mut candidates = tracker.iter_unspent_full(&chain).collect::<Vec<_>>();
 
             // apply coin selection algorithm
             match coin_select {
                 CoinSelectionAlgo::LargestFirst => {
-                    candidates.sort_by_key(|utxo| Reverse(utxo.value))
+                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.value))
                 }
-                CoinSelectionAlgo::SmallestFirst => candidates.sort_by_key(|utxo| utxo.value),
-                CoinSelectionAlgo::OldestFirst => candidates.sort_by_key(|utxo| {
+                CoinSelectionAlgo::SmallestFirst => candidates.sort_by_key(|(_, utxo)| utxo.value),
+                CoinSelectionAlgo::OldestFirst => candidates.sort_by_key(|(_, utxo)| {
                     utxo.confirmed_at
                         .map(|utxo| utxo.height)
                         .unwrap_or(u32::MAX)
                 }),
-                CoinSelectionAlgo::NewestFirst => candidates.sort_by_key(|utxo| {
+                CoinSelectionAlgo::NewestFirst => candidates.sort_by_key(|(_, utxo)| {
                     Reverse(
                         utxo.confirmed_at
                             .map(|utxo| utxo.height)
@@ -250,10 +250,10 @@ fn main() -> anyhow::Result<()> {
             // turn the txos we chose into a weight and value
             let wv_candidates = candidates
                 .iter()
-                .map(|utxo| WeightedValue {
+                .map(|(spk_index, utxo)| WeightedValue {
                     value: utxo.value,
                     weight: tracker
-                        .descriptor(utxo.spk_index.0)
+                        .descriptor(spk_index.0)
                         .max_satisfaction_weight()
                         .unwrap() as u32,
                 })
@@ -303,8 +303,11 @@ fn main() -> anyhow::Result<()> {
             // With the selected utxos and outputs create our PSBT and return the descriptor for the
             // spk of each selected input. We will need the descriptors to build the witness
             // properly with ".satisfy".
-            let (mut psbt, definite_descriptors) =
-                tracker.create_psbt(selected_txos.iter().map(|txo| txo.outpoint), outputs);
+            let (mut psbt, definite_descriptors) = tracker.create_psbt(
+                selected_txos.iter().map(|(_, txo)| txo.outpoint),
+                outputs,
+                &chain,
+            );
 
             let cache_tx = psbt.unsigned_tx.clone();
             let mut sighash_cache = SighashCache::new(&cache_tx);
@@ -314,9 +317,12 @@ fn main() -> anyhow::Result<()> {
             //
             // TODO: It would be great to be able to make this easier.
             // I think the solution lies in integrating the "policy" module of existing bdk.
-            for (input_index, selected_txo) in selected_txos.iter().enumerate() {
+            for (input_index, (spk_index, selected_txo)) in selected_txos.iter().enumerate() {
                 if let Some(definite_descriptor) = definite_descriptors.get(&input_index) {
-                    eprintln!("signing input {}", selected_txo.outpoint);
+                    eprintln!(
+                        "signing input {} derived at {:?}",
+                        selected_txo.outpoint, spk_index
+                    );
                     for (pk, sk) in &keymap {
                         let signed = bdk_core::sign::sign_with_descriptor_sk(
                             sk,
@@ -368,47 +374,58 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn fully_sync_keychain(
-    keychain: Keychain,
+pub fn fully_sync(
     client: &Client,
     tracker: &mut KeychainTracker<Keychain>,
+    chain: &mut SparseChain,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
-    eprint!("scanning {:?} addresses indexes ", keychain);
-    let (last_active_index, checkpoint) = client
-        .fetch_new_checkpoint(
-            tracker
-                .descriptor(keychain)
-                .iter_all_scripts()
-                .enumerate()
-                .map(|(i, script)| (i as u32, script))
-                .inspect(|(i, _)| {
-                    use std::io::{self, Write};
-                    eprint!("{} ", i);
-                    let _ = io::stdout().flush();
-                }),
-            2,
-            tracker.iter_checkpoints(),
-        )
-        .context("fetching transactions")?;
-    if let Some(last_active_index) = last_active_index {
-        tracker.derive_spks(keychain, last_active_index);
-    }
-    match tracker.apply_checkpoint(checkpoint) {
-        ApplyResult::Ok => eprintln!("success! ({}ms)", start.elapsed().as_millis()),
-        ApplyResult::Stale => unreachable!("we are the only ones accessing the tracker"),
-        ApplyResult::Inconsistent {
-            txid,
-            conflicts_with,
-            at_checkpoint,
-        } => {
-            return Err(anyhow!(
-                "blockchain backend returned conflicting info: {} conflicts with {} at {:?}",
+    let mut active_indexes = vec![];
+    for (keychain, descriptor) in tracker.iter_keychains(..) {
+        eprint!("scanning {:?} addresses indexes ", keychain);
+        let (last_active_index, checkpoint) = client
+            .fetch_new_checkpoint(
+                descriptor
+                    .iter_all_scripts()
+                    .enumerate()
+                    .map(|(i, script)| (i as u32, script))
+                    .inspect(|(i, _)| {
+                        use std::io::{self, Write};
+                        eprint!("{} ", i);
+                        let _ = io::stdout().flush();
+                    }),
+                2,
+                chain.iter_checkpoints(..).rev(),
+            )
+            .context("fetching transactions")?;
+
+        match chain.apply_checkpoint(checkpoint) {
+            ApplyResult::Ok => eprintln!("success! ({}ms)", start.elapsed().as_millis()),
+            ApplyResult::Stale(_reason) => {
+                unreachable!("we are the only ones accessing the tracker")
+            }
+            ApplyResult::Inconsistent {
                 txid,
                 conflicts_with,
-                at_checkpoint
-            ))
+            } => {
+                return Err(anyhow!(
+                    "blockchain backend returned conflicting info: {} conflicts with {}",
+                    txid,
+                    conflicts_with,
+                ))
+            }
+        }
+
+        if let Some(last_active_index) = last_active_index {
+            active_indexes.push((keychain, last_active_index));
         }
     }
+
+    for (keychain, active_index) in active_indexes {
+        tracker.derive_spks(keychain, active_index);
+    }
+
+    tracker.sync(&chain);
+
     Ok(())
 }
