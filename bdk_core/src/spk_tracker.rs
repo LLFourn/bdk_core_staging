@@ -1,6 +1,6 @@
 use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::Vec;
-use crate::{FullTxOut, SparseChain, TxAtBlock};
+use crate::{FullTxOut, SparseChain};
 use bitcoin::{self, hashes::sha256, OutPoint, Script, Txid};
 
 /// A *script pubkey* tracker.
