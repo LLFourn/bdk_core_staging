@@ -94,7 +94,7 @@ fn invalid_tx_confirmation_time() {
         ApplyResult::Ok
     );
 
-    assert_eq!(chain.iter_checkpoints(..).count(), 0);
+    assert_eq!(chain.iter_checkpoints(..).count(), 1);
     assert_eq!(chain.iter_tx().count(), 0);
 }
 
@@ -187,10 +187,7 @@ fn same_checkpoint_twice_should_be_stale() {
     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
     assert_eq!(
         chain.apply_checkpoint(update),
-        ApplyResult::Stale(StaleReason::BaseTipNotMatching {
-            got: None,
-            expected: chain.latest_checkpoint().unwrap()
-        })
+        ApplyResult::Stale(StaleReason::CheckpointAlreadyExists)
     );
 }
 
@@ -235,7 +232,7 @@ fn adding_checkpoint_which_contains_nothing_new_doesnt_create_new_checkpoint() {
         ..Default::default()
     };
     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
-    assert_eq!(chain.iter_checkpoints(..).count(), 1);
+    assert_eq!(chain.iter_checkpoints(..).count(), 2);
 }
 
 #[test]

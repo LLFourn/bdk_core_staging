@@ -67,6 +67,7 @@ pub enum ApplyResult {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StaleReason {
+    CheckpointAlreadyExists,
     InvalidationHashNotMatching {
         invalidates: BlockId,
         expected: Option<BlockHash>,
@@ -234,6 +235,11 @@ impl SparseChain {
                 true
             }
         });
+
+        // If the Checkpoint already exist return stale
+        if let Some(_) = self.checkpoint_at(new_checkpoint.new_tip.height) {
+            return ApplyResult::Stale(StaleReason::CheckpointAlreadyExists);
+        }
 
         // we set to u32::MAX in case of None since it means no tx will be excluded from conflict checks
         let invalidation_height = new_checkpoint

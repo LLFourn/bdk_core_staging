@@ -22,9 +22,11 @@ fn no_checkpoint_and_then_confirm() {
 
     assert_eq!(chain.apply_checkpoint(checkpoint.clone()), ApplyResult::Ok);
 
+    // TODO: Default SparseChain will create one checkpoint with all 0 values.
+    // Convert the default into genesis block of each network.
     assert_eq!(
         chain.iter_checkpoints(..).count(),
-        0,
+        1,
         "adding tx to mempool doesn't create checkpoint"
     );
     assert_eq!(chain.iter_tx().count(), 1);
