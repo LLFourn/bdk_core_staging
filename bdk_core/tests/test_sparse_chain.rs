@@ -1,6 +1,6 @@
 use bdk_core::*;
 mod checkpoint_gen;
-use bitcoin::OutPoint;
+use bitcoin::{BlockHash, OutPoint};
 use checkpoint_gen::{CheckpointGen, ISpec, OSpec, TxSpec};
 
 #[test]
@@ -454,3 +454,72 @@ fn spent_outpoint_doesnt_exist_but_tx_does() {
 }
 
 // TODO: add test for adding the target
+
+#[test]
+fn empty_checkpoint_doesnt_get_removed() {
+    let mut chain = SparseChain::default();
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            transactions: vec![],
+            base_tip: None,
+            invalidate: None,
+            new_tip: BlockId {
+                height: 0,
+                hash: BlockHash::default(),
+            },
+        }),
+        ApplyResult::Ok
+    );
+
+    assert_eq!(
+        chain.latest_checkpoint(),
+        Some(BlockId {
+            height: 0,
+            hash: BlockHash::default()
+        })
+    );
+}
+
+#[test]
+fn two_empty_checkpoints_get_merged() {
+    let mut chain = SparseChain::default();
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            transactions: vec![],
+            base_tip: None,
+            invalidate: None,
+            new_tip: BlockId::default(),
+        }),
+        ApplyResult::Ok
+    );
+
+    assert_eq!(
+        chain.latest_checkpoint(),
+        Some(BlockId {
+            height: 0,
+            hash: BlockHash::default()
+        })
+    );
+
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            transactions: vec![],
+            base_tip: Some(BlockId::default()),
+            invalidate: None,
+            new_tip: BlockId {
+                height: 1,
+                ..Default::default()
+            },
+        }),
+        ApplyResult::Ok
+    );
+
+    assert_eq!(
+        chain.latest_checkpoint(),
+        Some(BlockId {
+            height: 1,
+            hash: BlockHash::default()
+        })
+    );
+    assert_eq!(chain.iter_checkpoints(..).count(), 1);
+}
