@@ -1,0 +1,17 @@
+[package]
+name = "bdk-cbf"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+nakamoto-client = { git = "https://github.com/llfourn/nakamoto", rev = "31a0d256b86e92647103783648aac4c44c1040d2" }
+nakamoto-net-poll =  { git = "https://github.com/llfourn/nakamoto", rev = "31a0d256b86e92647103783648aac4c44c1040d2" }
+nakamoto-p2p = { git = "https://github.com/llfourn/nakamoto", rev = "31a0d256b86e92647103783648aac4c44c1040d2" }
+nakamoto-common = { git = "https://github.com/llfourn/nakamoto", rev = "31a0d256b86e92647103783648aac4c44c1040d2" }
+bitcoin = "0.28"
+bdk_core = { path = "../bdk_core" }
+structopt = "0.3"
+anyhow = "1"
+env_logger = "0.9"
