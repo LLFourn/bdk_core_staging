@@ -2,7 +2,7 @@
 pub use alloc::boxed::Box;
 pub use alloc::vec::Vec;
 pub use bitcoin;
-use bitcoin::{BlockHash, TxOut};
+use bitcoin::{hashes::Hash, BlockHash, TxOut};
 pub use miniscript;
 mod spk_tracker;
 pub use spk_tracker::*;
@@ -44,7 +44,7 @@ pub struct BlockTime {
 }
 
 /// A reference to a block in the cannonical chain.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Deserialize, serde::Serialize),
@@ -55,6 +55,15 @@ pub struct BlockId {
     pub height: u32,
     /// The hash of the block
     pub hash: BlockHash,
+}
+
+impl Default for BlockId {
+    fn default() -> Self {
+        Self {
+            height: Default::default(),
+            hash: BlockHash::from_inner([0u8; 32]),
+        }
+    }
 }
 
 // When no-std use `alloc`'s Hash collections. This is activated by default

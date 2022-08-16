@@ -1,5 +1,8 @@
 use bdk_core::{BlockId, BlockTime, CheckpointCandidate, TxAtBlock};
-use bitcoin::{secp256k1::Secp256k1, BlockHash, OutPoint, Script, Transaction, TxIn, TxOut, Txid};
+use bitcoin::{
+    hashes::Hash, secp256k1::Secp256k1, BlockHash, LockTime, OutPoint, Script, Transaction, TxIn,
+    TxOut, Txid,
+};
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 const DESCRIPTOR: &'static str = "wpkh(xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL)";
@@ -42,7 +45,7 @@ impl CheckpointGen {
     pub fn next_txin(&mut self) -> TxIn {
         let txin = TxIn {
             previous_output: OutPoint {
-                txid: Txid::default(),
+                txid: Txid::from_inner([0u8; 32]),
                 vout: self.vout_counter,
             },
             ..Default::default()
@@ -63,7 +66,7 @@ impl CheckpointGen {
             let tx_at_block = TxAtBlock {
                 tx: Transaction {
                     version: 1,
-                    lock_time: 0,
+                    lock_time: LockTime::ZERO.into(),
                     input: tx_spec
                         .inputs
                         .iter()
@@ -114,7 +117,7 @@ impl CheckpointGen {
 
         let new_tip = BlockId {
             height: checkpoint_height,
-            hash: BlockHash::default(),
+            hash: BlockHash::from_inner([0u8; 32]),
         };
 
         let update = CheckpointCandidate {

@@ -2,7 +2,9 @@
 //!
 //! see: <https://github.com/Blockstream/esplora/blob/master/API.md>
 use bdk_core::{
-    bitcoin::{OutPoint, Script, Transaction, TxIn, TxOut, Txid, Witness},
+    bitcoin::{
+        OutPoint, PackedLockTime, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    },
     BlockTime, PrevOuts,
 };
 
@@ -21,7 +23,7 @@ pub struct Vin {
     pub scriptsig: Script,
     #[serde(deserialize_with = "deserialize_witness", default)]
     pub witness: Vec<Vec<u8>>,
-    pub sequence: u32,
+    pub sequence: Sequence,
 }
 
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -49,7 +51,7 @@ impl TxStatus {
 pub struct Tx {
     pub txid: Txid,
     pub version: i32,
-    pub locktime: u32,
+    pub locktime: PackedLockTime,
     pub vin: Vec<Vin>,
     pub vout: Vec<Vout>,
     pub status: TxStatus,

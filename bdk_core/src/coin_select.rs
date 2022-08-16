@@ -1,4 +1,4 @@
-use bitcoin::{Transaction, TxOut};
+use bitcoin::{LockTime, Transaction, TxOut};
 
 use crate::{collections::BTreeSet, Vec};
 
@@ -50,7 +50,7 @@ impl CoinSelectorOpt {
         let mut tx = Transaction {
             input: vec![],
             version: 1,
-            lock_time: 0,
+            lock_time: LockTime::ZERO.into(),
             output: txouts.to_vec(),
         };
         let base_weight = tx.weight();

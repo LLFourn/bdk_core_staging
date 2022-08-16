@@ -1,17 +1,9 @@
 use crate::collections::*;
-use crate::SparseChain;
 use crate::SpkTracker;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::util::address::WitnessVersion;
-use bitcoin::OutPoint;
-use bitcoin::Transaction;
-use bitcoin::TxIn;
-use bitcoin::TxOut;
-use bitcoin::{util::psbt::PartiallySignedTransaction as Psbt, Script};
+use bitcoin::Script;
 use core::ops::Deref;
 use core::ops::DerefMut;
-use miniscript::psbt::PsbtInputExt;
-use miniscript::DefiniteDescriptorKey;
 use miniscript::Descriptor;
 use miniscript::DescriptorPublicKey;
 
@@ -153,60 +145,57 @@ impl<K: Clone + Ord> KeychainTracker<K> {
         }
     }
 
-    pub fn create_psbt(
-        &self,
-        inputs: impl IntoIterator<Item = OutPoint>,
-        outputs: impl IntoIterator<Item = TxOut>,
-        chain: &SparseChain,
-    ) -> (Psbt, BTreeMap<usize, Descriptor<DefiniteDescriptorKey>>) {
-        let unsigned_tx = Transaction {
-            version: 0x01,
-            lock_time: 0x00,
-            input: inputs
-                .into_iter()
-                .map(|previous_output| TxIn {
-                    previous_output,
-                    ..Default::default()
-                })
-                .collect(),
-            output: outputs.into_iter().collect(),
-        };
+    // pub fn create_psbt(
+    //     &self,
+    //     inputs: impl IntoIterator<Item = (OutPoint , Option<&Plan>)>,
+    //     outputs: impl IntoIterator<Item = TxOut>,
+    //     chain: &SparseChain,
+    // ) -> (Psbt, BTreeMap<usize, Descriptor<DefiniteDescriptorKey>>) {
+    //     let unsigned_tx = Transaction {
+    //         version: 0x02,
+    //         lock_time: 0x00,
+    //         input: inputs
+    //             .into_iter()
+    //             .map(|(previous_output, _)| TxIn {
+    //                 previous_output,
+    //                 ..Default::default()
+    //             })
+    //             .collect(),
+    //         output: outputs.into_iter().collect(),
+    //     };
 
-        let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).unwrap();
-        let mut definite_descriptors = BTreeMap::new();
+    //     let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).unwrap();
+    //     let mut definite_descriptors = BTreeMap::new();
 
-        for ((input_index, psbt_input), txin) in psbt
-            .inputs
-            .iter_mut()
-            .enumerate()
-            .zip(&psbt.unsigned_tx.input)
-        {
-            let definite_descriptor = self
-                .index_of_txout(txin.previous_output)
-                .map(|index| self.descriptor(index.0).at_derivation_index(index.1));
+    //     for ((input_index, psbt_input), txin) in psbt
+    //         .inputs
+    //         .iter_mut()
+    //         .enumerate()
+    //         .zip(&psbt.unsigned_tx.input)
+    //     {
 
-            if let Some(definite_descriptor) = definite_descriptor {
-                let prev_tx = chain
-                    .get_tx(txin.previous_output.txid)
-                    .expect("since the txout exists so must the transaction");
-                match definite_descriptor.desc_type().segwit_version() {
-                    Some(version) => {
-                        if version < WitnessVersion::V1 {
-                            psbt_input.non_witness_utxo = Some(prev_tx.tx.clone());
-                        }
-                        psbt_input.witness_utxo =
-                            Some(prev_tx.tx.output[txin.previous_output.vout as usize].clone());
-                    }
-                    None => psbt_input.non_witness_utxo = Some(prev_tx.tx.clone()),
-                }
+    //         if let Some(definite_descriptor) = definite_descriptor {
+    //             let prev_tx = chain
+    //                 .get_tx(txin.previous_output.txid)
+    //                 .expect("since the txout exists so must the transaction");
+    //             match definite_descriptor.desc_type().segwit_version() {
+    //                 Some(version) => {
+    //                     if version < WitnessVersion::V1 {
+    //                         psbt_input.non_witness_utxo = Some(prev_tx.tx.clone());
+    //                     }
+    //                     psbt_input.witness_utxo =
+    //                         Some(prev_tx.tx.output[txin.previous_output.vout as usize].clone());
+    //                 }
+    //                 None => psbt_input.non_witness_utxo = Some(prev_tx.tx.clone()),
+    //             }
 
-                psbt_input
-                    .update_with_descriptor_unchecked(&definite_descriptor)
-                    .expect("conversion error cannot happen if descriptor is well formed");
-                definite_descriptors.insert(input_index, definite_descriptor);
-            }
-        }
+    //             psbt_input
+    //                 .update_with_descriptor_unchecked(&definite_descriptor)
+    //                 .expect("conversion error cannot happen if descriptor is well formed");
+    //             definite_descriptors.insert(input_index, definite_descriptor);
+    //         }
+    //     }
 
-        (psbt, definite_descriptors)
-    }
+    //     (psbt, definite_descriptors)
+    // }
 }

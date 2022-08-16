@@ -4,7 +4,7 @@ use crate::{collections::*, Vec};
 use crate::{BlockId, BlockTime};
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::{hashes::sha256, BlockHash, OutPoint, Transaction};
-use bitcoin::{Script, Txid};
+use bitcoin::{Script, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {
@@ -29,7 +29,7 @@ pub struct SparseChain {
 /// 2. We want to be able to delete old checkpoints by merging their Txids
 /// into a newer one. With this digest we can do that without changing the identity of the
 /// checkpoint that has the new Txids merged into it.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct CheckpointData {
     block_hash: BlockHash,
     ordered_txids: BTreeSet<(u32, Txid)>,
@@ -312,7 +312,8 @@ impl SparseChain {
             .entry(new_checkpoint.new_tip.height)
             .or_insert_with(|| CheckpointData {
                 block_hash: new_checkpoint.new_tip.hash,
-                ..Default::default()
+                ordered_txids: Default::default(),
+                txid_digest: Default::default(),
             });
 
         let mut deepest_change = None;
@@ -659,4 +660,13 @@ pub struct FullTxOut {
     pub outpoint: OutPoint,
     pub confirmed_at: Option<BlockTime>,
     pub script_pubkey: Script,
+}
+
+impl From<FullTxOut> for TxOut {
+    fn from(ftxout: FullTxOut) -> Self {
+        TxOut {
+            value: ftxout.value,
+            script_pubkey: ftxout.script_pubkey,
+        }
+    }
 }

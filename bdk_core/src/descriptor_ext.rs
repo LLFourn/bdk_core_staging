@@ -32,6 +32,6 @@ impl DescriptorExt for Descriptor<DescriptorPublicKey> {
         self.at_derivation_index(0)
             .script_pubkey()
             .dust_value()
-            .as_sat()
+            .to_sat()
     }
 }

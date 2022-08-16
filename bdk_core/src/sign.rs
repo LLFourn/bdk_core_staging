@@ -1,12 +1,19 @@
-use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey, Signing, Verification};
+use bitcoin::secp256k1::{
+    KeyPair, Message, PublicKey, Secp256k1, SecretKey, Signing, Verification,
+};
 use bitcoin::util::bip32::{self, DerivationPath, ExtendedPrivKey};
 use bitcoin::util::psbt::PartiallySignedTransaction as Psbt;
-use bitcoin::util::sighash::SighashCache;
+use bitcoin::util::sighash::{Prevouts, SighashCache};
 use bitcoin::util::taproot;
-use bitcoin::{SchnorrSig, Transaction, XOnlyPublicKey};
+use bitcoin::{
+    EcdsaSighashType, SchnorrSig, SchnorrSighashType, Transaction, TxOut, XOnlyPublicKey,
+};
+use core::borrow::Borrow;
 use core::ops::Deref;
-use miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, InnerXKey};
+use miniscript::descriptor::{DescriptorSecretKey, DescriptorXKey, InnerXKey, KeyMap};
+use miniscript::plan::{AuthData, RequiredSignatures};
 use miniscript::psbt::PsbtExt;
+use miniscript::DescriptorPublicKey;
 
 #[derive(Clone, Debug)]
 pub enum SigningError {
@@ -52,8 +59,9 @@ pub fn sign_with_single_key<T: Deref<Target = Transaction>>(
     if let Some(tap_internal_key) = psbt.inputs[index].tap_internal_key {
         if tap_internal_key == x_only_pubkey {
             let tweak = taproot::TapTweakHash::from_key_and_tweak(x_only_pubkey, None);
-            let mut keypair = KeyPair::from_secret_key(&secp, secret_key.clone());
-            keypair.tweak_add_assign(&secp, &tweak).unwrap();
+            let keypair = KeyPair::from_secret_key(&secp, &secret_key.clone())
+                .add_xonly_tweak(&secp, &tweak.to_scalar())
+                .unwrap();
 
             let msg = psbt.sighash_msg(index, sighash_cache, None)?;
             let sig = secp.sign_schnorr_no_aux_rand(&msg.to_secp_msg(), &keypair);
@@ -135,6 +143,70 @@ pub fn sign_with_descriptor_sk<T: Deref<Target = Transaction>>(
         }
         DescriptorSecretKey::XPrv(descriptor_xkey) => {
             sign_with_descriptor_xkey(descriptor_xkey, psbt, sighash_cache, index, secp)
+        }
+    }
+}
+
+pub fn sign_required_with_keymap<T: Deref<Target = Transaction>>(
+    required_signatures: &RequiredSignatures<DescriptorPublicKey>,
+    input_index: usize,
+    keymap: &KeyMap,
+    prevouts: &Prevouts<'_, impl Borrow<TxOut>>,
+    schnorr_sighashty: Option<SchnorrSighashType>,
+    _ecdsa_sighashty: Option<EcdsaSighashType>,
+    auth_data: &mut AuthData,
+    sighash_cache: &mut SighashCache<T>,
+    secp: &Secp256k1<impl Signing + Verification>,
+) -> Result<bool, SigningError> {
+    match required_signatures {
+        RequiredSignatures::Ecdsa { .. } => {
+            todo!()
+        }
+        RequiredSignatures::TapKey {
+            plan_key,
+            merkle_root,
+        } => {
+            let schnorr_sighashty = schnorr_sighashty.unwrap_or(SchnorrSighashType::Default);
+            let sighash = sighash_cache
+                .taproot_key_spend_signature_hash(input_index, prevouts, schnorr_sighashty)
+                .expect("sighash failed");
+            let secret_key = match keymap.get(&plan_key.asset_key) {
+                Some(secret_key) => secret_key,
+                None => return Ok(false),
+            };
+            let secret_key = match secret_key {
+                DescriptorSecretKey::Single(single) => single.key.inner,
+                DescriptorSecretKey::XPrv(xprv) => {
+                    xprv.xkey
+                        .derive_priv(&secp, &plan_key.derivation_hint)?
+                        .private_key
+                }
+            };
+
+            let pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+            let x_only_pubkey = XOnlyPublicKey::from(pubkey);
+
+            let tweak =
+                taproot::TapTweakHash::from_key_and_tweak(x_only_pubkey, merkle_root.clone());
+            let keypair = KeyPair::from_secret_key(&secp, &secret_key.clone())
+                .add_xonly_tweak(&secp, &tweak.to_scalar())
+                .unwrap();
+
+            let msg = Message::from_slice(sighash.as_ref()).expect("Sighashes are 32 bytes");
+            let sig = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+
+            let bitcoin_sig = SchnorrSig {
+                sig,
+                hash_ty: schnorr_sighashty,
+            };
+
+            auth_data
+                .schnorr_sigs
+                .insert(plan_key.descriptor_key.clone(), bitcoin_sig);
+            Ok(true)
+        }
+        RequiredSignatures::TapScript { .. } => {
+            todo!()
         }
     }
 }
