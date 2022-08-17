@@ -14,6 +14,10 @@ pub mod sign;
 pub use descriptor_ext::*;
 mod sparse_chain;
 pub use sparse_chain::*;
+mod alternative_sparse_chain;
+pub use alternative_sparse_chain::*;
+mod delta;
+pub use delta::*;
 
 #[allow(unused_imports)]
 #[macro_use]
