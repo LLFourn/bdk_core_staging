@@ -1,9 +1,10 @@
 use core::marker::PhantomData;
 
 use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use crate::Vec;
+use crate::{AlternativeSparseChain, Delta, Filled, Negated, Vec};
 use crate::{FullTxOut, SparseChain};
 use bitcoin::{self, hashes::sha256, OutPoint, Script, Txid};
+use serde_crate::__private::de;
 
 /// A *script pubkey* tracker.
 ///
@@ -190,5 +191,15 @@ impl<I: Clone + Ord> SpkTracker<SparseChain, I> {
             .iter()
             .filter(|(outpoint, _)| chain.get_tx(outpoint.txid).is_some())
             .map(|(op, index)| (index.clone(), *op))
+    }
+}
+
+impl<I: Clone + Ord> SpkTracker<AlternativeSparseChain, I> {
+    pub fn apply_delta(&mut self, delta: Delta<Filled>) {
+        delta.apply_to_spk_tracker(self)
+    }
+
+    pub fn apply_negated_delta(&mut self, delta: Delta<Negated>) {
+        delta.apply_to_spk_tracker(self)
     }
 }

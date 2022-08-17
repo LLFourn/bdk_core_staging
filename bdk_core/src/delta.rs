@@ -130,4 +130,14 @@ impl Delta<Filled> {
 
         Ok(())
     }
+
+    pub fn apply_to_spk_tracker<I>(self, spk_tracker: &mut SpkTracker<AlternativeSparseChain, I>) {
+        todo!()
+    }
+}
+
+impl Delta<Negated> {
+    pub fn apply_to_spk_tracker<I>(self, spk_tracker: &mut SpkTracker<AlternativeSparseChain, I>) {
+        todo!()
+    }
 }
