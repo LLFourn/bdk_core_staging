@@ -1,6 +1,6 @@
 use bdk_core::*;
 mod checkpoint_gen;
-use bitcoin::{BlockHash, OutPoint};
+use bitcoin::OutPoint;
 use checkpoint_gen::{CheckpointGen, ISpec, OSpec, TxSpec};
 
 #[test]
@@ -469,7 +469,7 @@ fn empty_checkpoint_doesnt_get_removed() {
             invalidate: None,
             new_tip: BlockId {
                 height: 0,
-                hash: BlockHash::default(),
+                ..Default::default()
             },
         }),
         ApplyResult::Ok
@@ -479,7 +479,7 @@ fn empty_checkpoint_doesnt_get_removed() {
         chain.latest_checkpoint(),
         Some(BlockId {
             height: 0,
-            hash: BlockHash::default()
+            ..Default::default()
         })
     );
 }
@@ -501,7 +501,7 @@ fn two_empty_checkpoints_get_merged() {
         chain.latest_checkpoint(),
         Some(BlockId {
             height: 0,
-            hash: BlockHash::default()
+            ..Default::default()
         })
     );
 
@@ -522,7 +522,7 @@ fn two_empty_checkpoints_get_merged() {
         chain.latest_checkpoint(),
         Some(BlockId {
             height: 1,
-            hash: BlockHash::default()
+            ..Default::default()
         })
     );
     assert_eq!(chain.iter_checkpoints(..).count(), 1);

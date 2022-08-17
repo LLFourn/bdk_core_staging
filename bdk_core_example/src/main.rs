@@ -5,8 +5,7 @@ use bdk_core::{
         hashes::hex::ToHex,
         secp256k1::Secp256k1,
         util::sighash::{Prevouts, SighashCache},
-        Address, Network, Transaction, TxIn, TxOut,
-        LockTime
+        Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
     coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue},
     miniscript::{Descriptor, DescriptorPublicKey},
@@ -137,10 +136,13 @@ fn main() -> anyhow::Result<()> {
         .map(|descriptor| Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &descriptor))
         .transpose()?;
 
-    if let Some((internal_descriptor, internal_keymap)) = internal {
+    let change_keychain = if let Some((internal_descriptor, internal_keymap)) = internal {
         keymap.extend(internal_keymap);
         tracker.add_keychain(Keychain::Internal, internal_descriptor);
-    }
+        Keychain::Internal
+    } else {
+        Keychain::External
+    };
 
     let esplora_url = match args.network {
         Network::Bitcoin => "https://mempool.space/api",
@@ -173,7 +175,7 @@ fn main() -> anyhow::Result<()> {
                 AddressCmd::Next | AddressCmd::New => { /* covered */ }
                 AddressCmd::List { change } => {
                     let target_keychain = match change {
-                        true => Keychain::Internal,
+                        true => change_keychain,
                         false => Keychain::External,
                     };
                     for (index, spk) in tracker.script_pubkeys() {
@@ -265,6 +267,7 @@ fn main() -> anyhow::Result<()> {
                 .map(|(plan, utxo)| WeightedValue {
                     value: utxo.value,
                     weight: plan.expected_weight() as u32,
+                    is_segwit: plan.witness_version().is_some(),
                 })
                 .collect();
 
@@ -275,33 +278,27 @@ fn main() -> anyhow::Result<()> {
 
             let mut change_output = TxOut {
                 value: 0,
-                script_pubkey: tracker.derive_next_unused(Keychain::Internal).1.clone(),
+                script_pubkey: tracker.derive_next_unused(change_keychain).1.clone(),
             };
 
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs
             let mut coin_selector = CoinSelector::new(
                 wv_candidates,
-                CoinSelectorOpt::fund_outputs(&outputs, &change_output),
+                CoinSelectorOpt {
+                    target_feerate: 0.5,
+                    ..CoinSelectorOpt::fund_outputs(&outputs, &change_output)
+                },
             );
 
             // just select coins in the order provided until we have enough
-            let selection = match coin_selector.select_until_finished() {
-                Some(selection) => selection,
-                None => {
-                    return Err(anyhow!(
-                        "Insufficient funds. Needed {} had {}",
-                        value,
-                        coin_selector.current_value()
-                    ))
-                }
-            };
+            let selection = coin_selector.select_until_finished()?;
 
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
-            if selection.use_change
-                && selection.excess >= tracker.descriptor(Keychain::Internal).dust_value()
+            if selection.use_drain
+                && selection.excess >= tracker.descriptor(change_keychain).dust_value()
             {
                 change_output.value = selection.excess;
                 // if the selection tells us to use change and the change value is sufficient we add it as an output
@@ -310,11 +307,16 @@ fn main() -> anyhow::Result<()> {
 
             let mut transaction = Transaction {
                 version: 0x02,
-                lock_time: LockTime::ZERO.into(),
+                lock_time: chain
+                    .latest_checkpoint()
+                    .and_then(|block_id| LockTime::from_height(block_id.height).ok())
+                    .unwrap_or(LockTime::ZERO)
+                    .into(),
                 input: selected_txos
                     .iter()
                     .map(|(_, utxo)| TxIn {
                         previous_output: utxo.outpoint,
+                        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                         ..Default::default()
                     })
                     .collect(),
@@ -329,10 +331,9 @@ fn main() -> anyhow::Result<()> {
 
             // first set tx values for plan so that we don't change them while signing
             for (i, (plan, _)) in selected_txos.iter().enumerate() {
-                plan.set_sequence(&mut transaction.input[i]);
-                // TODO: make sure plan requirements here don't conflict by asking all plans. We
-                // should actually do this when generating the plans so each plan doesn't require a
-                // contradictory use of locktime.
+                if let Some(sequence) = plan.required_sequence() {
+                    transaction.input[i].sequence = sequence
+                }
             }
 
             // create a short lived transaction
@@ -341,21 +342,20 @@ fn main() -> anyhow::Result<()> {
 
             for (i, (plan, _)) in selected_txos.iter().enumerate() {
                 let requirements = plan.requirements();
-                let mut auth_data = AuthData::default();
+                let mut auth_data = SatisfactionMaterial::default();
                 assert!(
                     !requirements.requires_hash_preimages(),
                     "can't have hash pre-images since we didn't provide any"
                 );
                 assert!(
-                    bdk_core::sign::sign_required_with_keymap(
-                        &requirements.signatures,
+                    requirements.signatures.sign_with_keymap(
                         i,
                         &keymap,
                         &sighash_prevouts,
                         None,
                         None,
-                        &mut auth_data,
                         &mut sighash_cache,
+                        &mut auth_data,
                         &secp,
                     )?,
                     "we should have signed with this input"

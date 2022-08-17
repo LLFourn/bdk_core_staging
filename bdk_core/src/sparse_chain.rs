@@ -1,10 +1,10 @@
 use core::ops::RangeBounds;
 
-use crate::{collections::*, Vec};
-use crate::{BlockId, BlockTime};
-use bitcoin::hashes::{Hash, HashEngine};
-use bitcoin::{hashes::sha256, BlockHash, OutPoint, Transaction};
-use bitcoin::{Script, TxOut, Txid};
+use crate::{collections::*, BlockId, BlockTime, Vec};
+use bitcoin::{
+    hashes::{sha256, Hash, HashEngine},
+    BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {

@@ -1,11 +1,10 @@
-use crate::collections::*;
-use crate::SpkTracker;
-use bitcoin::secp256k1::Secp256k1;
-use bitcoin::Script;
-use core::ops::Deref;
-use core::ops::DerefMut;
-use miniscript::Descriptor;
-use miniscript::DescriptorPublicKey;
+use crate::{collections::*, SpkTracker};
+use bitcoin::{secp256k1::Secp256k1, Script};
+use core::{
+    fmt::Debug,
+    ops::{Deref, DerefMut},
+};
+use miniscript::{Descriptor, DescriptorPublicKey};
 
 /// A convienient way of tracking script pubkeys associated with one or more descriptors together.
 ///
@@ -41,7 +40,7 @@ impl<K> DerefMut for KeychainTracker<K> {
     }
 }
 
-impl<K: Clone + Ord> KeychainTracker<K> {
+impl<K: Clone + Ord + Debug> KeychainTracker<K> {
     pub fn iter_keychains(
         &self,
         range: impl core::ops::RangeBounds<K>,
@@ -79,7 +78,7 @@ impl<K: Clone + Ord> KeychainTracker<K> {
         let descriptor = self
             .descriptors
             .get(&keychain)
-            .expect("no descriptor for keychain");
+            .expect(&format!("no descriptor for keychain {:?}", keychain));
         let secp = Secp256k1::verification_only();
         let end = match descriptor.has_wildcard() {
             false => 0,
@@ -112,7 +111,7 @@ impl<K: Clone + Ord> KeychainTracker<K> {
         let descriptor = self
             .descriptors
             .get(&keychain)
-            .expect("no descriptor for keychain");
+            .expect(&format!("no descriptor for keychain {:?}", keychain));
 
         let new_spk = descriptor
             .at_derivation_index(next_derivation_index as u32)
@@ -131,7 +130,12 @@ impl<K: Clone + Ord> KeychainTracker<K> {
     }
 
     pub fn derive_next_unused(&mut self, keychain: K) -> (u32, &Script) {
-        let need_new = self.inner.iter_unused().next().is_none();
+        let need_new = self
+            .inner
+            .iter_unused()
+            .filter(|((kc, _), _)| kc == &keychain)
+            .next()
+            .is_none();
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
             self.derive_new(keychain)
