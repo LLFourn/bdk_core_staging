@@ -4,7 +4,6 @@ use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::{AlternativeSparseChain, Delta, Filled, Negated, Vec};
 use crate::{FullTxOut, SparseChain};
 use bitcoin::{self, hashes::sha256, OutPoint, Script, Txid};
-use serde_crate::__private::de;
 
 /// A *script pubkey* tracker.
 ///
@@ -24,11 +23,11 @@ pub struct SpkTracker<C, I> {
     /// A reverse lookup from out script_pubkeys to derivation index
     spk_indexes: HashMap<Script, I>,
     /// A set of unused derivation indices.
-    unused: BTreeSet<I>,
+    pub(crate) unused: BTreeSet<I>,
     /// Index the Outpoints owned by this tracker to the index of script pubkey.
-    txouts: BTreeMap<OutPoint, I>,
+    pub(crate) txouts: BTreeMap<OutPoint, I>,
     /// A lookup from script pubkey derivation index to related outpoints
-    spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
+    pub(crate) spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
     /// A set of previous txid digests the tracker has seen.
     txid_digests_seen: HashSet<sha256::Hash>,
 
@@ -195,11 +194,56 @@ impl<I: Clone + Ord> SpkTracker<SparseChain, I> {
 }
 
 impl<I: Clone + Ord> SpkTracker<AlternativeSparseChain, I> {
+    /// Convenience method. Does the same as [Delta<Filled>]::apply_delta_to_spk_tracker.
     pub fn apply_delta(&mut self, delta: Delta<Filled>) {
         delta.apply_to_spk_tracker(self)
     }
 
+    /// Convenience method. Does the same as [Delta<Negated>]::apply_to_spk_tracker.
     pub fn apply_negated_delta(&mut self, delta: Delta<Negated>) {
         delta.apply_to_spk_tracker(self)
+    }
+
+    /// Iterate over unspent transactions outputs (i.e. UTXOs).
+    pub fn iter_unspent<'a>(
+        &'a self,
+        chain: &'a AlternativeSparseChain,
+    ) -> impl Iterator<Item = (I, OutPoint)> + '_ {
+        // TODO: index unspent txouts somewhow
+        self.iter_txout(chain)
+            .filter(|(_, outpoint)| chain.outspend(outpoint).is_none())
+    }
+
+    /// Convience method for retreiving  the same txouts [`iter_unspent`] gives and turning each outpoint into a `FullTxOut`
+    /// using data from `chain`.
+    ///
+    /// [`iter_unspent`]: Self::iter_unspent
+    pub fn iter_unspent_full<'a>(
+        &'a self,
+        chain: &'a AlternativeSparseChain,
+    ) -> impl Iterator<Item = (I, FullTxOut)> + 'a {
+        self.iter_txout_full(chain)
+            .filter(|(_, txout)| txout.spent_by.is_none())
+    }
+
+    /// Iterate over all the transaction outputs disovered by the tracker along with their
+    /// associated script index.
+    pub fn iter_txout_full<'a>(
+        &'a self,
+        chain: &'a AlternativeSparseChain,
+    ) -> impl DoubleEndedIterator<Item = (I, FullTxOut)> + 'a {
+        self.txouts.iter().filter_map(|(outpoint, spk_index)| {
+            Some((spk_index.clone(), chain.full_txout(outpoint)?))
+        })
+    }
+
+    pub fn iter_txout<'a>(
+        &'a self,
+        chain: &'a AlternativeSparseChain,
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + 'a {
+        self.txouts
+            .iter()
+            .filter(|(outpoint, _)| chain.get_tx(outpoint.txid).is_some())
+            .map(|(op, index)| (index.clone(), *op))
     }
 }

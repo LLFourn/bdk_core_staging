@@ -3,7 +3,7 @@ use std::{
     marker::PhantomData,
 };
 
-use bitcoin::{Transaction, Txid};
+use bitcoin::{OutPoint, Transaction, Txid};
 
 use super::*;
 
@@ -49,6 +49,18 @@ impl<S: DeltaState> Delta<S> {
             .iter()
             .filter_map(move |k| self.tx_values.get(&k.1).map(|tx| (*k, tx.clone())))
     }
+
+    pub fn iter_txouts(&self) -> impl Iterator<Item = (Txid, u32, TxOut)> + '_ {
+        self.tx_keys
+            .iter()
+            .filter_map(move |k| self.tx_values.get(&k.1))
+            .flat_map(|tx| {
+                tx.output
+                    .iter()
+                    .enumerate()
+                    .map(|(vout, txout)| (tx.txid(), vout as u32, txout.clone()))
+            })
+    }
 }
 
 impl Delta<Unfilled> {
@@ -83,7 +95,6 @@ impl Delta<Unfilled> {
 impl Delta<Filled> {
     /// Applies deltas to the given [SparseChain].
     ///
-    /// TODO: This can also be made to be appliable to [AvaliableCoins].
     // TODO: We can return an `AppliedToSparseChain` struct that records confirmed txs.
     pub fn apply_to_sparsechain(
         self,
@@ -131,13 +142,51 @@ impl Delta<Filled> {
         Ok(())
     }
 
-    pub fn apply_to_spk_tracker<I>(self, spk_tracker: &mut SpkTracker<AlternativeSparseChain, I>) {
-        todo!()
+    /// Applies the given delta to a [SpkTracker].
+    pub fn apply_to_spk_tracker<I: Clone + Ord>(
+        self,
+        spk_tracker: &mut SpkTracker<AlternativeSparseChain, I>,
+    ) {
+        self.iter_txouts().for_each(|(txid, vout, txout)| {
+            if let Some(index) = spk_tracker.index_of_spk(&txout.script_pubkey) {
+                let outpoint = OutPoint { txid, vout };
+                spk_tracker.txouts.insert(outpoint, index.clone());
+                spk_tracker
+                    .spk_txouts
+                    .entry(index.clone())
+                    .or_default()
+                    .insert(outpoint);
+                spk_tracker.unused.remove(&index);
+            }
+        })
     }
 }
 
 impl Delta<Negated> {
-    pub fn apply_to_spk_tracker<I>(self, spk_tracker: &mut SpkTracker<AlternativeSparseChain, I>) {
-        todo!()
+    /// Applies the given negated delta to [SpkTracker].
+    pub fn apply_to_spk_tracker<I: Clone + Ord>(
+        self,
+        spk_tracker: &mut SpkTracker<AlternativeSparseChain, I>,
+    ) {
+        self.iter_txouts().for_each(|(txid, vout, txout)| {
+            if let Some(index) = spk_tracker.index_of_spk(&txout.script_pubkey) {
+                let outpoint = OutPoint { txid, vout };
+
+                if spk_tracker.txouts.remove(&outpoint).is_some() {
+                    let empty = {
+                        let spk_txouts = spk_tracker
+                            .spk_txouts
+                            .get_mut(&index)
+                            .expect("inconsistent");
+                        spk_txouts.remove(&outpoint);
+                        spk_txouts.is_empty()
+                    };
+
+                    if empty {
+                        spk_tracker.spk_txouts.remove(&index);
+                    }
+                }
+            }
+        })
     }
 }
