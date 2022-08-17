@@ -7,7 +7,7 @@ use checkpoint_gen::{CheckpointGen, ISpec, OSpec, TxSpec};
 fn no_checkpoint_and_then_confirm() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
-    let mut tracker = KeychainTracker::default();
+    let mut tracker = KeychainTracker::<SparseChain, _>::default();
     tracker.add_keychain((), checkpoint_gen.descriptor.clone());
     tracker.derive_spks((), 0);
 
@@ -61,7 +61,7 @@ fn no_checkpoint_and_then_confirm() {
 fn orphaned_txout_no_longer_appears() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
-    let mut tracker = KeychainTracker::default();
+    let mut tracker = KeychainTracker::<SparseChain, _>::default();
     tracker.add_keychain((), checkpoint_gen.descriptor.clone());
     tracker.derive_spks((), 2);
 
@@ -107,7 +107,7 @@ fn orphaned_txout_no_longer_appears() {
 fn output_spend_and_created_in_same_checkpoint() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
-    let mut tracker = KeychainTracker::default();
+    let mut tracker = KeychainTracker::<SparseChain, _>::default();
     tracker.add_keychain((), checkpoint_gen.descriptor.clone());
     tracker.derive_spks((), 2);
 
@@ -152,7 +152,7 @@ fn output_spend_and_created_in_same_checkpoint() {
 fn spend_unspent_in_reorg() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
-    let mut tracker = KeychainTracker::default();
+    let mut tracker = KeychainTracker::<SparseChain, _>::default();
     tracker.add_keychain((), checkpoint_gen.descriptor.clone());
     tracker.derive_spks((), 2);
 

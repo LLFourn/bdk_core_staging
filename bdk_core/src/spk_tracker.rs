@@ -1,3 +1,5 @@
+use core::marker::PhantomData;
+
 use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::Vec;
 use crate::{FullTxOut, SparseChain};
@@ -15,7 +17,7 @@ use bitcoin::{self, hashes::sha256, OutPoint, Script, Txid};
 // digests that we've seen and only apply the transactions between where we found that digest and
 // the tip of the chain.
 #[derive(Clone, Debug)]
-pub struct SpkTracker<I> {
+pub struct SpkTracker<C, I> {
     /// Derived script_pubkeys ordered by derivation index.
     script_pubkeys: BTreeMap<I, Script>,
     /// A reverse lookup from out script_pubkeys to derivation index
@@ -28,9 +30,11 @@ pub struct SpkTracker<I> {
     spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
     /// A set of previous txid digests the tracker has seen.
     txid_digests_seen: HashSet<sha256::Hash>,
+
+    marker: PhantomData<C>,
 }
 
-impl<I> Default for SpkTracker<I> {
+impl<C, I> Default for SpkTracker<C, I> {
     fn default() -> Self {
         Self {
             txouts: Default::default(),
@@ -39,11 +43,68 @@ impl<I> Default for SpkTracker<I> {
             spk_txouts: Default::default(),
             unused: Default::default(),
             txid_digests_seen: Default::default(),
+            marker: Default::default(),
         }
     }
 }
 
-impl<I: Clone + Ord> SpkTracker<I> {
+impl<C, I: Clone + Ord> SpkTracker<C, I> {
+    /// Returns the index of the script pubkey at `outpoint`.
+    ///
+    /// This returns `Some(spk_index)` if the txout has been found with a script pubkey in the tracker.
+    pub fn index_of_txout(&self, outpoint: OutPoint) -> Option<I> {
+        self.txouts.get(&outpoint).cloned()
+    }
+
+    /// Returns the script that has been derived at the index.
+    ///
+    /// If that index hasn't been derived yet it will return `None`.
+    pub fn spk_at_index(&self, index: I) -> Option<&Script> {
+        self.script_pubkeys.get(&index)
+    }
+
+    /// Iterate over the script pubkeys that have been derived already
+    pub fn script_pubkeys(&self) -> &BTreeMap<I, Script> {
+        &self.script_pubkeys
+    }
+
+    /// Adds a script pubkey to the tracker.
+    ///
+    /// The tracker will look for transactions spending to/from this script pubkey on all checkpoints
+    /// that are subsequently added.
+    pub fn add_spk(&mut self, index: I, spk: Script) {
+        self.spk_indexes.insert(spk.clone(), index.clone());
+        self.script_pubkeys.insert(index.clone(), spk);
+        self.unused.insert(index);
+    }
+
+    /// Iterate over the script pubkeys that have been derived but do not have a transaction spending to them.
+    pub fn iter_unused(&self) -> impl Iterator<Item = (I, &Script)> {
+        self.unused.iter().map(|index| {
+            (
+                index.clone(),
+                self.spk_at_index(index.clone()).expect("must exist"),
+            )
+        })
+    }
+
+    /// Returns whether the script pubkey at index `index` has been used or not.
+    ///
+    /// i.e. has a transaction which spends to it.
+    pub fn is_used(&self, index: I) -> bool {
+        self.spk_txouts
+            .get(&index)
+            .map(|set| !set.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Returns the index associated with the script pubkey.
+    pub fn index_of_spk(&self, script: &Script) -> Option<I> {
+        self.spk_indexes.get(script).cloned()
+    }
+}
+
+impl<I: Clone + Ord> SpkTracker<SparseChain, I> {
     pub fn sync(&mut self, chain: &SparseChain) {
         // by reverse iterating the checkpoints and collecting the transactions until we find a
         // checkpoint with a txid digest we've seen we avoid having to apply *all* the transactions
@@ -129,59 +190,5 @@ impl<I: Clone + Ord> SpkTracker<I> {
             .iter()
             .filter(|(outpoint, _)| chain.get_tx(outpoint.txid).is_some())
             .map(|(op, index)| (index.clone(), *op))
-    }
-
-    /// Returns the index of the script pubkey at `outpoint`.
-    ///
-    /// This returns `Some(spk_index)` if the txout has been found with a script pubkey in the tracker.
-    pub fn index_of_txout(&self, outpoint: OutPoint) -> Option<I> {
-        self.txouts.get(&outpoint).cloned()
-    }
-
-    /// Returns the script that has been derived at the index.
-    ///
-    /// If that index hasn't been derived yet it will return `None`.
-    pub fn spk_at_index(&self, index: I) -> Option<&Script> {
-        self.script_pubkeys.get(&index)
-    }
-
-    /// Iterate over the script pubkeys that have been derived already
-    pub fn script_pubkeys(&self) -> &BTreeMap<I, Script> {
-        &self.script_pubkeys
-    }
-
-    /// Adds a script pubkey to the tracker.
-    ///
-    /// The tracker will look for transactions spending to/from this script pubkey on all checkpoints
-    /// that are subsequently added.
-    pub fn add_spk(&mut self, index: I, spk: Script) {
-        self.spk_indexes.insert(spk.clone(), index.clone());
-        self.script_pubkeys.insert(index.clone(), spk);
-        self.unused.insert(index);
-    }
-
-    /// Iterate over the script pubkeys that have been derived but do not have a transaction spending to them.
-    pub fn iter_unused(&self) -> impl Iterator<Item = (I, &Script)> {
-        self.unused.iter().map(|index| {
-            (
-                index.clone(),
-                self.spk_at_index(index.clone()).expect("must exist"),
-            )
-        })
-    }
-
-    /// Returns whether the script pubkey at index `index` has been used or not.
-    ///
-    /// i.e. has a transaction which spends to it.
-    pub fn is_used(&self, index: I) -> bool {
-        self.spk_txouts
-            .get(&index)
-            .map(|set| !set.is_empty())
-            .unwrap_or(false)
-    }
-
-    /// Returns the index associated with the script pubkey.
-    pub fn index_of_spk(&self, script: &Script) -> Option<I> {
-        self.spk_indexes.get(script).cloned()
     }
 }

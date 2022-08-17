@@ -21,12 +21,12 @@ use miniscript::DescriptorPublicKey;
 ///
 /// [`SpkTracker`]: crate::SpkTracker
 #[derive(Clone, Debug)]
-pub struct KeychainTracker<K> {
-    inner: SpkTracker<(K, u32)>,
+pub struct KeychainTracker<C, K> {
+    inner: SpkTracker<C, (K, u32)>,
     descriptors: BTreeMap<K, Descriptor<DescriptorPublicKey>>,
 }
 
-impl<K> Default for KeychainTracker<K> {
+impl<C, K> Default for KeychainTracker<C, K> {
     fn default() -> Self {
         Self {
             inner: SpkTracker::default(),
@@ -35,21 +35,21 @@ impl<K> Default for KeychainTracker<K> {
     }
 }
 
-impl<K> Deref for KeychainTracker<K> {
-    type Target = SpkTracker<(K, u32)>;
+impl<C, K> Deref for KeychainTracker<C, K> {
+    type Target = SpkTracker<C, (K, u32)>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl<K> DerefMut for KeychainTracker<K> {
+impl<C, K> DerefMut for KeychainTracker<C, K> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
 }
 
-impl<K: Clone + Ord> KeychainTracker<K> {
+impl<C, K: Clone + Ord> KeychainTracker<C, K> {
     pub fn iter_keychains(
         &self,
         range: impl core::ops::RangeBounds<K>,
@@ -152,7 +152,9 @@ impl<K: Clone + Ord> KeychainTracker<K> {
                 .unwrap()
         }
     }
+}
 
+impl<K: Clone + Ord> KeychainTracker<SparseChain, K> {
     pub fn create_psbt(
         &self,
         inputs: impl IntoIterator<Item = OutPoint>,
