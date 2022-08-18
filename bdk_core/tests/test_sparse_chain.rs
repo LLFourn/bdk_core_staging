@@ -209,7 +209,7 @@ fn adding_checkpoint_where_new_tip_is_base_tip_is_fine() {
 }
 
 #[test]
-fn adding_checkpoint_which_contains_nothing_new_doesnt_create_new_checkpoint() {
+fn adding_checkpoint_which_contains_nothing_new_should_create_single_empty_checkpoint() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
 
@@ -230,6 +230,16 @@ fn adding_checkpoint_which_contains_nothing_new_doesnt_create_new_checkpoint() {
     };
     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
     assert_eq!(chain.iter_checkpoints(..).count(), 2);
+
+    update.base_tip = Some(update.new_tip);
+    update.new_tip = BlockId {
+        height: 2,
+        ..Default::default()
+    };
+    assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
+    assert_eq!(chain.iter_checkpoints(..).count(), 2);
+    assert_eq!(chain.iter_checkpoints(..).next().unwrap().height, 0);
+    assert_eq!(chain.iter_checkpoints(..).last().unwrap().height, 2);
 }
 
 #[test]
