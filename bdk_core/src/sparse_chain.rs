@@ -185,6 +185,45 @@ impl SparseChain {
         })
     }
 
+    /// Apply transactions that are all confirmed in a given block
+    pub fn apply_block_txs(
+        &mut self,
+        block_id: BlockId,
+        block_timestamp: u64,
+        transactions: impl IntoIterator<Item = Transaction>,
+    ) -> ApplyResult {
+        let mut checkpoint = CheckpointCandidate {
+            transactions: transactions
+                .into_iter()
+                .map(|tx| TxAtBlock {
+                    tx,
+                    confirmation_time: Some(BlockTime {
+                        height: block_id.height,
+                        time: block_timestamp,
+                    }),
+                })
+                .collect(),
+            base_tip: self.latest_checkpoint(),
+            invalidate: None,
+            new_tip: block_id,
+        };
+        if let Some(matching_checkpoint) = self.checkpoint_at(block_id.height) {
+            if matching_checkpoint.hash != block_id.hash {
+                checkpoint.invalidate = Some(matching_checkpoint);
+                checkpoint.base_tip =
+                    self.checkpoints
+                        .range(..block_id.height)
+                        .last()
+                        .map(|(height, data)| BlockId {
+                            height: *height,
+                            hash: data.block_hash,
+                        })
+            }
+        }
+
+        self.apply_checkpoint(checkpoint)
+    }
+
     /// Applies a new candidate checkpoint to the tracker.
     #[must_use]
     pub fn apply_checkpoint(&mut self, mut new_checkpoint: CheckpointCandidate) -> ApplyResult {
@@ -262,6 +301,13 @@ impl SparseChain {
             }
         }
 
+        // If the current tip is empty (i.e. just tracking lastest height) we can just remove it.
+        if let Some(latest_checkpoint) = self.latest_checkpoint() {
+            if self.checkpoint_txids(latest_checkpoint).next().is_none() {
+                self.checkpoints.remove(&latest_checkpoint.height);
+            }
+        }
+
         self.checkpoints
             .entry(new_checkpoint.new_tip.height)
             .or_insert_with(|| CheckpointData {
@@ -275,19 +321,6 @@ impl SparseChain {
                 deepest_change = Some(deepest_change.unwrap_or(u32::MAX).min(change));
             }
         }
-
-        // If no new transactions were added in new_tip, remove it.
-        if self
-            .checkpoints
-            .values()
-            .last()
-            .unwrap()
-            .ordered_txids
-            .is_empty()
-        {
-            self.checkpoints.remove(&new_checkpoint.new_tip.height);
-        }
-
         if let Some(change_depth) = deepest_change {
             self.recompute_txid_digests(change_depth);
         }
@@ -403,15 +436,13 @@ impl SparseChain {
     }
 
     /// Reverse everything of the Block with given hash and height.
-    pub fn disconnect_block(&mut self, block_height: u32, block_hash: BlockHash) {
-        // Can't guarantee that mempool is consistent with chain after we disconnect a block so we
-        // clear it.
-        // TODO: it would be nice if we could only delete those transactions that are
-        // inconsistent by recording the latest block they were included in.
-        self.clear_mempool();
-        if let Some(checkpoint_data) = self.checkpoints.get(&block_height) {
-            if checkpoint_data.block_hash == block_hash {
-                self.invalidate_checkpoint(block_height);
+    pub fn disconnect_block(&mut self, block_id: BlockId) {
+        if let Some(checkpoint_data) = self.checkpoints.get(&block_id.height) {
+            if checkpoint_data.block_hash == block_id.hash {
+                // Can't guarantee that mempool is consistent with chain after we disconnect a block so we
+                // clear it.
+                self.clear_mempool();
+                self.invalidate_checkpoint(block_id.height);
             }
         }
     }
@@ -474,6 +505,9 @@ impl SparseChain {
         }
 
         for input in tx.input.iter() {
+            if input.previous_output.is_null() {
+                continue;
+            }
             let removed = self.spends.insert(input.previous_output, txid);
             debug_assert_eq!(
                 removed, None,

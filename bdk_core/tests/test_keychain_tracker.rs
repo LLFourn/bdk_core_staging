@@ -4,7 +4,7 @@ use bitcoin::OutPoint;
 use checkpoint_gen::{CheckpointGen, ISpec, OSpec, TxSpec};
 
 #[test]
-fn no_checkpoint_and_then_confirm() {
+fn add_single_unconfirmed_tx_and_then_confirm_it() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
     let mut tracker = KeychainTracker::default();
@@ -22,11 +22,15 @@ fn no_checkpoint_and_then_confirm() {
 
     assert_eq!(chain.apply_checkpoint(checkpoint.clone()), ApplyResult::Ok);
 
+    assert_eq!(chain.iter_checkpoints(..).count(), 1);
     assert_eq!(
-        chain.iter_checkpoints(..).count(),
+        chain
+            .checkpoint_txids(chain.latest_checkpoint().unwrap())
+            .count(),
         0,
-        "adding tx to mempool doesn't create checkpoint"
+        "the checkpoint should be empty because tx is not confirmed"
     );
+
     assert_eq!(chain.iter_tx().count(), 1);
     tracker.sync(&chain);
 
@@ -45,7 +49,12 @@ fn no_checkpoint_and_then_confirm() {
     checkpoint.new_tip.height += 1;
 
     assert_eq!(chain.apply_checkpoint(checkpoint), ApplyResult::Ok);
+
     {
+        assert_eq!(
+            chain.iter_checkpoints(..).count(), 1,
+            "should only be one since the previous empty one should have been removed in favor of this one");
+        assert_eq!(chain.latest_checkpoint().unwrap().height, 1);
         let txouts = tracker.iter_txout_full(&chain).collect::<Vec<_>>();
         let unspent = tracker.iter_unspent_full(&chain).collect::<Vec<_>>();
         assert_eq!(txouts.len(), 1);

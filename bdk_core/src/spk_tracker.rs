@@ -1,6 +1,7 @@
 use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::Vec;
 use crate::{FullTxOut, SparseChain};
+use bitcoin::Transaction;
 use bitcoin::{self, hashes::sha256, OutPoint, Script, Txid};
 
 /// A *script pubkey* tracker.
@@ -183,5 +184,21 @@ impl<I: Clone + Ord> SpkTracker<I> {
     /// Returns the index associated with the script pubkey.
     pub fn index_of_spk(&self, script: &Script) -> Option<I> {
         self.spk_indexes.get(script).cloned()
+    }
+
+    /// Whether any of the inputs of this transaction spend a txout tracked or whether any output
+    /// matches one of our script pubkeys.
+    pub fn is_relevant(&self, tx: &Transaction) -> bool {
+        let input_matches = tx
+            .input
+            .iter()
+            .find(|input| self.index_of_txout(input.previous_output).is_some())
+            .is_some();
+        let output_matches = tx
+            .output
+            .iter()
+            .find(|output| self.index_of_spk(&output.script_pubkey).is_some())
+            .is_some();
+        input_matches || output_matches
     }
 }

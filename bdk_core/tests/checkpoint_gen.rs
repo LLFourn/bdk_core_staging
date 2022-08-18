@@ -34,7 +34,7 @@ impl CheckpointGen {
     pub fn new() -> Self {
         Self {
             vout_counter: 0,
-            prev_tip: None,
+            prev_tip: Some(BlockId::default()),
             descriptor: DESCRIPTOR.parse().unwrap(),
         }
     }
