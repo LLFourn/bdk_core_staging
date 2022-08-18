@@ -185,12 +185,12 @@ impl SparseChain {
         })
     }
 
-    /// Apply a given block of transactions
+    /// Apply transactions that are all confirmed in a given block
     pub fn apply_block_txs(
         &mut self,
         block_id: BlockId,
-        time: u64,
-        transactions: Vec<Transaction>,
+        block_timestamp: u64,
+        transactions: impl IntoIterator<Item = Transaction>,
     ) -> ApplyResult {
         let mut checkpoint = CheckpointCandidate {
             transactions: transactions
@@ -199,7 +199,7 @@ impl SparseChain {
                     tx,
                     confirmation_time: Some(BlockTime {
                         height: block_id.height,
-                        time,
+                        time: block_timestamp,
                     }),
                 })
                 .collect(),
