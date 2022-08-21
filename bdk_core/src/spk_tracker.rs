@@ -1,8 +1,8 @@
-use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use crate::Vec;
-use crate::{FullTxOut, SparseChain};
-use bitcoin::Transaction;
-use bitcoin::{self, hashes::sha256, OutPoint, Script, Txid};
+use crate::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    FullTxOut, SparseChain, Vec,
+};
+use bitcoin::{self, hashes::sha256, OutPoint, Script, Transaction, Txid};
 
 /// A *script pubkey* tracker.
 ///

@@ -1,8 +1,7 @@
-use bitcoin::{Transaction, TxOut};
-
 use crate::{collections::BTreeSet, Vec};
+use bitcoin::{LockTime, Transaction, TxOut};
 
-const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4 + 1) * 4;
+const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
 #[derive(Debug, Clone)]
 pub struct CoinSelector {
@@ -15,6 +14,7 @@ pub struct CoinSelector {
 pub struct WeightedValue {
     pub value: u64,
     pub weight: u32,
+    pub is_segwit: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -46,22 +46,22 @@ impl CoinSelectorOpt {
         }
     }
 
-    pub fn fund_outputs(txouts: &[TxOut], change_output: &TxOut) -> Self {
+    pub fn fund_outputs(txouts: &[TxOut], drain_output: &TxOut) -> Self {
         let mut tx = Transaction {
             input: vec![],
             version: 1,
-            lock_time: 0,
+            lock_time: LockTime::ZERO.into(),
             output: txouts.to_vec(),
         };
         let base_weight = tx.weight();
-        // this awkward aglorithm is necessary since TxOut doesn't have \.weight()
-        let change_weight = {
-            tx.output.push(change_output.clone());
+        // this awkward calculation is necessary since TxOut doesn't have \.weight()
+        let drain_weight = {
+            tx.output.push(drain_output.clone());
             tx.weight() - base_weight
         };
         Self {
             target_value: txouts.iter().map(|txout| txout.value).sum(),
-            ..Self::from_weights(base_weight as u32, change_weight as u32)
+            ..Self::from_weights(base_weight as u32, drain_weight as u32)
         }
     }
 }
@@ -85,11 +85,17 @@ impl CoinSelector {
     }
 
     pub fn current_weight(&self) -> u32 {
+        let witness_header_extra_weight = self
+            .selected()
+            .find(|(_, wv)| wv.is_segwit)
+            .map(|_| 2)
+            .unwrap_or(0);
         self.opts.base_weight
             + self
                 .selected()
                 .map(|(_, wv)| wv.weight + TXIN_BASE_WEIGHT)
                 .sum::<u32>()
+            + witness_header_extra_weight
     }
 
     pub fn selected(&self) -> impl Iterator<Item = (usize, WeightedValue)> + '_ {
@@ -107,16 +113,26 @@ impl CoinSelector {
         self.selected.len() == self.candidates.len()
     }
 
-    pub fn select_until_finished(&mut self) -> Option<Selection> {
-        let mut selection = None;
+    pub fn select_all(&mut self) {
+        for next_unselected in self.unselected() {
+            self.select(next_unselected)
+        }
+    }
+
+    pub fn select_until_finished(&mut self) -> Result<Selection, SelectionFailure> {
+        let mut selection = self.finish();
+
+        if selection.is_ok() {
+            return selection;
+        }
 
         for next_unselected in self.unselected() {
+            self.select(next_unselected);
             selection = self.finish();
 
-            if selection.is_some() {
+            if selection.is_ok() {
                 break;
             }
-            self.select(next_unselected)
         }
 
         selection
@@ -126,56 +142,70 @@ impl CoinSelector {
         self.opts.starting_input_value + self.selected().map(|(_, wv)| wv.value).sum::<u64>()
     }
 
-    pub fn finish(&self) -> Option<Selection> {
+    pub fn finish(&self) -> Result<Selection, SelectionFailure> {
         let base_weight = self.current_weight();
 
         if self.current_value() < self.opts.target_value {
-            return None;
+            return Err(SelectionFailure::InsufficientFunds {
+                selected: self.current_value(),
+                needed: self.opts.target_value,
+            });
         }
 
         let inputs_minus_outputs = self.current_value() - self.opts.target_value;
 
         // check fee rate satisfied
-        let feerate_without_change = inputs_minus_outputs as f32 / base_weight as f32;
+        let feerate_without_drain = inputs_minus_outputs as f32 / base_weight as f32;
 
         // we simply don't have enough fee to acheieve the feerate
-        if feerate_without_change < self.opts.target_feerate {
-            return None;
+        if feerate_without_drain < self.opts.target_feerate {
+            return Err(SelectionFailure::FeerateTooLow {
+                needed: self.opts.target_feerate,
+                had: feerate_without_drain,
+            });
         }
 
         if inputs_minus_outputs < self.opts.min_absolute_fee {
-            return None;
+            return Err(SelectionFailure::AbsoluteFeeTooLow {
+                needed: self.opts.min_absolute_fee,
+                had: inputs_minus_outputs,
+            });
         }
 
-        let weight_with_change = base_weight + self.opts.drain_weight;
-        let target_fee_with_change = ((self.opts.target_feerate * weight_with_change as f32).ceil()
+        let weight_with_drain = base_weight + self.opts.drain_weight;
+        let target_fee_with_drain = ((self.opts.target_feerate * weight_with_drain as f32).ceil()
             as u64)
             .max(self.opts.min_absolute_fee);
-        let target_fee_without_change = ((self.opts.target_feerate * base_weight as f32).ceil()
+        let target_fee_without_drain = ((self.opts.target_feerate * base_weight as f32).ceil()
             as u64)
             .max(self.opts.min_absolute_fee);
 
-        let (excess, use_change) = match inputs_minus_outputs.checked_sub(target_fee_with_change) {
+        let (excess, use_drain) = match inputs_minus_outputs.checked_sub(target_fee_with_drain) {
             Some(excess) => (excess, true),
             None => {
-                let implied_output_value = self.current_value() - target_fee_without_change;
+                let implied_output_value = self.current_value() - target_fee_without_drain;
                 match implied_output_value.checked_sub(self.opts.target_value) {
                     Some(excess) => (excess, false),
-                    None => return None,
+                    None => {
+                        return Err(SelectionFailure::InsufficientFunds {
+                            selected: self.current_value(),
+                            needed: target_fee_without_drain + self.opts.target_value,
+                        })
+                    }
                 }
             }
         };
 
-        let (total_weight, fee) = if use_change {
-            (weight_with_change, target_fee_with_change)
+        let (total_weight, fee) = if use_drain {
+            (weight_with_drain, target_fee_with_drain)
         } else {
-            (base_weight, target_fee_without_change)
+            (base_weight, target_fee_without_drain)
         };
 
-        Some(Selection {
+        Ok(Selection {
             selected: self.selected.clone(),
             excess,
-            use_change,
+            use_drain,
             total_weight,
             fee,
         })
@@ -183,11 +213,39 @@ impl CoinSelector {
 }
 
 #[derive(Clone, Debug)]
+pub enum SelectionFailure {
+    InsufficientFunds { selected: u64, needed: u64 },
+    FeerateTooLow { needed: f32, had: f32 },
+    AbsoluteFeeTooLow { needed: u64, had: u64 },
+}
+
+impl core::fmt::Display for SelectionFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            SelectionFailure::InsufficientFunds { selected, needed } => write!(
+                f,
+                "insufficient coins selected, had {} needed {}",
+                selected, needed
+            ),
+            SelectionFailure::FeerateTooLow { needed, had } => {
+                write!(f, "feerate too low, needed {}, had {}", needed, had)
+            }
+            SelectionFailure::AbsoluteFeeTooLow { needed, had } => {
+                write!(f, "absolute fee too low, needed {}, had {}", needed, had)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SelectionFailure {}
+
+#[derive(Clone, Debug)]
 pub struct Selection {
     pub selected: BTreeSet<usize>,
     pub excess: u64,
     pub fee: u64,
-    pub use_change: bool,
+    pub use_drain: bool,
     pub total_weight: u32,
 }
 

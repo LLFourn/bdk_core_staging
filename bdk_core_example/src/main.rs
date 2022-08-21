@@ -1,24 +1,18 @@
 use anyhow::{anyhow, Context};
-use bdk_core::bitcoin::consensus;
-use bdk_core::bitcoin::hashes::hex::ToHex;
-use bdk_core::bitcoin::secp256k1::Secp256k1;
-use bdk_core::bitcoin::util::sighash::SighashCache;
-use bdk_core::bitcoin::Address;
-use bdk_core::bitcoin::Network;
-use bdk_core::bitcoin::TxIn;
-use bdk_core::bitcoin::TxOut;
-use bdk_core::coin_select::WeightedValue;
-use bdk_core::coin_select::{CoinSelector, CoinSelectorOpt};
-use bdk_core::miniscript::psbt::PsbtInputSatisfier;
-use bdk_core::miniscript::Descriptor;
-use bdk_core::miniscript::DescriptorPublicKey;
-use bdk_core::ApplyResult;
-use bdk_core::DescriptorExt;
-use bdk_core::KeychainTracker;
-use bdk_core::SparseChain;
+use bdk_core::{
+    bitcoin::{
+        consensus,
+        hashes::hex::ToHex,
+        secp256k1::Secp256k1,
+        util::sighash::{Prevouts, SighashCache},
+        Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
+    },
+    coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue},
+    miniscript::{Descriptor, DescriptorPublicKey},
+    ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
+};
 use bdk_esplora::ureq::{ureq, Client};
-use clap::Parser;
-use clap::Subcommand;
+use clap::{Parser, Subcommand};
 use std::cmp::Reverse;
 
 #[derive(Parser)]
@@ -142,10 +136,13 @@ fn main() -> anyhow::Result<()> {
         .map(|descriptor| Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &descriptor))
         .transpose()?;
 
-    if let Some((internal_descriptor, internal_keymap)) = internal {
+    let change_keychain = if let Some((internal_descriptor, internal_keymap)) = internal {
         keymap.extend(internal_keymap);
         tracker.add_keychain(Keychain::Internal, internal_descriptor);
-    }
+        Keychain::Internal
+    } else {
+        Keychain::External
+    };
 
     let esplora_url = match args.network {
         Network::Bitcoin => "https://mempool.space/api",
@@ -178,7 +175,7 @@ fn main() -> anyhow::Result<()> {
                 AddressCmd::Next | AddressCmd::New => { /* covered */ }
                 AddressCmd::List { change } => {
                     let target_keychain = match change {
-                        true => Keychain::Internal,
+                        true => change_keychain,
                         false => Keychain::External,
                     };
                     for (index, spk) in tracker.script_pubkeys() {
@@ -224,7 +221,24 @@ fn main() -> anyhow::Result<()> {
             address,
             coin_select,
         } => {
-            let mut candidates = tracker.iter_unspent_full(&chain).collect::<Vec<_>>();
+            use bdk_core::miniscript::plan::*;
+            let assets = Assets {
+                keys: keymap.iter().map(|(pk, _)| pk.clone()).collect(),
+                ..Default::default()
+            };
+
+            let mut candidates = tracker
+                .iter_unspent_full(&chain)
+                .filter_map(|((keychain, index), utxo)| {
+                    Some((
+                        tracker
+                            .descriptor(keychain)
+                            .at_derivation_index(index)
+                            .plan_satisfaction(&assets)?,
+                        utxo,
+                    ))
+                })
+                .collect::<Vec<_>>();
 
             // apply coin selection algorithm
             match coin_select {
@@ -250,12 +264,10 @@ fn main() -> anyhow::Result<()> {
             // turn the txos we chose into a weight and value
             let wv_candidates = candidates
                 .iter()
-                .map(|(spk_index, utxo)| WeightedValue {
+                .map(|(plan, utxo)| WeightedValue {
                     value: utxo.value,
-                    weight: tracker
-                        .descriptor(spk_index.0)
-                        .max_satisfaction_weight()
-                        .unwrap() as u32,
+                    weight: plan.expected_weight() as u32,
+                    is_segwit: plan.witness_version().is_some(),
                 })
                 .collect();
 
@@ -266,106 +278,119 @@ fn main() -> anyhow::Result<()> {
 
             let mut change_output = TxOut {
                 value: 0,
-                script_pubkey: tracker.derive_next_unused(Keychain::Internal).1.clone(),
+                script_pubkey: tracker.derive_next_unused(change_keychain).1.clone(),
             };
 
+            // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs
             let mut coin_selector = CoinSelector::new(
                 wv_candidates,
-                CoinSelectorOpt::fund_outputs(&outputs, &change_output),
+                CoinSelectorOpt {
+                    target_feerate: 0.5,
+                    ..CoinSelectorOpt::fund_outputs(&outputs, &change_output)
+                },
             );
 
             // just select coins in the order provided until we have enough
-            let selection = match coin_selector.select_until_finished() {
-                Some(selection) => selection,
-                None => {
-                    return Err(anyhow!(
-                        "Insufficient funds. Needed {} had {}",
-                        value,
-                        coin_selector.current_value()
-                    ))
-                }
-            };
+            let selection = coin_selector.select_until_finished()?;
 
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
-            if selection.use_change
-                && selection.excess >= tracker.descriptor(Keychain::Internal).dust_value()
+            if selection.use_drain
+                && selection.excess >= tracker.descriptor(change_keychain).dust_value()
             {
                 change_output.value = selection.excess;
                 // if the selection tells us to use change and the change value is sufficient we add it as an output
                 outputs.push(change_output)
             }
 
-            // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
+            let mut transaction = Transaction {
+                version: 0x02,
+                lock_time: chain
+                    .latest_checkpoint()
+                    .and_then(|block_id| LockTime::from_height(block_id.height).ok())
+                    .unwrap_or(LockTime::ZERO)
+                    .into(),
+                input: selected_txos
+                    .iter()
+                    .map(|(_, utxo)| TxIn {
+                        previous_output: utxo.outpoint,
+                        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                        ..Default::default()
+                    })
+                    .collect(),
+                output: outputs,
+            };
 
-            // With the selected utxos and outputs create our PSBT and return the descriptor for the
-            // spk of each selected input. We will need the descriptors to build the witness
-            // properly with ".satisfy".
-            let (mut psbt, definite_descriptors) = tracker.create_psbt(
-                selected_txos.iter().map(|(_, txo)| txo.outpoint),
-                outputs,
-                &chain,
-            );
+            let prevouts = selected_txos
+                .iter()
+                .map(|(_, utxo)| TxOut::from(utxo.clone()))
+                .collect::<Vec<_>>();
+            let sighash_prevouts = Prevouts::All(&prevouts);
 
-            let cache_tx = psbt.unsigned_tx.clone();
-            let mut sighash_cache = SighashCache::new(&cache_tx);
+            // first set tx values for plan so that we don't change them while signing
+            for (i, (plan, _)) in selected_txos.iter().enumerate() {
+                if let Some(sequence) = plan.required_sequence() {
+                    transaction.input[i].sequence = sequence
+                }
+            }
 
-            // Go through the selected inputs and try and sign them with the secret keys we got out
-            // of the descriptor.
-            //
-            // TODO: It would be great to be able to make this easier.
-            // I think the solution lies in integrating the "policy" module of existing bdk.
-            for (input_index, (spk_index, selected_txo)) in selected_txos.iter().enumerate() {
-                if let Some(definite_descriptor) = definite_descriptors.get(&input_index) {
-                    eprintln!(
-                        "signing input {} derived at {:?}",
-                        selected_txo.outpoint, spk_index
-                    );
-                    for (pk, sk) in &keymap {
-                        let signed = bdk_core::sign::sign_with_descriptor_sk(
-                            sk,
-                            &mut psbt,
-                            &mut sighash_cache,
-                            input_index,
-                            &secp,
-                        )?;
-                        if !signed {
-                            eprintln!("the secret key for {} failed to sign anything (maybe we haven't implmented that kind of signing yet)", pk);
+            // create a short lived transaction
+            let _sighash_tx = transaction.clone();
+            let mut sighash_cache = SighashCache::new(&_sighash_tx);
+
+            for (i, (plan, _)) in selected_txos.iter().enumerate() {
+                let requirements = plan.requirements();
+                let mut auth_data = SatisfactionMaterial::default();
+                assert!(
+                    !requirements.requires_hash_preimages(),
+                    "can't have hash pre-images since we didn't provide any"
+                );
+                assert!(
+                    requirements.signatures.sign_with_keymap(
+                        i,
+                        &keymap,
+                        &sighash_prevouts,
+                        None,
+                        None,
+                        &mut sighash_cache,
+                        &mut auth_data,
+                        &secp,
+                    )?,
+                    "we should have signed with this input"
+                );
+
+                match plan.try_complete(&auth_data) {
+                    PlanState::Complete {
+                        final_script_sig,
+                        final_script_witness,
+                    } => {
+                        if let Some(witness) = final_script_witness {
+                            transaction.input[i].witness = witness;
+                        }
+
+                        if let Some(script_sig) = final_script_sig {
+                            transaction.input[i].script_sig = script_sig;
                         }
                     }
-                    let mut tmp_input = TxIn::default();
-                    // TODO: try to satisfy with time locks as well
-                    match definite_descriptor
-                        .satisfy(&mut tmp_input, PsbtInputSatisfier::new(&psbt, input_index))
-                    {
-                        Ok(_) => {
-                            let psbt_input = &mut psbt.inputs[input_index];
-                            psbt_input.final_script_sig = Some(tmp_input.script_sig);
-                            psbt_input.final_script_witness = Some(tmp_input.witness);
-                        }
-                        Err(e) => {
-                            return Err(anyhow!(
-                                "unable to satsify spending conditions of {}: {}",
-                                selected_txo.outpoint,
-                                e
-                            ))
-                        }
+                    PlanState::Incomplete(_) => {
+                        return Err(anyhow!(
+                            "we weren't able to complete the plan with our keys"
+                        ));
                     }
                 }
             }
 
-            let signed_tx = psbt.extract_tx();
             eprintln!("broadcasting transactions..");
             match client
-                .broadcast(&signed_tx)
+                .broadcast(&transaction)
                 .context("broadcasting transaction")
             {
-                Ok(_) => println!("{}", signed_tx.txid()),
+                Ok(_) => println!("{}", transaction.txid()),
                 Err(e) => eprintln!(
                     "Failed to broadcast transaction:\n{}\nError:{}",
-                    consensus::serialize(&signed_tx).to_hex(),
+                    consensus::serialize(&transaction).to_hex(),
                     e
                 ),
             }
