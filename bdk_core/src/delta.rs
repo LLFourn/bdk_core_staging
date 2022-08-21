@@ -162,6 +162,7 @@ impl Delta<Filled> {
     }
 }
 
+// TODO: This is not needed. `SpkTracker` is monotonic (it only grows).
 impl Delta<Negated> {
     /// Applies the given negated delta to [SpkTracker].
     pub fn apply_to_spk_tracker<I: Clone + Ord>(

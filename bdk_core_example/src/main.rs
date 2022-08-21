@@ -376,7 +376,7 @@ fn main() -> anyhow::Result<()> {
 
 pub fn fully_sync(
     client: &Client,
-    tracker: &mut KeychainTracker<Keychain>,
+    tracker: &mut KeychainTracker<SparseChain, Keychain>,
     chain: &mut SparseChain,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();

@@ -71,7 +71,7 @@ pub trait SparseChainPersister {
         T: Iterator<Item = (&'a (u32, Txid), &'a Transaction)>;
 }
 
-/// SparseChain implementation
+/// SparseChain implementation that is an alternative.
 pub struct AlternativeSparseChain {
     // relevant blocks which contain transactions we are interested in: <height: (block_hash, block_time)>
     pub(crate) blocks: BTreeMap<u32, PartialHeader>,
