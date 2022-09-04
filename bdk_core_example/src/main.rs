@@ -7,7 +7,7 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{CoinSelector, CoinSelectorOpt, WeightedCandidate},
+    coin_select::{CoinSelector, CoinSelectorOpt, WeightedCandidate, TXIN_BASE_WEIGHT},
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
 };
@@ -266,6 +266,7 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|(plan, utxo)| WeightedCandidate {
                     value: utxo.value,
+                    base_weight: TXIN_BASE_WEIGHT,
                     satisfaction_weight: plan.expected_weight() as u32,
                     is_segwit: plan.witness_version().is_some(),
                 })

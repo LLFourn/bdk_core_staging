@@ -1,7 +1,7 @@
 use crate::{collections::BTreeSet, Vec};
 use bitcoin::{LockTime, Transaction, TxOut};
 
-const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
+pub const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
 #[derive(Debug, Clone)]
 pub struct CoinSelector {
@@ -13,6 +13,8 @@ pub struct CoinSelector {
 #[derive(Debug, Clone, Copy)]
 pub struct WeightedCandidate {
     pub value: u64,
+    /// Typically set as [`TXIN_BASE_WEIGHT`] for a single Bitcoin input.
+    pub base_weight: u32,
     pub satisfaction_weight: u32,
     pub is_segwit: bool,
 }
