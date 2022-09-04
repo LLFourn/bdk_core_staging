@@ -5,44 +5,44 @@ const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
 #[derive(Debug, Clone)]
 pub struct CoinSelector {
-    candidates: Vec<WeightedValue>,
+    candidates: Vec<WeightedCandidate>,
     selected: BTreeSet<usize>,
     opts: CoinSelectorOpt,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct WeightedValue {
+pub struct WeightedCandidate {
     pub value: u64,
-    pub weight: u32,
+    pub satisfaction_weight: u32,
     pub is_segwit: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct CoinSelectorOpt {
-    /// The value we need to select.
+    /// The value we need to select (in satoshis).
     pub target_value: u64,
     /// The feerate we should try and achieve in sats per weight unit.
     pub target_feerate: f32,
-    /// The minimum absolute fee.
+    /// The minimum absolute fee (in satoshis).
     pub min_absolute_fee: u64,
-    /// The weight of the template transaction including fixed inputs and outputs.
-    pub base_weight: u32,
     /// The weight of the drain (change) output.
     pub drain_weight: u32,
-    /// The input value of the template transaction.
-    pub starting_input_value: u64,
+    /// The fixed weight of the template transaction including fixed inputs and outputs.
+    pub fixed_weight: u32,
+    /// The fixed input value of the template transaction.
+    pub fixed_input_value: u64,
 }
 
 impl CoinSelectorOpt {
-    pub fn from_weights(base_weight: u32, drain_weight: u32) -> Self {
+    pub fn from_weights(fixed_weight: u32, drain_weight: u32) -> Self {
         Self {
             target_value: 0,
             // 0.25 per wu i.e. 1 sat per byte
             target_feerate: 0.25,
             min_absolute_fee: 0,
-            base_weight,
             drain_weight,
-            starting_input_value: 0,
+            fixed_weight,
+            fixed_input_value: 0,
         }
     }
 
@@ -53,25 +53,25 @@ impl CoinSelectorOpt {
             lock_time: LockTime::ZERO.into(),
             output: txouts.to_vec(),
         };
-        let base_weight = tx.weight();
+        let fixed_weight = tx.weight();
         // this awkward calculation is necessary since TxOut doesn't have \.weight()
         let drain_weight = {
             tx.output.push(drain_output.clone());
-            tx.weight() - base_weight
+            tx.weight() - fixed_weight
         };
         Self {
             target_value: txouts.iter().map(|txout| txout.value).sum(),
-            ..Self::from_weights(base_weight as u32, drain_weight as u32)
+            ..Self::from_weights(fixed_weight as u32, drain_weight as u32)
         }
     }
 }
 
 impl CoinSelector {
-    pub fn candidates(&self) -> &[WeightedValue] {
+    pub fn candidates(&self) -> &[WeightedCandidate] {
         &self.candidates
     }
 
-    pub fn new(candidates: Vec<WeightedValue>, opts: CoinSelectorOpt) -> Self {
+    pub fn new(candidates: Vec<WeightedCandidate>, opts: CoinSelectorOpt) -> Self {
         Self {
             candidates,
             selected: Default::default(),
@@ -90,15 +90,15 @@ impl CoinSelector {
             .find(|(_, wv)| wv.is_segwit)
             .map(|_| 2)
             .unwrap_or(0);
-        self.opts.base_weight
+        self.opts.fixed_weight
             + self
                 .selected()
-                .map(|(_, wv)| wv.weight + TXIN_BASE_WEIGHT)
+                .map(|(_, wv)| wv.satisfaction_weight + TXIN_BASE_WEIGHT)
                 .sum::<u32>()
             + witness_header_extra_weight
     }
 
-    pub fn selected(&self) -> impl Iterator<Item = (usize, WeightedValue)> + '_ {
+    pub fn selected(&self) -> impl Iterator<Item = (usize, WeightedCandidate)> + '_ {
         self.selected
             .iter()
             .map(|index| (*index, self.candidates.get(*index).unwrap().clone()))
@@ -139,7 +139,7 @@ impl CoinSelector {
     }
 
     pub fn current_value(&self) -> u64 {
-        self.opts.starting_input_value + self.selected().map(|(_, wv)| wv.value).sum::<u64>()
+        self.opts.fixed_input_value + self.selected().map(|(_, wv)| wv.value).sum::<u64>()
     }
 
     pub fn finish(&self) -> Result<Selection, SelectionFailure> {
@@ -250,10 +250,7 @@ pub struct Selection {
 }
 
 impl Selection {
-    pub fn apply_selection<'a, T>(
-        &'a self,
-        candidates: &'a [T],
-    ) -> impl Iterator<Item = &'a T> + 'a {
+    pub fn iter_selected<'a, T>(&'a self, candidates: &'a [T]) -> impl Iterator<Item = &'a T> + 'a {
         self.selected.iter().map(|i| &candidates[*i])
     }
 }

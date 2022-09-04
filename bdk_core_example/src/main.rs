@@ -7,7 +7,7 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue},
+    coin_select::{CoinSelector, CoinSelectorOpt, WeightedCandidate},
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
 };
@@ -264,9 +264,9 @@ fn main() -> anyhow::Result<()> {
             // turn the txos we chose into a weight and value
             let wv_candidates = candidates
                 .iter()
-                .map(|(plan, utxo)| WeightedValue {
+                .map(|(plan, utxo)| WeightedCandidate {
                     value: utxo.value,
-                    weight: plan.expected_weight() as u32,
+                    satisfaction_weight: plan.expected_weight() as u32,
                     is_segwit: plan.witness_version().is_some(),
                 })
                 .collect();
@@ -295,7 +295,7 @@ fn main() -> anyhow::Result<()> {
             let selection = coin_selector.select_until_finished()?;
 
             // get the selected utxos
-            let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
+            let selected_txos = selection.iter_selected(&candidates).collect::<Vec<_>>();
 
             if selection.use_drain
                 && selection.excess >= tracker.descriptor(change_keychain).dust_value()
