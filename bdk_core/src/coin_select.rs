@@ -4,10 +4,10 @@ use bitcoin::{LockTime, Transaction, TxOut};
 pub const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
 #[derive(Debug, Clone)]
-pub struct CoinSelector {
+pub struct CoinSelector<'a> {
     candidates: Vec<WeightedCandidate>,
     selected: BTreeSet<usize>,
-    opts: CoinSelectorOpt,
+    opts: &'a CoinSelectorOpt,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -68,12 +68,12 @@ impl CoinSelectorOpt {
     }
 }
 
-impl CoinSelector {
+impl<'a> CoinSelector<'a> {
     pub fn candidates(&self) -> &[WeightedCandidate] {
         &self.candidates
     }
 
-    pub fn new(candidates: Vec<WeightedCandidate>, opts: CoinSelectorOpt) -> Self {
+    pub fn new(candidates: Vec<WeightedCandidate>, opts: &'a CoinSelectorOpt) -> Self {
         Self {
             candidates,
             selected: Default::default(),
@@ -100,10 +100,10 @@ impl CoinSelector {
             + witness_header_extra_weight
     }
 
-    pub fn selected(&self) -> impl Iterator<Item = (usize, WeightedCandidate)> + '_ {
+    pub fn selected(&self) -> impl Iterator<Item = (usize, &WeightedCandidate)> + '_ {
         self.selected
             .iter()
-            .map(|index| (*index, self.candidates.get(*index).unwrap().clone()))
+            .map(|&index| (index, self.candidates.get(index).unwrap()))
     }
 
     pub fn unselected(&self) -> Vec<usize> {
