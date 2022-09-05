@@ -43,6 +43,9 @@ pub struct CoinSelectorOpt {
     pub target_value: u64,
     /// The feerate we should try and achieve in sats per weight unit.
     pub target_feerate: f32,
+    /// The long term feerate if we are to spend an input in the future instead (in sats/wu).
+    /// This is used for calculating waste.
+    pub long_term_feerate: f32,
     /// The minimum absolute fee (in satoshis).
     pub min_absolute_fee: u64,
 
@@ -50,6 +53,7 @@ pub struct CoinSelectorOpt {
     pub drain_weight: u32,
     /// Weight of a `txin` used to spend the drain output(s) later on.
     pub drain_spend_weight: u32,
+
     /// The fixed input(s) of the template transaction (if any).
     pub fixed_input: Option<InputCandidate>,
     /// The additional fixed weight of the template transaction including: `nVersion`, `nLockTime`
@@ -64,6 +68,7 @@ impl CoinSelectorOpt {
             target_value: 0,
             // 0.25 per wu i.e. 1 sat per byte
             target_feerate: 0.25,
+            long_term_feerate: 0.25,
             min_absolute_fee: 0,
             drain_weight,
             drain_spend_weight,
@@ -102,10 +107,8 @@ impl CoinSelectorOpt {
     /// Calculates the "cost of change": cost of creating drain output + cost of spending the drain
     /// output in the future.
     pub fn drain_cost(&self) -> u64 {
-        // TODO: Should we be using the same feerate for "creation cost" and "spending cost"?
-        // How should we use the concept of "longterm feerate"?
         ((self.target_feerate * self.drain_weight as f32).ceil()
-            + (self.target_feerate * self.drain_spend_weight as f32).ceil()) as u64
+            + (self.long_term_feerate * self.drain_spend_weight as f32).ceil()) as u64
     }
 
     /// Fixed weight of the transaction, inclusive of fixed inputs and outputs.
@@ -230,11 +233,19 @@ impl<'a> CoinSelector<'a> {
         }
 
         let weight_with_drain = base_weight + self.opts.drain_weight;
+
         let target_fee_with_drain = ((self.opts.target_feerate * weight_with_drain as f32).ceil()
             as u64)
             .max(self.opts.min_absolute_fee);
         let target_fee_without_drain = ((self.opts.target_feerate * base_weight as f32).ceil()
             as u64)
+            .max(self.opts.min_absolute_fee);
+
+        let long_term_fee_with_drain = ((self.opts.long_term_feerate * weight_with_drain as f32)
+            .ceil() as u64)
+            .max(self.opts.min_absolute_fee);
+        let long_term_free_without_drain = ((self.opts.long_term_feerate * base_weight as f32)
+            .ceil() as u64)
             .max(self.opts.min_absolute_fee);
 
         let (excess, use_drain) = match inputs_minus_outputs.checked_sub(target_fee_with_drain) {
@@ -253,10 +264,27 @@ impl<'a> CoinSelector<'a> {
             }
         };
 
-        let (total_weight, fee) = if use_drain {
-            (weight_with_drain, target_fee_with_drain)
+        let (total_weight, fee, long_term_fee) = if use_drain {
+            (
+                weight_with_drain,
+                target_fee_with_drain,
+                long_term_fee_with_drain,
+            )
         } else {
-            (base_weight, target_fee_without_drain)
+            (
+                base_weight,
+                target_fee_without_drain,
+                long_term_free_without_drain,
+            )
+        };
+
+        let waste = {
+            let base_waste = if use_drain {
+                self.opts.drain_cost()
+            } else {
+                excess
+            };
+            (base_waste + fee) as i64 - long_term_fee as i64
         };
 
         Ok(Selection {
@@ -265,6 +293,7 @@ impl<'a> CoinSelector<'a> {
             use_drain,
             total_weight,
             fee,
+            waste,
         })
     }
 }
@@ -304,6 +333,7 @@ pub struct Selection {
     pub fee: u64,
     pub use_drain: bool,
     pub total_weight: u32,
+    pub waste: i64,
 }
 
 impl Selection {
