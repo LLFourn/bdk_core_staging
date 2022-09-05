@@ -268,6 +268,7 @@ fn main() -> anyhow::Result<()> {
                     value: utxo.value,
                     weight: TXIN_FIXED_WEIGHT + plan.expected_weight() as u32,
                     has_segwit: plan.witness_version().is_some(),
+                    input_count: 1,
                 })
                 .collect();
 
@@ -284,7 +285,7 @@ fn main() -> anyhow::Result<()> {
             let coin_selector_opts = CoinSelectorOpt {
                 target_feerate: 0.5,
                 // TODO: Calculate `drain_spend_weight`.
-                ..CoinSelectorOpt::fund_outputs(&outputs, &change_output, 0)
+                ..CoinSelectorOpt::fund_outputs(&outputs, &[change_output.clone()], 0)
             };
 
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?

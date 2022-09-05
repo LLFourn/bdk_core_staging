@@ -15,8 +15,26 @@ pub struct InputCandidate {
     pub value: u64,
     /// Weight of the `txin`: `prevout` + `nSequence` + `scriptSig` + `scriptWitness`.
     pub weight: u32,
+    /// Number of inputs contained within this [`InputCandidate`].
+    /// If we are using single UTXOs as candidates, this would be 1.
+    /// If we are working in `OutputGroup`s (as done in Bitcoin Core), this would be > 1.
+    pub input_count: usize,
     /// Whether this `txin` is spending a segwit output.
     pub has_segwit: bool,
+}
+
+#[cfg(feature = "std")]
+impl std::ops::Add for InputCandidate {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            value: self.value + other.value,
+            weight: self.weight + other.weight,
+            input_count: self.input_count + other.input_count,
+            has_segwit: self.has_segwit || other.has_segwit,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -28,11 +46,10 @@ pub struct CoinSelectorOpt {
     /// The minimum absolute fee (in satoshis).
     pub min_absolute_fee: u64,
 
-    /// Weight of the drain (change) output(s).
+    /// Additional weight if we use the drain (change) output(s).
     pub drain_weight: u32,
     /// Weight of a `txin` used to spend the drain output(s) later on.
     pub drain_spend_weight: u32,
-
     /// The fixed input(s) of the template transaction (if any).
     pub fixed_input: Option<InputCandidate>,
     /// The additional fixed weight of the template transaction including: `nVersion`, `nLockTime`
@@ -55,7 +72,11 @@ impl CoinSelectorOpt {
         }
     }
 
-    pub fn fund_outputs(txouts: &[TxOut], drain_output: &TxOut, drain_spend_weight: u32) -> Self {
+    pub fn fund_outputs(
+        txouts: &[TxOut],
+        drain_outputs: &[TxOut],
+        drain_spend_weight: u32,
+    ) -> Self {
         let mut tx = Transaction {
             input: vec![],
             version: 1,
@@ -63,11 +84,15 @@ impl CoinSelectorOpt {
             output: txouts.to_vec(),
         };
         let fixed_weight = tx.weight();
+
         // this awkward calculation is necessary since TxOut doesn't have \.weight()
         let drain_weight = {
-            tx.output.push(drain_output.clone());
+            drain_outputs
+                .iter()
+                .for_each(|txo| tx.output.push(txo.clone()));
             tx.weight() - fixed_weight
         };
+
         Self {
             target_value: txouts.iter().map(|txout| txout.value).sum(),
             ..Self::from_weights(fixed_weight as u32, drain_weight as u32, drain_spend_weight)
@@ -116,9 +141,17 @@ impl<'a> CoinSelector<'a> {
             .map(|_| 2)
             .unwrap_or(0);
 
+        let varint_extra_weight = {
+            let fixed_input_count = self.opts.fixed_input.map(|i| i.input_count).unwrap_or(0);
+            let fixed_varint_size = varint_size(fixed_input_count);
+            let total_varint_size = varint_size(fixed_input_count + self.selected.len());
+            (total_varint_size - fixed_varint_size) * 4
+        };
+
         self.opts.fixed_weight()
             + self.selected().map(|(_, c)| c.weight).sum::<u32>()
             + witness_header_extra_weight
+            + varint_extra_weight
     }
 
     pub fn selected(&self) -> impl Iterator<Item = (usize, &InputCandidate)> + '_ {
@@ -277,4 +310,19 @@ impl Selection {
     pub fn iter_selected<'a, T>(&'a self, candidates: &'a [T]) -> impl Iterator<Item = &'a T> + 'a {
         self.selected.iter().map(|i| &candidates[*i])
     }
+}
+
+/* HELPERS */
+
+fn varint_size(v: usize) -> u32 {
+    if v <= 0xfc {
+        return 1;
+    }
+    if v <= 0xffff {
+        return 3;
+    }
+    if v <= 0xffff_ffff {
+        return 5;
+    }
+    return 9;
 }
