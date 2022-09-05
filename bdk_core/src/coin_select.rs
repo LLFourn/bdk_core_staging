@@ -13,11 +13,9 @@ pub struct CoinSelector<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct InputCandidate {
     pub value: u64,
-    /// Weight of the "fixed" fields of a `txin` (`prevout` + `nSequence`).
-    /// Typically set as [`TXIN_FIXED_WEIGHT`] for a single Bitcoin input.
-    pub fixed_weight: u32,
-    /// Weight of the "satisfaction" fields of a `txin` (`scriptSig` + `scriptWitness`).
-    pub satisfaction_weight: u32,
+    /// Weight of the `txin`: `prevout` + `nSequence` + `scriptSig` + `scriptWitness`.
+    pub weight: u32,
+    /// Whether this `txin` is spending a segwit output.
     pub has_segwit: bool,
 }
 
@@ -87,10 +85,7 @@ impl CoinSelectorOpt {
 
     /// Fixed weight of the transaction, inclusive of fixed inputs and outputs.
     pub fn fixed_weight(&self) -> u32 {
-        self.fixed_input
-            .map(|fixed_in| fixed_in.fixed_weight)
-            .unwrap_or(0_u32)
-            + self.fixed_additional_weight
+        self.fixed_input.map(|i| i.weight).unwrap_or(0_u32) + self.fixed_additional_weight
     }
 }
 
@@ -122,10 +117,7 @@ impl<'a> CoinSelector<'a> {
             .unwrap_or(0);
 
         self.opts.fixed_weight()
-            + self
-                .selected()
-                .map(|(_, c)| c.satisfaction_weight + c.fixed_weight)
-                .sum::<u32>()
+            + self.selected().map(|(_, c)| c.weight).sum::<u32>()
             + witness_header_extra_weight
     }
 

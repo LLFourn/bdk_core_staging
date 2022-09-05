@@ -266,8 +266,7 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|(plan, utxo)| InputCandidate {
                     value: utxo.value,
-                    fixed_weight: TXIN_FIXED_WEIGHT,
-                    satisfaction_weight: plan.expected_weight() as u32,
+                    weight: TXIN_FIXED_WEIGHT + plan.expected_weight() as u32,
                     has_segwit: plan.witness_version().is_some(),
                 })
                 .collect();
