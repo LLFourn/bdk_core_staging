@@ -7,7 +7,7 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{CoinSelector, CoinSelectorOpt, WeightedCandidate, TXIN_BASE_WEIGHT},
+    coin_select::{CoinSelector, CoinSelectorOpt, InputCandidate, TXIN_FIXED_WEIGHT},
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
 };
@@ -264,11 +264,11 @@ fn main() -> anyhow::Result<()> {
             // turn the txos we chose into a weight and value
             let wv_candidates = candidates
                 .iter()
-                .map(|(plan, utxo)| WeightedCandidate {
+                .map(|(plan, utxo)| InputCandidate {
                     value: utxo.value,
-                    base_weight: TXIN_BASE_WEIGHT,
+                    fixed_weight: TXIN_FIXED_WEIGHT,
                     satisfaction_weight: plan.expected_weight() as u32,
-                    is_segwit: plan.witness_version().is_some(),
+                    has_segwit: plan.witness_version().is_some(),
                 })
                 .collect();
 
@@ -284,7 +284,8 @@ fn main() -> anyhow::Result<()> {
 
             let coin_selector_opts = CoinSelectorOpt {
                 target_feerate: 0.5,
-                ..CoinSelectorOpt::fund_outputs(&outputs, &change_output)
+                // TODO: Calculate `drain_spend_weight`.
+                ..CoinSelectorOpt::fund_outputs(&outputs, &change_output, 0)
             };
 
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
