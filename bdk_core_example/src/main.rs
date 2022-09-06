@@ -261,17 +261,6 @@ fn main() -> anyhow::Result<()> {
                 CoinSelectionAlgo::BranchAndBound => todo!(),
             }
 
-            // turn the txos we chose into a weight and value
-            let wv_candidates = candidates
-                .iter()
-                .map(|(plan, utxo)| InputCandidate {
-                    value: utxo.value,
-                    weight: TXIN_FIXED_WEIGHT + plan.expected_weight() as u32,
-                    is_segwit: plan.witness_version().is_some(),
-                    input_count: 1,
-                })
-                .collect();
-
             let mut outputs = vec![TxOut {
                 value,
                 script_pubkey: address.script_pubkey(),
@@ -281,6 +270,26 @@ fn main() -> anyhow::Result<()> {
                 value: 0,
                 script_pubkey: tracker.derive_next_unused(change_keychain).1.clone(),
             };
+
+            let cs_opts = CoinSelectorOpt {
+                target_feerate: 0.5,
+                // TODO: Calculate `drain_spend_weight`.
+                ..CoinSelectorOpt::fund_outputs(&outputs, &[change_output.clone()], 0)
+            };
+
+            // turn the txos we chose into a weight and value
+            let wv_candidates = candidates
+                .iter()
+                .map(|(plan, utxo)| {
+                    InputCandidate::new(
+                        &cs_opts,
+                        1,
+                        utxo.value,
+                        TXIN_FIXED_WEIGHT + plan.expected_weight() as u32,
+                        plan.witness_version().is_some(),
+                    )
+                })
+                .collect();
 
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs

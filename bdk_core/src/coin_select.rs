@@ -6,20 +6,25 @@ pub const TXIN_FIXED_WEIGHT: u32 = (32 + 4 + 4) * 4;
 #[derive(Debug, Clone)]
 pub struct CoinSelector {
     candidates: Vec<InputCandidate>,
+    /// Indexes of selected candidates.
     selected: BTreeSet<usize>,
     opts: CoinSelectorOpt,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct InputCandidate {
-    pub value: u64,
-    /// Weight of the `txin`: `prevout` + `nSequence` + `scriptSig` + `scriptWitness`.
-    pub weight: u32,
     /// Number of inputs contained within this [`InputCandidate`].
     /// If we are using single UTXOs as candidates, this would be 1.
     /// If we are working in `OutputGroup`s (as done in Bitcoin Core), this would be > 1.
     pub input_count: usize,
-    /// Whether this `txin` is spending a segwit output.
+    /// Total value of these input(s).
+    pub value: u64,
+    /// This is the input(s) value minus cost of spending these input(s):
+    /// `value - (weight * effective_fee)`
+    pub effective_value: i64,
+    /// Weight of these input(s): `prevout + nSequence + scriptSig + scriptWitness` per input.
+    pub weight: u32,
+    /// Whether at least one input of this [`InputCandidate`] is spending a segwit output.
     pub is_segwit: bool,
 }
 
@@ -29,19 +34,32 @@ impl std::ops::Add for InputCandidate {
 
     fn add(self, other: Self) -> Self {
         Self {
-            value: self.value + other.value,
-            weight: self.weight + other.weight,
             input_count: self.input_count + other.input_count,
+            value: self.value + other.value,
+            effective_value: self.effective_value + other.effective_value,
+            weight: self.weight + other.weight,
             is_segwit: self.is_segwit || other.is_segwit,
         }
     }
 }
 
 impl InputCandidate {
-    /// Value - Fee (in sats/wu) for spending.
-    /// TODO: Store this somewhere so it is more efficient.
-    pub fn effective_value(&self, fee: f32) -> i64 {
-        self.value as i64 - (self.weight as f32 * fee).ceil() as i64
+    /// New [`InputCandidate`] where `effective_value` is calculated from fee defined in `opts`.
+    pub fn new(
+        opts: &CoinSelectorOpt,
+        input_count: usize,
+        value: u64,
+        weight: u32,
+        is_segwit: bool,
+    ) -> Self {
+        let effective_value = value as i64 - (weight as f32 * opts.target_feerate).ceil() as i64;
+        Self {
+            input_count,
+            value,
+            effective_value,
+            weight,
+            is_segwit,
+        }
     }
 }
 
