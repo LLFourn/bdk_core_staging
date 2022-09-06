@@ -4,10 +4,10 @@ use bitcoin::{LockTime, Transaction, TxOut};
 pub const TXIN_FIXED_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
 #[derive(Debug, Clone)]
-pub struct CoinSelector<'a> {
+pub struct CoinSelector {
     candidates: Vec<InputCandidate>,
     selected: BTreeSet<usize>,
-    opts: &'a CoinSelectorOpt,
+    opts: CoinSelectorOpt,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -20,7 +20,7 @@ pub struct InputCandidate {
     /// If we are working in `OutputGroup`s (as done in Bitcoin Core), this would be > 1.
     pub input_count: usize,
     /// Whether this `txin` is spending a segwit output.
-    pub has_segwit: bool,
+    pub is_segwit: bool,
 }
 
 #[cfg(feature = "std")]
@@ -32,12 +32,20 @@ impl std::ops::Add for InputCandidate {
             value: self.value + other.value,
             weight: self.weight + other.weight,
             input_count: self.input_count + other.input_count,
-            has_segwit: self.has_segwit || other.has_segwit,
+            is_segwit: self.is_segwit || other.is_segwit,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+impl InputCandidate {
+    /// Value - Fee (in sats/wu) for spending.
+    /// TODO: Store this somewhere so it is more efficient.
+    pub fn effective_value(&self, fee: f32) -> i64 {
+        self.value as i64 - (self.weight as f32 * fee).ceil() as i64
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct CoinSelectorOpt {
     /// The value we need to select (in satoshis).
     pub target_value: u64,
@@ -117,12 +125,12 @@ impl CoinSelectorOpt {
     }
 }
 
-impl<'a> CoinSelector<'a> {
+impl CoinSelector {
     pub fn candidates(&self) -> &[InputCandidate] {
         &self.candidates
     }
 
-    pub fn new(candidates: Vec<InputCandidate>, opts: &'a CoinSelectorOpt) -> Self {
+    pub fn new(candidates: Vec<InputCandidate>, opts: CoinSelectorOpt) -> Self {
         Self {
             candidates,
             selected: Default::default(),
@@ -140,7 +148,7 @@ impl<'a> CoinSelector<'a> {
             .selected()
             .map(|(_, c)| c)
             .chain(self.opts.fixed_input.iter())
-            .find(|c| c.has_segwit)
+            .find(|c| c.is_segwit)
             .map(|_| 2)
             .unwrap_or(0);
 
@@ -244,9 +252,9 @@ impl<'a> CoinSelector<'a> {
         let long_term_fee_with_drain = ((self.opts.long_term_feerate * weight_with_drain as f32)
             .ceil() as u64)
             .max(self.opts.min_absolute_fee);
-        let long_term_free_without_drain = ((self.opts.long_term_feerate * base_weight as f32)
-            .ceil() as u64)
-            .max(self.opts.min_absolute_fee);
+        let long_term_fee_without_drain =
+            ((self.opts.long_term_feerate * base_weight as f32).ceil() as u64)
+                .max(self.opts.min_absolute_fee);
 
         let (excess, use_drain) = match inputs_minus_outputs.checked_sub(target_fee_with_drain) {
             Some(excess) => (excess, true),
@@ -274,7 +282,7 @@ impl<'a> CoinSelector<'a> {
             (
                 base_weight,
                 target_fee_without_drain,
-                long_term_free_without_drain,
+                long_term_fee_without_drain,
             )
         };
 
@@ -337,7 +345,10 @@ pub struct Selection {
 }
 
 impl Selection {
-    pub fn iter_selected<'a, T>(&'a self, candidates: &'a [T]) -> impl Iterator<Item = &'a T> + 'a {
+    pub fn apply_selection<'a, T>(
+        &'a self,
+        candidates: &'a [T],
+    ) -> impl Iterator<Item = &'a T> + 'a {
         self.selected.iter().map(|i| &candidates[*i])
     }
 }

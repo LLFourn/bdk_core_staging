@@ -267,7 +267,7 @@ fn main() -> anyhow::Result<()> {
                 .map(|(plan, utxo)| InputCandidate {
                     value: utxo.value,
                     weight: TXIN_FIXED_WEIGHT + plan.expected_weight() as u32,
-                    has_segwit: plan.witness_version().is_some(),
+                    is_segwit: plan.witness_version().is_some(),
                     input_count: 1,
                 })
                 .collect();
@@ -282,21 +282,22 @@ fn main() -> anyhow::Result<()> {
                 script_pubkey: tracker.derive_next_unused(change_keychain).1.clone(),
             };
 
-            let coin_selector_opts = CoinSelectorOpt {
-                target_feerate: 0.5,
-                // TODO: Calculate `drain_spend_weight`.
-                ..CoinSelectorOpt::fund_outputs(&outputs, &[change_output.clone()], 0)
-            };
-
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs
-            let mut coin_selector = CoinSelector::new(wv_candidates, &coin_selector_opts);
+            let mut coin_selector = CoinSelector::new(
+                wv_candidates,
+                CoinSelectorOpt {
+                    target_feerate: 0.5,
+                    // TODO: Calculate `drain_spend_weight`.
+                    ..CoinSelectorOpt::fund_outputs(&outputs, &[change_output.clone()], 0)
+                },
+            );
 
             // just select coins in the order provided until we have enough
             let selection = coin_selector.select_until_finished()?;
 
             // get the selected utxos
-            let selected_txos = selection.iter_selected(&candidates).collect::<Vec<_>>();
+            let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
             if selection.use_drain
                 && selection.excess >= tracker.descriptor(change_keychain).dust_value()
