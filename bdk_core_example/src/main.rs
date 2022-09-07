@@ -272,7 +272,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             let cs_opts = CoinSelectorOpt {
-                target_feerate: 0.5,
+                effective_feerate: 0.5,
                 // TODO: Calculate `drain_spend_weight`.
                 ..CoinSelectorOpt::fund_outputs(&outputs, &[change_output.clone()], 0)
             };
@@ -296,7 +296,7 @@ fn main() -> anyhow::Result<()> {
             let mut coin_selector = CoinSelector::new(
                 wv_candidates,
                 CoinSelectorOpt {
-                    target_feerate: 0.5,
+                    effective_feerate: 0.5,
                     // TODO: Calculate `drain_spend_weight`.
                     ..CoinSelectorOpt::fund_outputs(&outputs, &[change_output.clone()], 0)
                 },
