@@ -18,9 +18,9 @@ pub struct CoinSelector<'a> {
 pub struct SelectedState {
     pub waste: i64,                     // this is the waste of selected inputs only
     pub value: u64,                     // sum of selected input values
-    pub value_remaining: u64,           // remaining unselected actual value
+    pub value_remaining: u64,           // remaining unselected input values
     pub effective_value: i64,           // sum of selected effective values
-    pub effective_value_remaining: i64, // remaining unselected effective value
+    pub effective_value_remaining: i64, // remaining unselected effective values
     pub input_count: usize,             // accumulated count of all inputs
     pub segwit_count: usize,            // number of segwit inputs
     pub weight: u32,                    // accumulated weight of all selected inputs
@@ -230,9 +230,17 @@ impl<'a> CoinSelector<'a> {
         &self.candidates
     }
 
+    pub fn candidate(&self, index: usize) -> &InputCandidate {
+        assert!(index < self.candidates.len());
+        &self.candidates[index]
+    }
+
+    pub fn options(&self) -> &CoinSelectorOpt {
+        self.opts
+    }
+
     pub fn select(&mut self, index: usize) {
         assert!(index < self.candidates.len());
-
         if self.selected_indexes.insert(index) {
             self.selected_state
                 .add_candidate(self.opts, &self.candidates[index]);
@@ -241,7 +249,6 @@ impl<'a> CoinSelector<'a> {
 
     pub fn deselect(&mut self, index: usize) {
         assert!(index < self.candidates.len());
-
         if self.selected_indexes.remove(&index) {
             self.selected_state
                 .sub_candidate(self.opts, &self.candidates[index]);
@@ -249,12 +256,16 @@ impl<'a> CoinSelector<'a> {
     }
 
     /// Returns the current state of all inputs in the current selection.
-    pub fn selected_state(&self) -> &SelectedState {
+    pub fn state(&self) -> &SelectedState {
         &self.selected_state
     }
 
+    pub fn excess(&self) -> i64 {
+        self.selected_state.effective_value - self.opts.target_effective_value()
+    }
+
     pub fn current_weight_without_drain(&self) -> u32 {
-        let inputs = self.selected_state();
+        let inputs = self.state();
         let is_segwit = inputs.segwit_count > 0;
 
         let extra_witness_weight = if is_segwit { 2_u32 } else { 0_u32 };
@@ -263,18 +274,18 @@ impl<'a> CoinSelector<'a> {
         self.opts.fixed_weight + inputs.weight + extra_witness_weight + extra_varint_weight
     }
 
-    pub fn selected(&self) -> impl Iterator<Item = (usize, &InputCandidate)> + '_ {
+    pub fn iter_selected(&self) -> impl Iterator<Item = (usize, InputCandidate)> + '_ {
         self.selected_indexes
             .iter()
-            .map(|&index| (index, self.candidates.get(index).unwrap()))
+            .map(|&index| (index, self.candidates[index]))
     }
 
-    pub fn unselected(&self) -> Vec<usize> {
-        let all_indexes = (0..self.candidates.len()).collect::<BTreeSet<_>>();
-        all_indexes
-            .difference(&self.selected_indexes)
-            .cloned()
-            .collect()
+    pub fn iter_unselected(&self) -> impl Iterator<Item = (usize, InputCandidate)> + '_ {
+        self.candidates
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !self.selected_indexes.contains(index))
+            .map(|(index, c)| (index, *c))
     }
 
     pub fn all_selected(&self) -> bool {
@@ -282,8 +293,9 @@ impl<'a> CoinSelector<'a> {
     }
 
     pub fn select_all(&mut self) {
-        for next_unselected in self.unselected() {
-            self.select(next_unselected)
+        let unselected = self.iter_unselected().map(|(i, _)| i).collect::<Vec<_>>();
+        for index in unselected {
+            self.select(index);
         }
     }
 
@@ -294,8 +306,9 @@ impl<'a> CoinSelector<'a> {
             return selection;
         }
 
-        for next_unselected in self.unselected() {
-            self.select(next_unselected);
+        let unselected = self.iter_unselected().map(|(i, _)| i).collect::<Vec<_>>();
+        for index in unselected {
+            self.select(index);
             selection = self.finish();
 
             if selection.is_ok() {
@@ -307,7 +320,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     pub fn finish(&self) -> Result<Selection, SelectionFailure> {
-        let selected = self.selected_state();
+        let selected = self.state();
 
         // this is the tx weight without drain.
         let base_weight = {
@@ -400,6 +413,7 @@ pub enum SelectionFailure {
     InsufficientFunds { selected: u64, needed: u64 },
     FeerateTooLow { needed: f32, had: f32 },
     AbsoluteFeeTooLow { needed: u64, had: u64 },
+    NoSolution,
 }
 
 impl core::fmt::Display for SelectionFailure {
@@ -415,6 +429,9 @@ impl core::fmt::Display for SelectionFailure {
             }
             SelectionFailure::AbsoluteFeeTooLow { needed, had } => {
                 write!(f, "absolute fee too low, needed {}, had {}", needed, had)
+            }
+            Self::NoSolution => {
+                write!(f, "algorithm cannot find a solution")
             }
         }
     }
@@ -459,13 +476,122 @@ fn varint_size(v: usize) -> u32 {
 
 /* ALGORITHMS */
 
-pub fn select_coins_bnb(
-    opts: CoinSelectorOpt,
-    candidates: Vec<InputCandidate>,
-) -> Result<Selection, SelectionFailure> {
-    let target_value = opts.target_effective_value();
+pub fn select_coins_bnb(current: &mut CoinSelector) -> Result<Selection, SelectionFailure> {
+    const MAX_MONEY: i64 = 2_100_000_000_000_000;
+    const MAX_TRIES: usize = 100_000;
+
+    let target_value = current.options().target_effective_value();
+    let cost_of_change = current.options().drain_cost() as i64;
 
     // ensure we have enough to select with
-    candidates.iter().map(|i| i.value).sum::<u64>();
-    todo!()
+    // TODO: Figure out how to enfore effective value to not be negative.
+    {
+        let state = current.state();
+        let avaliable = state.effective_value + state.effective_value_remaining;
+        if avaliable < target_value {
+            // TODO: This error should use `i64`.
+            return Err(SelectionFailure::InsufficientFunds {
+                selected: avaliable as u64,
+                needed: target_value as u64,
+            });
+        }
+    }
+
+    // remaining value we have left in the current branch
+    let mut remaining_value = current.state().effective_value_remaining;
+
+    // our best solution (start with the worst possible solution)
+    let mut best = Option::<CoinSelector>::None; // current.clone();
+
+    // sort unselected index pool in descending order in terms of effective value
+    let mut pool_index = 0_usize;
+    let mut selected_pool_indexes = Vec::<usize>::with_capacity(current.candidates().len());
+    let pool = {
+        let mut pool = current.iter_unselected().collect::<Vec<_>>();
+        pool.sort_by(|(_, ca), (_, cb)| cb.effective_value.cmp(&ca.effective_value));
+        pool
+    };
+
+    // depth-first loop
+    for try_index in 0..MAX_TRIES {
+        if try_index > 0 {
+            pool_index += 1;
+        }
+
+        // conditions for starting a backtrack
+        let backtrack = {
+            let feerate_decreasing =
+                current.options().effective_feerate > current.options().long_term_feerate;
+
+            let current_value = current.state().effective_value;
+            let current_waste = current.state().waste + current.excess();
+            let best_waste = best
+                .as_ref()
+                .map(|b| b.state().waste + b.excess())
+                .unwrap_or(MAX_MONEY);
+
+            // TODO: Add comments
+            if current_value + remaining_value < target_value
+                || current_value > target_value + cost_of_change
+                || (current.state().waste > best_waste && feerate_decreasing)
+            {
+                true
+            } else if current_value >= target_value {
+                if current_waste <= best_waste {
+                    best.replace(current.clone());
+                }
+
+                true
+            } else {
+                false
+            }
+        };
+
+        if backtrack {
+            if current.state().value == 0 {
+                break;
+            }
+
+            pool_index -= 1;
+            while pool_index > *selected_pool_indexes.last().unwrap() {
+                remaining_value += pool[pool_index].1.effective_value;
+                pool_index -= 1;
+            }
+            assert_eq!(pool_index, *selected_pool_indexes.last().unwrap());
+
+            let candidate_index = pool[pool_index].0;
+            current.deselect(candidate_index);
+            selected_pool_indexes.pop();
+
+            continue;
+        }
+
+        let (candidate_index, candidate) = pool[pool_index];
+        remaining_value -= candidate.effective_value;
+
+        if current.state().value == 0
+            || pool_index - 1 == *selected_pool_indexes.last().unwrap()
+            || candidate.effective_value != pool[pool_index - 1].1.effective_value
+            || candidate.weight != pool[pool_index - 1].1.weight
+        {
+            current.select(candidate_index);
+            selected_pool_indexes.push(pool_index);
+        }
+    }
+
+    let selection = best
+        .as_ref()
+        .ok_or(SelectionFailure::NoSolution)?
+        .finish()?;
+
+    assert_eq!(
+        selection.waste,
+        {
+            let best = best.as_ref().unwrap();
+            best.state().waste + best.excess()
+        },
+        "waste does not match up"
+    );
+
+    Ok(selection)
 }
