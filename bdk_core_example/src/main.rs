@@ -293,14 +293,7 @@ fn main() -> anyhow::Result<()> {
 
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs
-            let mut coin_selector = CoinSelector::new(
-                wv_candidates,
-                CoinSelectorOpt {
-                    effective_feerate: 0.5,
-                    // TODO: Calculate `drain_spend_weight`.
-                    ..CoinSelectorOpt::fund_outputs(&outputs, &[change_output.clone()], 0)
-                },
-            );
+            let mut coin_selector = CoinSelector::new(&wv_candidates, &cs_opts);
 
             // just select coins in the order provided until we have enough
             let selection = coin_selector.select_until_finished()?;

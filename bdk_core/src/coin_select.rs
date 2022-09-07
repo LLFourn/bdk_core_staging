@@ -4,17 +4,54 @@ use bitcoin::{LockTime, Transaction, TxOut};
 pub const TXIN_FIXED_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
 #[derive(Debug, Clone)]
-pub struct CoinSelector {
-    opts: CoinSelectorOpt,
+pub struct CoinSelector<'a> {
+    opts: &'a CoinSelectorOpt,
+    candidates: &'a Vec<InputCandidate>,
 
-    candidates: Vec<InputCandidate>,
-    /// Indexes of selected candidates.
-    selected_indexes: BTreeSet<usize>,
+    /* The following fields record the selection state */
+    selected_indexes: BTreeSet<usize>, // indexes of selected input candidates
+    selected_state: SelectedState,     // state of the selected inputs
+}
 
-    /// Selection target value
-    target_value: i64,
-    current_selected_value: i64,
-    current_unselected_value: i64,
+/// Represents the state of the selected input candidates.
+#[derive(Debug, Clone)]
+pub struct SelectedState {
+    pub waste: i64,                     // this is the waste of selected inputs only
+    pub value: u64,                     // sum of selected input values
+    pub value_remaining: u64,           // remaining unselected actual value
+    pub effective_value: i64,           // sum of selected effective values
+    pub effective_value_remaining: i64, // remaining unselected effective value
+    pub input_count: usize,             // accumulated count of all inputs
+    pub segwit_count: usize,            // number of segwit inputs
+    pub weight: u32,                    // accumulated weight of all selected inputs
+}
+
+impl SelectedState {
+    pub fn add_candidate(&mut self, opts: &CoinSelectorOpt, candidate: &InputCandidate) {
+        self.waste += candidate.waste(opts);
+        self.value += candidate.value;
+        self.value_remaining -= candidate.value;
+        self.effective_value += candidate.effective_value;
+        self.effective_value_remaining -= candidate.effective_value;
+        self.input_count += candidate.input_count;
+        if candidate.is_segwit {
+            self.segwit_count += 1;
+        }
+        self.weight += candidate.weight;
+    }
+
+    pub fn sub_candidate(&mut self, opts: &CoinSelectorOpt, candidate: &InputCandidate) {
+        self.waste -= candidate.waste(opts);
+        self.value -= candidate.value;
+        self.value_remaining += candidate.value;
+        self.effective_value -= candidate.effective_value;
+        self.effective_value_remaining += candidate.effective_value;
+        self.input_count -= candidate.input_count;
+        if candidate.is_segwit {
+            self.segwit_count -= 1;
+        }
+        self.weight -= candidate.weight;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +108,11 @@ impl InputCandidate {
             is_segwit,
         }
     }
+
+    /// Calculates the `waste` of including this input.
+    pub fn waste(&self, opts: &CoinSelectorOpt) -> i64 {
+        (self.weight as f32 * (opts.effective_feerate - opts.long_term_feerate)).ceil() as i64
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,12 +133,11 @@ pub struct CoinSelectorOpt {
     /// Weight of a `txin` used to spend the drain output(s) later on.
     pub drain_spend_weight: u32,
 
-    /// The additional fixed weight of the template transaction including: `nVersion`, `nLockTime`
-    /// and fixed `vout`s and the first bytes of `vin_len` and `vout_len`. Weight of `vin` is not
-    /// included. Drain output is not included.
+    /// The fixed weight of the template transaction, inclusive of: `nVersion`, `nLockTime`
+    /// fixed `vout`s and the first bytes of `vin_len` and `vout_len`.
+    ///
+    /// Weight of the drain output is not included.
     pub fixed_weight: u32,
-    /// The additional fixed input(s) of the template transaction (if any).
-    pub additional_fixed_input: Option<InputCandidate>,
 }
 
 impl CoinSelectorOpt {
@@ -110,7 +151,6 @@ impl CoinSelectorOpt {
             drain_weight,
             drain_spend_weight,
             fixed_weight,
-            additional_fixed_input: None,
         }
     }
 
@@ -148,50 +188,41 @@ impl CoinSelectorOpt {
             + (self.long_term_feerate * self.drain_spend_weight as f32).ceil()) as u64
     }
 
-    /// Fixed weight of the transaction, inclusive of fixed inputs and outputs, but exclusive of
-    /// the drain output.
-    pub fn fixed_weight(&self) -> u32 {
-        self.additional_fixed_input
-            .map(|i| i.weight)
-            .unwrap_or(0_u32)
-            + self.fixed_weight
-    }
-
     /// This is the extra weight of the `txin_count` variable (which is a `varint`), when we
     /// introduce inputs on top of the "fixed" input count.
     pub fn extra_varint_weight(&self, total_input_count: usize) -> u32 {
-        let fixed_count = self
-            .additional_fixed_input
-            .map(|i| i.input_count)
-            .unwrap_or(0);
-
-        let fixed_varint_size = varint_size(fixed_count);
-        let total_varint_size = varint_size(total_input_count);
-
-        (total_varint_size - fixed_varint_size) * 4
+        (varint_size(total_input_count) - 1) * 4
     }
 
-    /// Selection target should be `recipients_sum - fixed_input_effective_value + fixed_weight * effective_feerate`
-    pub fn selection_target(&self) -> i64 {
+    /// Selection target should be `recipients_sum + fixed_weight * effective_feerate`
+    pub fn target_effective_value(&self) -> i64 {
         self.recipients_sum as i64
-            - self
-                .additional_fixed_input
-                .map(|i| i.effective_value)
-                .unwrap_or(0)
-            + (self.fixed_weight() as f32 * self.effective_feerate).ceil() as i64
+            + (self.fixed_weight as f32 * self.effective_feerate).ceil() as i64
     }
 }
 
-impl CoinSelector {
-    pub fn new(candidates: Vec<InputCandidate>, opts: CoinSelectorOpt) -> Self {
-        Self {
-            candidates: candidates.clone(),
-            selected_indexes: Default::default(),
-            opts,
+impl<'a> CoinSelector<'a> {
+    pub fn new(candidates: &'a Vec<InputCandidate>, opts: &'a CoinSelectorOpt) -> Self {
+        let (unselected_value, unselected_effective_value) = candidates
+            .iter()
+            .map(|i| (i.value, i.effective_value))
+            .fold((0, 0), |a, v| (a.0 + v.0, a.1 + v.1));
 
-            target_value: opts.selection_target(),
-            current_selected_value: 0,
-            current_unselected_value: candidates.iter().map(|i| i.effective_value).sum(),
+        Self {
+            opts,
+            candidates,
+
+            selected_indexes: Default::default(),
+            selected_state: SelectedState {
+                waste: 0,
+                value: 0,
+                effective_value: 0,
+                value_remaining: unselected_value,
+                effective_value_remaining: unselected_effective_value,
+                input_count: 0,
+                segwit_count: 0,
+                weight: 0,
+            },
         }
     }
 
@@ -201,38 +232,35 @@ impl CoinSelector {
 
     pub fn select(&mut self, index: usize) {
         assert!(index < self.candidates.len());
-        self.selected_indexes.insert(index);
+
+        if self.selected_indexes.insert(index) {
+            self.selected_state
+                .add_candidate(self.opts, &self.candidates[index]);
+        }
     }
 
-    /// Returns the current state of all inputs (both selected and fixed) in format
-    /// `(input_count, input_total_weight, has_segwit)`.
-    pub fn current_input_state(&self) -> (usize, u32, bool) {
-        let (input_count, weight, is_segwit) = self
-            .selected_indexes
-            .iter()
-            .map(|&i| &self.candidates[i])
-            .chain(self.opts.additional_fixed_input.iter())
-            .fold(
-                (0_usize, 0_u32, false),
-                |(input_count, weight, is_segwit), c| {
-                    (
-                        input_count + c.input_count,
-                        weight + c.weight,
-                        is_segwit || c.is_segwit,
-                    )
-                },
-            );
+    pub fn deselect(&mut self, index: usize) {
+        assert!(index < self.candidates.len());
 
-        (input_count, weight, is_segwit)
+        if self.selected_indexes.remove(&index) {
+            self.selected_state
+                .sub_candidate(self.opts, &self.candidates[index]);
+        }
+    }
+
+    /// Returns the current state of all inputs in the current selection.
+    pub fn selected_state(&self) -> &SelectedState {
+        &self.selected_state
     }
 
     pub fn current_weight_without_drain(&self) -> u32 {
-        let (input_count, input_weight, is_segwit) = self.current_input_state();
+        let inputs = self.selected_state();
+        let is_segwit = inputs.segwit_count > 0;
 
         let extra_witness_weight = if is_segwit { 2_u32 } else { 0_u32 };
-        let extra_varint_weight = self.opts.extra_varint_weight(input_count);
+        let extra_varint_weight = self.opts.extra_varint_weight(inputs.input_count);
 
-        self.opts.fixed_weight + input_weight + extra_witness_weight + extra_varint_weight
+        self.opts.fixed_weight + inputs.weight + extra_witness_weight + extra_varint_weight
     }
 
     pub fn selected(&self) -> impl Iterator<Item = (usize, &InputCandidate)> + '_ {
@@ -278,32 +306,25 @@ impl CoinSelector {
         selection
     }
 
-    pub fn current_value(&self) -> u64 {
-        self.opts
-            .additional_fixed_input
-            .map(|i| i.value)
-            .unwrap_or(0_u64)
-            + self.selected().map(|(_, wv)| wv.value).sum::<u64>()
-    }
-
     pub fn finish(&self) -> Result<Selection, SelectionFailure> {
-        let (input_count, input_weight, is_segwit) = self.current_input_state();
+        let selected = self.selected_state();
 
         // this is the tx weight without drain.
         let base_weight = {
+            let is_segwit = selected.segwit_count > 0;
             let extra_witness_weight = if is_segwit { 2_u32 } else { 0_u32 };
-            let extra_varint_weight = self.opts.extra_varint_weight(input_count);
-            self.opts.fixed_weight + input_weight + extra_witness_weight + extra_varint_weight
+            let extra_varint_weight = self.opts.extra_varint_weight(selected.input_count);
+            self.opts.fixed_weight + selected.weight + extra_witness_weight + extra_varint_weight
         };
 
-        if self.current_value() < self.opts.recipients_sum {
+        if selected.value < self.opts.recipients_sum {
             return Err(SelectionFailure::InsufficientFunds {
-                selected: self.current_value(),
+                selected: selected.value,
                 needed: self.opts.recipients_sum,
             });
         }
 
-        let inputs_minus_outputs = self.current_value() - self.opts.recipients_sum;
+        let inputs_minus_outputs = selected.value - self.opts.recipients_sum;
 
         // check fee rate satisfied
         let feerate_without_drain = inputs_minus_outputs as f32 / base_weight as f32;
@@ -335,12 +356,12 @@ impl CoinSelector {
         let (excess, use_drain) = match inputs_minus_outputs.checked_sub(target_fee_with_drain) {
             Some(excess) => (excess, true),
             None => {
-                let implied_output_value = self.current_value() - target_fee_without_drain;
+                let implied_output_value = selected.value - target_fee_without_drain;
                 match implied_output_value.checked_sub(self.opts.recipients_sum) {
                     Some(excess) => (excess, false),
                     None => {
                         return Err(SelectionFailure::InsufficientFunds {
-                            selected: self.current_value(),
+                            selected: selected.value,
                             needed: target_fee_without_drain + self.opts.recipients_sum,
                         })
                     }
@@ -356,16 +377,12 @@ impl CoinSelector {
 
         // `waste` is the waste of spending the inputs now (with the current selection), as opposed
         // to spending it later.
-        let waste = {
-            let base_waste = if use_drain {
+        let waste = selected.waste
+            + if use_drain {
                 self.opts.drain_cost()
             } else {
                 excess
-            };
-            base_waste as i64
-                + input_weight as i64
-                    * (self.opts.effective_feerate - self.opts.long_term_feerate) as i64
-        };
+            } as i64;
 
         Ok(Selection {
             selected: self.selected_indexes.clone(),
@@ -446,7 +463,7 @@ pub fn select_coins_bnb(
     opts: CoinSelectorOpt,
     candidates: Vec<InputCandidate>,
 ) -> Result<Selection, SelectionFailure> {
-    let target_value = opts.selection_target();
+    let target_value = opts.target_effective_value();
 
     // ensure we have enough to select with
     candidates.iter().map(|i| i.value).sum::<u64>();
