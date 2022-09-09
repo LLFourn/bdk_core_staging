@@ -31,12 +31,10 @@ impl SelectedState {
         self.waste += candidate.waste(opts);
         self.value += candidate.value;
         self.value_remaining -= candidate.value;
-        self.effective_value += candidate.effective_value;
-        self.effective_value_remaining -= candidate.effective_value;
+        self.effective_value += candidate.effective_value(opts);
+        self.effective_value_remaining -= candidate.effective_value(opts);
         self.input_count += candidate.input_count;
-        if candidate.is_segwit {
-            self.segwit_count += 1;
-        }
+        self.segwit_count += candidate.segwit_count;
         self.weight += candidate.weight;
     }
 
@@ -44,12 +42,10 @@ impl SelectedState {
         self.waste -= candidate.waste(opts);
         self.value -= candidate.value;
         self.value_remaining += candidate.value;
-        self.effective_value -= candidate.effective_value;
-        self.effective_value_remaining += candidate.effective_value;
+        self.effective_value -= candidate.effective_value(opts);
+        self.effective_value_remaining += candidate.effective_value(opts);
         self.input_count -= candidate.input_count;
-        if candidate.is_segwit {
-            self.segwit_count -= 1;
-        }
+        self.segwit_count -= candidate.segwit_count;
         self.weight -= candidate.weight;
     }
 }
@@ -60,53 +56,45 @@ pub struct InputCandidate {
     /// If we are using single UTXOs as candidates, this would be 1.
     /// If we are working in `OutputGroup`s (as done in Bitcoin Core), this would be > 1.
     pub input_count: usize,
+    /// Whether at least one input of this [`InputCandidate`] is spending a segwit output.
+    pub segwit_count: usize,
     /// Total value of these input(s).
     pub value: u64,
-    /// This is the input(s) value minus cost of spending these input(s):
-    /// `value - (weight * effective_fee)`
-    pub effective_value: i64,
     /// Weight of these input(s): `prevout + nSequence + scriptSig + scriptWitness` per input.
     pub weight: u32,
-    /// Whether at least one input of this [`InputCandidate`] is spending a segwit output.
-    pub is_segwit: bool,
 }
 
-#[cfg(feature = "std")]
-impl std::ops::Add for InputCandidate {
+impl core::ops::Add for InputCandidate {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
         Self {
             input_count: self.input_count + other.input_count,
             value: self.value + other.value,
-            effective_value: self.effective_value + other.effective_value,
             weight: self.weight + other.weight,
-            is_segwit: self.is_segwit || other.is_segwit,
+            segwit_count: self.segwit_count + other.segwit_count,
         }
     }
 }
 
 impl InputCandidate {
     /// New [`InputCandidate`] where `effective_value` is calculated from fee defined in `opts`.
-    pub fn new(
-        opts: &CoinSelectorOpt,
-        input_count: usize,
-        value: u64,
-        weight: u32,
-        is_segwit: bool,
-    ) -> Self {
+    pub fn new(input_count: usize, value: u64, weight: u32, is_segwit: bool) -> Self {
         assert!(
             input_count > 0,
             "InputCandidate does not make sense with 0 inputs"
         );
-        let effective_value = value as i64 - (weight as f32 * opts.effective_feerate).ceil() as i64;
+        // let effective_value = value as i64 - (weight as f32 * opts.effective_feerate).ceil() as i64;
         Self {
             input_count,
             value,
-            effective_value,
             weight,
-            is_segwit,
+            segwit_count: if is_segwit { 1 } else { 0 },
         }
+    }
+
+    pub fn effective_value(&self, opts: &CoinSelectorOpt) -> i64 {
+        self.value as i64 - (self.weight as f32 * opts.effective_feerate).ceil() as i64
     }
 
     /// Calculates the `waste` of including this input.
@@ -205,7 +193,7 @@ impl<'a> CoinSelector<'a> {
     pub fn new(candidates: &'a Vec<InputCandidate>, opts: &'a CoinSelectorOpt) -> Self {
         let (unselected_value, unselected_effective_value) = candidates
             .iter()
-            .map(|i| (i.value, i.effective_value))
+            .map(|i| (i.value, i.effective_value(opts)))
             .fold((0, 0), |a, v| (a.0 + v.0, a.1 + v.1));
 
         Self {
@@ -508,7 +496,10 @@ pub fn select_coins_bnb(current: &mut CoinSelector) -> Result<Selection, Selecti
     let mut selected_pool_indexes = Vec::<usize>::with_capacity(current.candidates().len());
     let pool = {
         let mut pool = current.iter_unselected().collect::<Vec<_>>();
-        pool.sort_by(|(_, ca), (_, cb)| cb.effective_value.cmp(&ca.effective_value));
+        pool.sort_by(|(_, ca), (_, cb)| {
+            cb.effective_value(current.options())
+                .cmp(&ca.effective_value(current.options()))
+        });
         pool
     };
 
@@ -554,7 +545,7 @@ pub fn select_coins_bnb(current: &mut CoinSelector) -> Result<Selection, Selecti
 
             pool_index -= 1;
             while pool_index > *selected_pool_indexes.last().unwrap() {
-                remaining_value += pool[pool_index].1.effective_value;
+                remaining_value += pool[pool_index].1.effective_value(current.options());
                 pool_index -= 1;
             }
             assert_eq!(pool_index, *selected_pool_indexes.last().unwrap());
@@ -567,11 +558,12 @@ pub fn select_coins_bnb(current: &mut CoinSelector) -> Result<Selection, Selecti
         }
 
         let (candidate_index, candidate) = pool[pool_index];
-        remaining_value -= candidate.effective_value;
+        remaining_value -= candidate.effective_value(current.options());
 
         if current.state().value == 0
             || pool_index - 1 == *selected_pool_indexes.last().unwrap()
-            || candidate.effective_value != pool[pool_index - 1].1.effective_value
+            || candidate.effective_value(current.options())
+                != pool[pool_index - 1].1.effective_value(current.options())
             || candidate.weight != pool[pool_index - 1].1.weight
         {
             current.select(candidate_index);

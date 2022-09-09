@@ -282,7 +282,6 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|(plan, utxo)| {
                     InputCandidate::new(
-                        &cs_opts,
                         1,
                         utxo.value,
                         TXIN_FIXED_WEIGHT + plan.expected_weight() as u32,
