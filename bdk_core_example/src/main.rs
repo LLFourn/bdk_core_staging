@@ -281,8 +281,7 @@ fn main() -> anyhow::Result<()> {
             let wv_candidates = candidates
                 .iter()
                 .map(|(plan, utxo)| {
-                    InputCandidate::new(
-                        1,
+                    InputCandidate::new_single(
                         utxo.value,
                         TXIN_FIXED_WEIGHT + plan.expected_weight() as u32,
                         plan.witness_version().is_some(),
