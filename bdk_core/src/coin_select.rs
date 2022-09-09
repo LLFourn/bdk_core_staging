@@ -10,47 +10,10 @@ pub struct CoinSelector<'a> {
 
     /* The following fields record the selection state */
     selected_indexes: BTreeSet<usize>, // indexes of selected input candidates
-    selected_state: SelectedState,     // state of the selected inputs
+    selected_state: InputCandidate,    // state of the selected inputs
 }
 
-/// Represents the state of the selected input candidates.
-#[derive(Debug, Clone)]
-pub struct SelectedState {
-    pub waste: i64,                     // this is the waste of selected inputs only
-    pub value: u64,                     // sum of selected input values
-    pub value_remaining: u64,           // remaining unselected input values
-    pub effective_value: i64,           // sum of selected effective values
-    pub effective_value_remaining: i64, // remaining unselected effective values
-    pub input_count: usize,             // accumulated count of all inputs
-    pub segwit_count: usize,            // number of segwit inputs
-    pub weight: u32,                    // accumulated weight of all selected inputs
-}
-
-impl SelectedState {
-    pub fn add_candidate(&mut self, opts: &CoinSelectorOpt, candidate: &InputCandidate) {
-        self.waste += candidate.waste(opts);
-        self.value += candidate.value;
-        self.value_remaining -= candidate.value;
-        self.effective_value += candidate.effective_value(opts);
-        self.effective_value_remaining -= candidate.effective_value(opts);
-        self.input_count += candidate.input_count;
-        self.segwit_count += candidate.segwit_count;
-        self.weight += candidate.weight;
-    }
-
-    pub fn sub_candidate(&mut self, opts: &CoinSelectorOpt, candidate: &InputCandidate) {
-        self.waste -= candidate.waste(opts);
-        self.value -= candidate.value;
-        self.value_remaining += candidate.value;
-        self.effective_value -= candidate.effective_value(opts);
-        self.effective_value_remaining += candidate.effective_value(opts);
-        self.input_count -= candidate.input_count;
-        self.segwit_count -= candidate.segwit_count;
-        self.weight -= candidate.weight;
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputCandidate {
     /// Number of inputs contained within this [`InputCandidate`].
     /// If we are using single UTXOs as candidates, this would be 1.
@@ -64,19 +27,6 @@ pub struct InputCandidate {
     pub weight: u32,
 }
 
-impl core::ops::Add for InputCandidate {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            input_count: self.input_count + other.input_count,
-            value: self.value + other.value,
-            weight: self.weight + other.weight,
-            segwit_count: self.segwit_count + other.segwit_count,
-        }
-    }
-}
-
 impl InputCandidate {
     /// New [`InputCandidate`] where `effective_value` is calculated from fee defined in `opts`.
     pub fn new(input_count: usize, value: u64, weight: u32, is_segwit: bool) -> Self {
@@ -84,12 +34,20 @@ impl InputCandidate {
             input_count > 0,
             "InputCandidate does not make sense with 0 inputs"
         );
-        // let effective_value = value as i64 - (weight as f32 * opts.effective_feerate).ceil() as i64;
         Self {
             input_count,
             value,
             weight,
             segwit_count: if is_segwit { 1 } else { 0 },
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            input_count: 0,
+            segwit_count: 0,
+            value: 0,
+            weight: 0,
         }
     }
 
@@ -100,6 +58,24 @@ impl InputCandidate {
     /// Calculates the `waste` of including this input.
     pub fn waste(&self, opts: &CoinSelectorOpt) -> i64 {
         (self.weight as f32 * (opts.effective_feerate - opts.long_term_feerate)).ceil() as i64
+    }
+}
+
+impl core::ops::AddAssign for InputCandidate {
+    fn add_assign(&mut self, rhs: Self) {
+        self.input_count += rhs.input_count;
+        self.segwit_count += rhs.segwit_count;
+        self.value += rhs.value;
+        self.weight += rhs.weight;
+    }
+}
+
+impl core::ops::SubAssign for InputCandidate {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.input_count -= rhs.input_count;
+        self.segwit_count -= rhs.segwit_count;
+        self.value -= rhs.value;
+        self.weight -= rhs.weight;
     }
 }
 
@@ -191,26 +167,12 @@ impl CoinSelectorOpt {
 
 impl<'a> CoinSelector<'a> {
     pub fn new(candidates: &'a Vec<InputCandidate>, opts: &'a CoinSelectorOpt) -> Self {
-        let (unselected_value, unselected_effective_value) = candidates
-            .iter()
-            .map(|i| (i.value, i.effective_value(opts)))
-            .fold((0, 0), |a, v| (a.0 + v.0, a.1 + v.1));
-
         Self {
             opts,
             candidates,
 
             selected_indexes: Default::default(),
-            selected_state: SelectedState {
-                waste: 0,
-                value: 0,
-                effective_value: 0,
-                value_remaining: unselected_value,
-                effective_value_remaining: unselected_effective_value,
-                input_count: 0,
-                segwit_count: 0,
-                weight: 0,
-            },
+            selected_state: InputCandidate::empty(),
         }
     }
 
@@ -230,26 +192,24 @@ impl<'a> CoinSelector<'a> {
     pub fn select(&mut self, index: usize) {
         assert!(index < self.candidates.len());
         if self.selected_indexes.insert(index) {
-            self.selected_state
-                .add_candidate(self.opts, &self.candidates[index]);
+            self.selected_state += self.candidates[index];
         }
     }
 
     pub fn deselect(&mut self, index: usize) {
         assert!(index < self.candidates.len());
         if self.selected_indexes.remove(&index) {
-            self.selected_state
-                .sub_candidate(self.opts, &self.candidates[index]);
+            self.selected_state -= self.candidates[index];
         }
     }
 
     /// Returns the current state of all inputs in the current selection.
-    pub fn state(&self) -> &SelectedState {
+    pub fn state(&self) -> &InputCandidate {
         &self.selected_state
     }
 
     pub fn excess(&self) -> i64 {
-        self.selected_state.effective_value - self.opts.target_effective_value()
+        self.selected_state.effective_value(self.opts) - self.opts.target_effective_value()
     }
 
     pub fn current_weight_without_drain(&self) -> u32 {
@@ -378,7 +338,7 @@ impl<'a> CoinSelector<'a> {
 
         // `waste` is the waste of spending the inputs now (with the current selection), as opposed
         // to spending it later.
-        let waste = selected.waste
+        let waste = selected.waste(self.opts)
             + if use_drain {
                 self.opts.drain_cost()
             } else {
@@ -471,25 +431,18 @@ pub fn select_coins_bnb(current: &mut CoinSelector) -> Result<Selection, Selecti
     let target_value = current.options().target_effective_value();
     let cost_of_change = current.options().drain_cost() as i64;
 
+    // remaining value of the current branch
+    let mut remaining_value = current
+        .iter_unselected()
+        .map(|(_, ic)| ic.effective_value(current.options()))
+        .sum::<i64>();
     // ensure we have enough to select with
-    // TODO: Figure out how to enfore effective value to not be negative.
-    {
-        let state = current.state();
-        let avaliable = state.effective_value + state.effective_value_remaining;
-        if avaliable < target_value {
-            // TODO: This error should use `i64`.
-            return Err(SelectionFailure::InsufficientFunds {
-                selected: avaliable as u64,
-                needed: target_value as u64,
-            });
-        }
+    if remaining_value < target_value {
+        todo!("properly handle this error")
     }
 
-    // remaining value we have left in the current branch
-    let mut remaining_value = current.state().effective_value_remaining;
-
     // our best solution (start with the worst possible solution)
-    let mut best = Option::<CoinSelector>::None; // current.clone();
+    let mut best = Option::<CoinSelector>::None;
 
     // sort unselected index pool in descending order in terms of effective value
     let mut pool_index = 0_usize;
@@ -511,20 +464,21 @@ pub fn select_coins_bnb(current: &mut CoinSelector) -> Result<Selection, Selecti
 
         // conditions for starting a backtrack
         let backtrack = {
-            let feerate_decreasing =
-                current.options().effective_feerate > current.options().long_term_feerate;
+            let opts = current.options();
 
-            let current_value = current.state().effective_value;
-            let current_waste = current.state().waste + current.excess();
+            let feerate_decreasing = opts.effective_feerate > opts.long_term_feerate;
+
+            let current_value = current.state().effective_value(opts);
+            let current_waste = current.state().waste(opts) + current.excess();
             let best_waste = best
                 .as_ref()
-                .map(|b| b.state().waste + b.excess())
+                .map(|b| b.state().waste(opts) + b.excess())
                 .unwrap_or(MAX_MONEY);
 
             // TODO: Add comments
             if current_value + remaining_value < target_value
                 || current_value > target_value + cost_of_change
-                || (current.state().waste > best_waste && feerate_decreasing)
+                || (current.state().waste(opts) > best_waste && feerate_decreasing)
             {
                 true
             } else if current_value >= target_value {
@@ -580,7 +534,7 @@ pub fn select_coins_bnb(current: &mut CoinSelector) -> Result<Selection, Selecti
         selection.waste,
         {
             let best = best.as_ref().unwrap();
-            best.state().waste + best.excess()
+            best.state().waste(current.options()) + best.excess()
         },
         "waste does not match up"
     );
