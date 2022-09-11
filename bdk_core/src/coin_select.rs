@@ -69,10 +69,10 @@ pub struct CoinSelector {
 #[derive(Debug, Clone, Copy)]
 pub struct CoinSelectorOpt {
     /// Ths sum of the recipient output values (in satoshis).
-    pub target_value: u64,
+    pub recipients_sum: u64,
 
     /// The feerate we should try and achieve (in satoshis/wu).
-    pub target_feerate: f32,
+    pub effective_feerate: f32,
     /// The long-term feerate, if we are to spend an UTXO in the future instead of now (in sats/wu).
     pub long_term_feerate: f32,
     /// The minimum absolute fee (in satoshis).
@@ -91,9 +91,9 @@ pub struct CoinSelectorOpt {
 impl CoinSelectorOpt {
     pub fn from_weights(base_weight: u32, drain_weight: u32, drain_spend_weight: u32) -> Self {
         Self {
-            target_value: 0,
+            recipients_sum: 0,
             // 0.25 per wu i.e. 1 sat per byte
-            target_feerate: 0.25,
+            effective_feerate: 0.25,
             long_term_feerate: 0.25,
             min_absolute_fee: 0,
             base_weight,
@@ -125,7 +125,7 @@ impl CoinSelectorOpt {
         };
 
         Self {
-            target_value: txouts.iter().map(|txout| txout.value).sum(),
+            recipients_sum: txouts.iter().map(|txout| txout.value).sum(),
             ..Self::from_weights(base_weight as u32, drain_weight as u32, drain_spend_weight)
         }
     }
@@ -210,22 +210,22 @@ impl CoinSelector {
     pub fn finish(&self) -> Result<Selection, SelectionFailure> {
         let base_weight = self.current_weight();
 
-        if self.current_value() < self.opts.target_value {
+        if self.current_value() < self.opts.recipients_sum {
             return Err(SelectionFailure::InsufficientFunds {
                 selected: self.current_value(),
-                needed: self.opts.target_value,
+                needed: self.opts.recipients_sum,
             });
         }
 
-        let inputs_minus_outputs = self.current_value() - self.opts.target_value;
+        let inputs_minus_outputs = self.current_value() - self.opts.recipients_sum;
 
         // check fee rate satisfied
         let feerate_without_drain = inputs_minus_outputs as f32 / base_weight as f32;
 
         // we simply don't have enough fee to acheieve the feerate
-        if feerate_without_drain < self.opts.target_feerate {
+        if feerate_without_drain < self.opts.effective_feerate {
             return Err(SelectionFailure::FeerateTooLow {
-                needed: self.opts.target_feerate,
+                needed: self.opts.effective_feerate,
                 had: feerate_without_drain,
             });
         }
@@ -238,10 +238,10 @@ impl CoinSelector {
         }
 
         let weight_with_drain = base_weight + self.opts.drain_weight;
-        let target_fee_with_drain = ((self.opts.target_feerate * weight_with_drain as f32).ceil()
-            as u64)
-            .max(self.opts.min_absolute_fee);
-        let target_fee_without_drain = ((self.opts.target_feerate * base_weight as f32).ceil()
+        let target_fee_with_drain =
+            ((self.opts.effective_feerate * weight_with_drain as f32).ceil() as u64)
+                .max(self.opts.min_absolute_fee);
+        let target_fee_without_drain = ((self.opts.effective_feerate * base_weight as f32).ceil()
             as u64)
             .max(self.opts.min_absolute_fee);
 
@@ -249,12 +249,12 @@ impl CoinSelector {
             Some(excess) => (excess, true),
             None => {
                 let implied_output_value = self.current_value() - target_fee_without_drain;
-                match implied_output_value.checked_sub(self.opts.target_value) {
+                match implied_output_value.checked_sub(self.opts.recipients_sum) {
                     Some(excess) => (excess, false),
                     None => {
                         return Err(SelectionFailure::InsufficientFunds {
                             selected: self.current_value(),
-                            needed: target_fee_without_drain + self.opts.target_value,
+                            needed: target_fee_without_drain + self.opts.recipients_sum,
                         })
                     }
                 }
