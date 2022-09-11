@@ -3,13 +3,6 @@ use bitcoin::{LockTime, Transaction, TxOut};
 
 pub const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
-#[derive(Debug, Clone)]
-pub struct CoinSelector {
-    candidates: Vec<InputCandidate>,
-    selected: BTreeSet<usize>,
-    opts: CoinSelectorOpt,
-}
-
 /// An [`InputCandidate`] is used as a candidate for coin selection.
 #[derive(Debug, Clone, Copy)]
 pub struct InputCandidate {
@@ -46,6 +39,13 @@ impl InputCandidate {
             weight: 0,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct CoinSelector {
+    candidates: Vec<InputCandidate>,
+    selected: BTreeSet<usize>,
+    opts: CoinSelectorOpt,
 }
 
 #[derive(Debug, Clone, Copy)]
