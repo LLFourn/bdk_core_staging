@@ -41,6 +41,24 @@ impl InputCandidate {
     }
 }
 
+impl core::ops::AddAssign for InputCandidate {
+    fn add_assign(&mut self, rhs: Self) {
+        self.input_count += rhs.input_count;
+        self.segwit_count += rhs.segwit_count;
+        self.value += rhs.value;
+        self.weight += rhs.weight;
+    }
+}
+
+impl core::ops::SubAssign for InputCandidate {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.input_count -= rhs.input_count;
+        self.segwit_count -= rhs.segwit_count;
+        self.value -= rhs.value;
+        self.weight -= rhs.weight;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CoinSelector {
     candidates: Vec<InputCandidate>,
