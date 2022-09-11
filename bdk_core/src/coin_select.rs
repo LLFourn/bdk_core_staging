@@ -39,6 +39,16 @@ impl InputCandidate {
             weight: 0,
         }
     }
+
+    /// Effective value is actual value of the input minus the fee of inclusing the input.
+    pub fn effective_value(&self, opts: &CoinSelectorOpt) -> i64 {
+        self.value as i64 - (self.weight as f32 * opts.effective_feerate).ceil() as i64
+    }
+
+    /// Calculates the `waste` of including this input.
+    pub fn waste(&self, opts: &CoinSelectorOpt) -> i64 {
+        (self.weight as f32 * (opts.effective_feerate - opts.long_term_feerate)).ceil() as i64
+    }
 }
 
 impl core::ops::AddAssign for InputCandidate {
@@ -82,7 +92,8 @@ pub struct CoinSelectorOpt {
     /// `vout`s and the first 1 bytes of `vin_len` and `vout_len`.
     pub base_weight: u32,
 
-    /// The weight of the drain (change) output(s).
+    /// The weight introduced when we include the drain (change) output(s).
+    /// This should account for the weight difference of the `vout_len` varint.
     pub drain_weight: u32,
     /// The weight of a `txin` used to spend the drain output(s) later on.
     pub drain_spend_weight: u32,
@@ -128,6 +139,19 @@ impl CoinSelectorOpt {
             recipients_sum: txouts.iter().map(|txout| txout.value).sum(),
             ..Self::from_weights(base_weight as u32, drain_weight as u32, drain_spend_weight)
         }
+    }
+
+    /// Calculates the "cost of change": cost of creating drain output + cost of spending the drain
+    /// output in the future.
+    pub fn drain_cost(&self) -> u64 {
+        ((self.effective_feerate * self.drain_weight as f32).ceil()
+            + (self.long_term_feerate * self.drain_spend_weight as f32).ceil()) as u64
+    }
+
+    /// Selection target should be `recipients_sum + base_weight * effective_feerate`
+    pub fn effective_target(&self) -> i64 {
+        self.recipients_sum as i64
+            + (self.base_weight as f32 * self.effective_feerate).ceil() as i64
     }
 }
 
