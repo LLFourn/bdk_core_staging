@@ -68,49 +68,65 @@ pub struct CoinSelector {
 
 #[derive(Debug, Clone, Copy)]
 pub struct CoinSelectorOpt {
-    /// The value we need to select.
+    /// Ths sum of the recipient output values (in satoshis).
     pub target_value: u64,
-    /// The feerate we should try and achieve in sats per weight unit.
+
+    /// The feerate we should try and achieve (in satoshis/wu).
     pub target_feerate: f32,
-    /// The minimum absolute fee.
+    /// The long-term feerate, if we are to spend an UTXO in the future instead of now (in sats/wu).
+    pub long_term_feerate: f32,
+    /// The minimum absolute fee (in satoshis).
     pub min_absolute_fee: u64,
-    /// The weight of the template transaction including fixed inputs and outputs.
+
+    /// The weight of the template transaction, inclusive of `nVersion`, `nLockTime`, recipient
+    /// `vout`s and the first 1 bytes of `vin_len` and `vout_len`.
     pub base_weight: u32,
-    /// The weight of the drain (change) output.
+
+    /// The weight of the drain (change) output(s).
     pub drain_weight: u32,
-    /// The input value of the template transaction.
-    pub starting_input_value: u64,
+    /// The weight of a `txin` used to spend the drain output(s) later on.
+    pub drain_spend_weight: u32,
 }
 
 impl CoinSelectorOpt {
-    pub fn from_weights(base_weight: u32, drain_weight: u32) -> Self {
+    pub fn from_weights(base_weight: u32, drain_weight: u32, drain_spend_weight: u32) -> Self {
         Self {
             target_value: 0,
             // 0.25 per wu i.e. 1 sat per byte
             target_feerate: 0.25,
+            long_term_feerate: 0.25,
             min_absolute_fee: 0,
             base_weight,
             drain_weight,
-            starting_input_value: 0,
+            drain_spend_weight,
         }
     }
 
-    pub fn fund_outputs(txouts: &[TxOut], drain_output: &TxOut) -> Self {
-        let mut tx = Transaction {
+    pub fn fund_outputs(
+        txouts: &[TxOut],
+        drain_outputs: &[TxOut],
+        drain_spend_weight: u32,
+    ) -> Self {
+        let mut temp_tx = Transaction {
             input: vec![],
             version: 1,
             lock_time: LockTime::ZERO.into(),
             output: txouts.to_vec(),
         };
-        let base_weight = tx.weight();
+        let base_weight = temp_tx.weight();
+
         // this awkward calculation is necessary since TxOut doesn't have \.weight()
         let drain_weight = {
-            tx.output.push(drain_output.clone());
-            tx.weight() - base_weight
+            drain_outputs
+                .iter()
+                .for_each(|txo| temp_tx.output.push(txo.clone()));
+            // tx.output.push(drain_outputs.clone());
+            temp_tx.weight() - base_weight
         };
+
         Self {
             target_value: txouts.iter().map(|txout| txout.value).sum(),
-            ..Self::from_weights(base_weight as u32, drain_weight as u32)
+            ..Self::from_weights(base_weight as u32, drain_weight as u32, drain_spend_weight)
         }
     }
 }
@@ -188,7 +204,7 @@ impl CoinSelector {
     }
 
     pub fn current_value(&self) -> u64 {
-        self.opts.starting_input_value + self.selected().map(|(_, wv)| wv.value).sum::<u64>()
+        self.selected().map(|(_, wv)| wv.value).sum::<u64>()
     }
 
     pub fn finish(&self) -> Result<Selection, SelectionFailure> {

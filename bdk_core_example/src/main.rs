@@ -289,7 +289,8 @@ fn main() -> anyhow::Result<()> {
                 wv_candidates,
                 CoinSelectorOpt {
                     target_feerate: 0.5,
-                    ..CoinSelectorOpt::fund_outputs(&outputs, &change_output)
+                    // TODO: Calculate `drain_spend_weight`
+                    ..CoinSelectorOpt::fund_outputs(&outputs, &[change_output.clone()], 0)
                 },
             );
 
