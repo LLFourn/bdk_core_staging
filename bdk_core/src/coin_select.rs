@@ -157,10 +157,6 @@ impl CoinSelectorOpt {
 }
 
 impl<'a> CoinSelector<'a> {
-    pub fn candidates(&self) -> &[InputCandidate] {
-        &self.candidates
-    }
-
     pub fn new(candidates: &'a Vec<InputCandidate>, opts: &'a CoinSelectorOpt) -> Self {
         Self {
             opts,
@@ -170,34 +166,68 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
+    pub fn candidates(&self) -> &[InputCandidate] {
+        &self.candidates
+    }
+
+    pub fn candidate(&self, index: usize) -> &InputCandidate {
+        &self.candidates[index]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.selected.is_empty()
+    }
+
     pub fn select(&mut self, index: usize) {
         assert!(index < self.candidates.len());
-        self.selected.insert(index);
+        if self.selected.insert(index) {
+            self.selected_sum += self.candidates[index];
+        }
     }
 
-    pub fn current_weight(&self) -> u32 {
-        let witness_header_extra_weight = self
-            .selected()
-            .find(|(_, wv)| wv.segwit_count > 0)
-            .map(|_| 2)
-            .unwrap_or(0);
-        self.opts.base_weight
-            + self
-                .selected()
-                .map(|(_, wv)| wv.weight + TXIN_BASE_WEIGHT)
-                .sum::<u32>()
-            + witness_header_extra_weight
+    pub fn deselect(&mut self, index: usize) {
+        assert!(index < self.candidates.len());
+        if self.selected.remove(&index) {
+            self.selected_sum -= self.candidates[index];
+        }
     }
 
-    pub fn selected(&self) -> impl Iterator<Item = (usize, InputCandidate)> + '_ {
-        self.selected
-            .iter()
-            .map(|index| (*index, self.candidates.get(*index).unwrap().clone()))
+    /// Sum of the selected candidates.
+    pub fn sum(&self) -> &InputCandidate {
+        &self.selected_sum
     }
 
-    pub fn unselected(&self) -> Vec<usize> {
-        let all_indexes = (0..self.candidates.len()).collect::<BTreeSet<_>>();
-        all_indexes.difference(&self.selected).cloned().collect()
+    /// Excess of the current selection.
+    pub fn excess(&self) -> i64 {
+        self.selected_sum.effective_value(self.opts) - self.opts.effective_target()
+    }
+
+    pub fn current_weight_without_drain(&self) -> u32 {
+        let selected = self.sum();
+        let is_segwit = selected.segwit_count > 0;
+
+        let extra_witness_weight = if is_segwit { 2_u32 } else { 0_u32 };
+        let extra_varint_weight = (varint_size(selected.input_count) - 1) * 4;
+
+        self.opts.base_weight + selected.weight + extra_witness_weight + extra_varint_weight
+    }
+
+    pub fn iter_selected_indexes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.selected.iter().cloned()
+    }
+
+    pub fn iter_unselected_indexes(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.candidates.len()).filter(|index| !self.selected.contains(index))
+    }
+
+    pub fn iter_selected(&self) -> impl Iterator<Item = &InputCandidate> + '_ {
+        self.iter_selected_indexes()
+            .map(|index| &self.candidates[index])
+    }
+
+    pub fn iter_unselected(&self) -> impl Iterator<Item = &InputCandidate> + '_ {
+        self.iter_selected_indexes()
+            .map(|index| &self.candidates[index])
     }
 
     pub fn all_selected(&self) -> bool {
@@ -205,8 +235,9 @@ impl<'a> CoinSelector<'a> {
     }
 
     pub fn select_all(&mut self) {
-        for next_unselected in self.unselected() {
-            self.select(next_unselected)
+        let unselected = self.iter_unselected_indexes().collect::<Vec<_>>();
+        for index in unselected {
+            self.select(index)
         }
     }
 
@@ -217,8 +248,10 @@ impl<'a> CoinSelector<'a> {
             return selection;
         }
 
-        for next_unselected in self.unselected() {
-            self.select(next_unselected);
+        let unselected = self.iter_unselected_indexes().collect::<Vec<_>>();
+
+        for unselected_index in unselected {
+            self.select(unselected_index);
             selection = self.finish();
 
             if selection.is_ok() {
@@ -229,21 +262,19 @@ impl<'a> CoinSelector<'a> {
         selection
     }
 
-    pub fn current_value(&self) -> u64 {
-        self.selected().map(|(_, wv)| wv.value).sum::<u64>()
-    }
-
     pub fn finish(&self) -> Result<Selection, SelectionFailure> {
-        let base_weight = self.current_weight();
+        let selected = self.sum();
 
-        if self.current_value() < self.opts.recipients_sum {
+        let base_weight = self.current_weight_without_drain();
+
+        if selected.value < self.opts.recipients_sum {
             return Err(SelectionFailure::InsufficientFunds {
-                selected: self.current_value(),
+                selected: selected.value,
                 needed: self.opts.recipients_sum,
             });
         }
 
-        let inputs_minus_outputs = self.current_value() - self.opts.recipients_sum;
+        let inputs_minus_outputs = selected.value - self.opts.recipients_sum;
 
         // check fee rate satisfied
         let feerate_without_drain = inputs_minus_outputs as f32 / base_weight as f32;
@@ -274,12 +305,12 @@ impl<'a> CoinSelector<'a> {
         let (excess, use_drain) = match inputs_minus_outputs.checked_sub(target_fee_with_drain) {
             Some(excess) => (excess, true),
             None => {
-                let implied_output_value = self.current_value() - target_fee_without_drain;
+                let implied_output_value = selected.value - target_fee_without_drain;
                 match implied_output_value.checked_sub(self.opts.recipients_sum) {
                     Some(excess) => (excess, false),
                     None => {
                         return Err(SelectionFailure::InsufficientFunds {
-                            selected: self.current_value(),
+                            selected: selected.value,
                             needed: target_fee_without_drain + self.opts.recipients_sum,
                         })
                     }
@@ -347,4 +378,17 @@ impl Selection {
     ) -> impl Iterator<Item = &'a T> + 'a {
         self.selected.iter().map(|i| &candidates[*i])
     }
+}
+
+fn varint_size(v: usize) -> u32 {
+    if v <= 0xfc {
+        return 1;
+    }
+    if v <= 0xffff {
+        return 3;
+    }
+    if v <= 0xffff_ffff {
+        return 5;
+    }
+    return 9;
 }
