@@ -1,20 +1,51 @@
 use crate::{collections::BTreeSet, Vec};
 use bitcoin::{LockTime, Transaction, TxOut};
 
-const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
+pub const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
 #[derive(Debug, Clone)]
 pub struct CoinSelector {
-    candidates: Vec<WeightedValue>,
+    candidates: Vec<InputCandidate>,
     selected: BTreeSet<usize>,
     opts: CoinSelectorOpt,
 }
 
+/// An [`InputCandidate`] is used as a candidate for coin selection.
 #[derive(Debug, Clone, Copy)]
-pub struct WeightedValue {
+pub struct InputCandidate {
+    /// Number of inputs contained within this [`InputCandidate`].
+    /// If we are using single UTXOs as candidates, this value will be 1.
+    /// If we are working with `OutputGroup`s (as done in Bitcoin Core), this would be > 1.
+    pub input_count: usize,
+    /// The number of input(s) contained within this candidate that is spending a segwit output.
+    pub segwit_count: usize,
+    /// Total value of this candidate.
     pub value: u64,
+    /// Total weight of this candidate, inclusive of `prevout`, `nSequence`, `scriptSig` and
+    /// `scriptWitness` fields of each input contained.
     pub weight: u32,
-    pub is_segwit: bool,
+}
+
+impl InputCandidate {
+    /// Create a new [`InputCandidate`] that represents a single input.
+    pub fn new_single(value: u64, weight: u32, is_segwit: bool) -> Self {
+        Self {
+            input_count: 1,
+            segwit_count: if is_segwit { 1 } else { 0 },
+            value,
+            weight,
+        }
+    }
+
+    /// This should only be used internally.
+    fn empty() -> Self {
+        Self {
+            input_count: 0,
+            segwit_count: 0,
+            value: 0,
+            weight: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,11 +98,11 @@ impl CoinSelectorOpt {
 }
 
 impl CoinSelector {
-    pub fn candidates(&self) -> &[WeightedValue] {
+    pub fn candidates(&self) -> &[InputCandidate] {
         &self.candidates
     }
 
-    pub fn new(candidates: Vec<WeightedValue>, opts: CoinSelectorOpt) -> Self {
+    pub fn new(candidates: Vec<InputCandidate>, opts: CoinSelectorOpt) -> Self {
         Self {
             candidates,
             selected: Default::default(),
@@ -87,7 +118,7 @@ impl CoinSelector {
     pub fn current_weight(&self) -> u32 {
         let witness_header_extra_weight = self
             .selected()
-            .find(|(_, wv)| wv.is_segwit)
+            .find(|(_, wv)| wv.segwit_count > 0)
             .map(|_| 2)
             .unwrap_or(0);
         self.opts.base_weight
@@ -98,7 +129,7 @@ impl CoinSelector {
             + witness_header_extra_weight
     }
 
-    pub fn selected(&self) -> impl Iterator<Item = (usize, WeightedValue)> + '_ {
+    pub fn selected(&self) -> impl Iterator<Item = (usize, InputCandidate)> + '_ {
         self.selected
             .iter()
             .map(|index| (*index, self.candidates.get(*index).unwrap().clone()))

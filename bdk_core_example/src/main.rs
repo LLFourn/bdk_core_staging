@@ -7,7 +7,7 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue},
+    coin_select::{CoinSelector, CoinSelectorOpt, InputCandidate, TXIN_BASE_WEIGHT},
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
 };
@@ -264,10 +264,12 @@ fn main() -> anyhow::Result<()> {
             // turn the txos we chose into a weight and value
             let wv_candidates = candidates
                 .iter()
-                .map(|(plan, utxo)| WeightedValue {
-                    value: utxo.value,
-                    weight: plan.expected_weight() as u32,
-                    is_segwit: plan.witness_version().is_some(),
+                .map(|(plan, utxo)| {
+                    InputCandidate::new_single(
+                        utxo.value,
+                        TXIN_BASE_WEIGHT + plan.expected_weight() as u32,
+                        plan.witness_version().is_some(),
+                    )
                 })
                 .collect();
 
