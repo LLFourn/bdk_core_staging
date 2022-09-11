@@ -70,10 +70,11 @@ impl core::ops::SubAssign for InputCandidate {
 }
 
 #[derive(Debug, Clone)]
-pub struct CoinSelector {
-    candidates: Vec<InputCandidate>,
+pub struct CoinSelector<'a> {
+    opts: &'a CoinSelectorOpt,
+    candidates: &'a Vec<InputCandidate>,
     selected: BTreeSet<usize>,
-    opts: CoinSelectorOpt,
+    selected_sum: InputCandidate,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -155,16 +156,17 @@ impl CoinSelectorOpt {
     }
 }
 
-impl CoinSelector {
+impl<'a> CoinSelector<'a> {
     pub fn candidates(&self) -> &[InputCandidate] {
         &self.candidates
     }
 
-    pub fn new(candidates: Vec<InputCandidate>, opts: CoinSelectorOpt) -> Self {
+    pub fn new(candidates: &'a Vec<InputCandidate>, opts: &'a CoinSelectorOpt) -> Self {
         Self {
+            opts,
             candidates,
             selected: Default::default(),
-            opts,
+            selected_sum: InputCandidate::empty(),
         }
     }
 
