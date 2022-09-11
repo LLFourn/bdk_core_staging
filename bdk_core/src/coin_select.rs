@@ -166,12 +166,20 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
+    pub fn options(&self) -> &CoinSelectorOpt {
+        &self.opts
+    }
+
     pub fn candidates(&self) -> &[InputCandidate] {
         &self.candidates
     }
 
     pub fn candidate(&self, index: usize) -> &InputCandidate {
         &self.candidates[index]
+    }
+
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selected.contains(&index)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -391,4 +399,105 @@ fn varint_size(v: usize) -> u32 {
         return 5;
     }
     return 9;
+}
+
+pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option<CoinSelector> {
+    let opts = selection.options().clone();
+    let target_value = opts.effective_target();
+    let cost_of_change = opts.drain_cost() as i64;
+    let feerate_decreasing = opts.effective_feerate > opts.long_term_feerate;
+    let upper_bound = target_value + cost_of_change;
+
+    // remaining value of current branch
+    let mut remaining_value = selection
+        .iter_unselected()
+        .map(|c| c.effective_value(&opts))
+        .sum::<i64>();
+
+    // ensure we have enough to select with
+    if remaining_value < target_value {
+        return None;
+    }
+
+    // prepare pool
+    let pool = {
+        let mut pool = selection.iter_unselected_indexes().collect::<Vec<_>>();
+        pool.sort_unstable_by(|&a, &b| {
+            let a = selection.candidate(a).effective_value(&opts);
+            let b = selection.candidate(b).effective_value(&opts);
+            b.cmp(&a)
+        });
+        pool
+    };
+    // pool position
+    let mut pos = 0_usize;
+
+    // our best solution (least waste, within bounds)
+    let mut best_selection = Option::<CoinSelector>::None;
+
+    for try_index in 0..max_tries {
+        if try_index > 0 {
+            pos += 1;
+        }
+
+        let backtrack = {
+            let current_value = selection.sum().effective_value(&opts);
+            let current_waste = selection.sum().waste(&opts) + selection.excess();
+            let best_waste = best_selection
+                .as_ref()
+                .map(|b| b.sum().waste(&opts) + b.excess())
+                .unwrap_or(i64::MAX);
+
+            // backtrack if:
+            // * value remaining in branch is not enough to reach target value (lower bound)
+            // * current selected value surpasses upper bound
+            if current_value + remaining_value < target_value || current_value > upper_bound {
+                true
+            } else if feerate_decreasing && current_waste >= best_waste {
+                // with a decreasing feerate, selecting a new input will always decrease the waste
+                // however, we want to find a solution with no change output
+                true
+            } else if current_value >= target_value {
+                // we have found a solution, but is it better than our best?
+                if current_waste <= best_waste {
+                    best_selection.replace(selection.clone());
+                }
+                true
+            } else {
+                false
+            }
+        };
+
+        if backtrack {
+            let last_selected_pos = (pos - 1..0).find(|&pos| {
+                remaining_value += selection.candidate(pool[pos]).effective_value(&opts);
+                selection.is_selected(pool[pos])
+            });
+            match last_selected_pos {
+                Some(last_selected_pos) => {
+                    pos = last_selected_pos;
+                    selection.deselect(pool[pos]);
+                }
+                None => break, // nothing is selected, all solutions searched
+            }
+        } else {
+            let candidate = selection.candidate(pool[pos]);
+            remaining_value -= candidate.effective_value(&opts);
+
+            // avoid selection if previous position was excluded and has the same value and weight
+            if !selection.is_selected(pool[pos - 1]) {
+                let prev_candidate = selection.candidate(pool[pos - 1]);
+                if candidate.effective_value(&opts) == prev_candidate.effective_value(&opts)
+                    && candidate.weight == prev_candidate.weight
+                {
+                    continue;
+                }
+            }
+
+            // select
+            selection.select(pool[pos]);
+        }
+    }
+
+    best_selection
 }
