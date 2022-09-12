@@ -7,7 +7,10 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{CoinSelector, CoinSelectorOpt, InputCandidate, TXIN_BASE_WEIGHT},
+    coin_select::{
+        select_coins_bnb, CoinSelector, CoinSelectorOpt, InputCandidate, SelectionFailure,
+        TXIN_BASE_WEIGHT,
+    },
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
 };
@@ -258,7 +261,7 @@ fn main() -> anyhow::Result<()> {
                             .unwrap_or(u32::MAX),
                     )
                 }),
-                CoinSelectionAlgo::BranchAndBound => todo!(),
+                CoinSelectionAlgo::BranchAndBound => {}
             }
 
             // turn the txos we chose into a weight and value
@@ -292,8 +295,21 @@ fn main() -> anyhow::Result<()> {
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs
             let mut selection = CoinSelector::new(&cs_candidates, &cs_opts);
-            // just select coins in the order provided until we have enough
-            selection.select_until_satisfied()?;
+
+            match coin_select {
+                CoinSelectionAlgo::BranchAndBound => {
+                    selection = select_coins_bnb(1000, selection.clone())
+                        .ok_or(SelectionFailure::InsufficientFunds {
+                            selected: selection.sum().effective_value(&cs_opts),
+                            needed: selection.options().effective_target(true, candidates.len()),
+                        })
+                        .or_else(|_| selection.select_until_satisfied().map(|s| s.clone()))?;
+                }
+                _ => {
+                    // just select coins in the order provided until we have enough
+                    selection.select_until_satisfied()?;
+                }
+            };
 
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
