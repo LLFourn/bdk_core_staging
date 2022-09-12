@@ -174,6 +174,11 @@ impl CoinSelectorOpt {
         }
     }
 
+    /// Calculates the fee for including the drain output of the effective feerate.
+    pub fn drain_fee(&self) -> u64 {
+        (self.effective_feerate * self.drain_weight as f32).ceil() as u64
+    }
+
     /// Calculates the "cost of change": cost of creating drain output + cost of spending the drain
     /// output in the future.
     pub fn drain_cost(&self) -> u64 {
@@ -273,6 +278,19 @@ impl<'a> CoinSelector<'a> {
             // additional weight due to spending of segwit UTXOs; we need to include segwit 
             // `marker` and `flag` fields
             + if is_segwit { 2_u32 } else { 0_u32 }
+    }
+
+    /// The required value of the drain output if we are to include the drain output while
+    /// maintaining the `effective_feerate`.
+    ///
+    /// A negative value means a drain output is non-viable at the `effective_feerate`.
+    pub fn drain_value(&self) -> i64 {
+        let effective_target = self.opts.effective_target(
+            self.selected_sum.segwit_count > 0,
+            self.selected_sum.input_count,
+        );
+        let drain_value = self.excess(effective_target) - self.opts.drain_fee() as i64;
+        drain_value
     }
 
     pub fn iter_selected_indexes(&self) -> impl Iterator<Item = usize> + '_ {
