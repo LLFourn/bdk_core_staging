@@ -291,18 +291,16 @@ fn main() -> anyhow::Result<()> {
 
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs
-            let mut coin_selector = CoinSelector::new(&cs_candidates, &cs_opts);
-
+            let mut selection = CoinSelector::new(&cs_candidates, &cs_opts);
             // just select coins in the order provided until we have enough
-            let selection = coin_selector.select_until_finished()?;
+            selection.select_until_satisfied()?;
 
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
-            if selection.use_drain
-                && selection.excess >= tracker.descriptor(change_keychain).dust_value()
-            {
-                change_output.value = selection.excess;
+            let drain_value = selection.drain_value();
+            if drain_value >= tracker.descriptor(change_keychain).dust_value() as i64 {
+                change_output.value = drain_value as u64;
                 // if the selection tells us to use change and the change value is sufficient we add it as an output
                 outputs.push(change_output)
             }
