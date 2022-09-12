@@ -8,8 +8,7 @@ use bdk_core::{
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
     coin_select::{
-        select_coins_bnb, CoinSelector, CoinSelectorOpt, InputCandidate, SelectionFailure,
-        TXIN_BASE_WEIGHT,
+        select_coins_bnb, CoinSelector, CoinSelectorOpt, InputCandidate, TXIN_BASE_WEIGHT,
     },
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
@@ -226,7 +225,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             use bdk_core::miniscript::plan::*;
             let assets = Assets {
-                keys: keymap.iter().map(|(pk, _)| pk.clone()).collect(),
+                keys: keymap.keys().cloned().collect(),
                 ..Default::default()
             };
 
@@ -296,20 +295,14 @@ fn main() -> anyhow::Result<()> {
             // apply coin selection by saying we need to fund these outputs
             let mut selection = CoinSelector::new(&cs_candidates, &cs_opts);
 
-            match coin_select {
-                CoinSelectionAlgo::BranchAndBound => {
-                    selection = select_coins_bnb(1000, selection.clone())
-                        .ok_or(SelectionFailure::InsufficientFunds {
-                            selected: selection.sum().effective_value(&cs_opts),
-                            needed: selection.options().effective_target(true, candidates.len()),
-                        })
-                        .or_else(|_| selection.select_until_satisfied().map(|s| s.clone()))?;
-                }
-                _ => {
-                    // just select coins in the order provided until we have enough
-                    selection.select_until_satisfied()?;
-                }
+            let is_satisfied = match coin_select {
+                CoinSelectionAlgo::BranchAndBound => select_coins_bnb(1000, &mut selection),
+                _ => false,
             };
+            if !is_satisfied {
+                // just select coins in the order provided until we have enough
+                selection.select_until_satisfied()?;
+            }
 
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();

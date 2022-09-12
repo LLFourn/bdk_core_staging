@@ -118,12 +118,10 @@ pub struct CoinSelectorOpt {
     pub effective_feerate: f32,
     /// The long-term feerate, if we are to spend an UTXO in the future instead of now (in sats/wu).
     pub long_term_feerate: f32,
-    // /// The minimum absolute fee (in satoshis).
-    // pub min_absolute_fee: u64,
+
     /// The weight of the template transaction, inclusive of `nVersion`, `nLockTime`, recipient
     /// `vout`s and the first 1 bytes of `vin_len` and `vout_len`.
     pub base_weight: u32,
-
     /// The weight introduced when we include the drain (change) output(s).
     /// This should account for the weight difference of the `vout_len` varint.
     pub drain_weight: u32,
@@ -233,6 +231,10 @@ impl<'a> CoinSelector<'a> {
         self.selected.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.selected.len()
+    }
+
     pub fn select(&mut self, index: usize) {
         assert!(index < self.candidates.len());
         if self.selected.insert(index) {
@@ -317,7 +319,7 @@ impl<'a> CoinSelector<'a> {
     pub fn iter_unselected(
         &self,
     ) -> impl Iterator<Item = &InputCandidate> + DoubleEndedIterator + '_ {
-        self.iter_selected_indexes()
+        self.iter_unselected_indexes()
             .map(|index| &self.candidates[index])
     }
 
@@ -393,7 +395,7 @@ fn varint_size(v: usize) -> u32 {
     return 9;
 }
 
-pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option<CoinSelector> {
+pub fn select_coins_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
     let opts = selection.options().clone();
 
     let (target_value, mut remaining_value) = {
@@ -407,7 +409,7 @@ pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option
 
         // ensure we have enough to select with
         if remaining_value < target_value {
-            return None;
+            return false;
         }
 
         (target_value, remaining_value)
@@ -446,10 +448,14 @@ pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option
                 .map(|b| b.sum().waste(&opts) + b.excess(target_value))
                 .unwrap_or(i64::MAX);
 
-            // backtrack if:
-            // * value remaining in branch is not enough to reach target value (lower bound)
-            // * current selected value surpasses upper bound
-            if current_value + remaining_value < target_value || current_value > upper_bound {
+            // backtrack?
+            if pos >= pool.len() {
+                // catch overflow
+                true
+            } else if current_value + remaining_value < target_value || current_value > upper_bound
+            {
+                // * value remaining in branch is not enough to reach target value (lower bound)
+                // * current selected value surpasses upper bound
                 true
             } else if feerate_decreasing && current_waste >= best_waste {
                 // with a decreasing feerate, selecting a new input will always decrease the waste
@@ -467,9 +473,12 @@ pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option
         };
 
         if backtrack {
-            let last_selected_pos = (pos - 1..0).find(|&pos| {
-                remaining_value += selection.candidate(pool[pos]).effective_value(&opts);
-                selection.is_selected(pool[pos])
+            let last_selected_pos = (0..pos).rev().find(|&pos| {
+                let is_selected = selection.is_selected(pool[pos]);
+                if !is_selected {
+                    remaining_value += selection.candidate(pool[pos]).effective_value(&opts);
+                }
+                is_selected
             });
 
             match last_selected_pos {
@@ -484,7 +493,7 @@ pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option
             remaining_value -= candidate.effective_value(&opts);
 
             // avoid selection if previous position was excluded and has the same value and weight
-            if !selection.is_selected(pool[pos - 1]) {
+            if !selection.is_empty() && !selection.is_selected(pool[pos - 1]) {
                 let prev_candidate = selection.candidate(pool[pos - 1]);
                 if candidate.effective_value(&opts) == prev_candidate.effective_value(&opts)
                     && candidate.weight == prev_candidate.weight
@@ -498,5 +507,158 @@ pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option
         }
     }
 
-    best_selection
+    match best_selection {
+        Some(best_selection) => {
+            *selection = best_selection;
+            true
+        }
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use alloc::vec::Vec;
+    use bitcoin::{
+        secp256k1::{All, Secp256k1},
+        TxOut,
+    };
+    use miniscript::{
+        plan::{Assets, Plan},
+        Descriptor, DescriptorPublicKey,
+    };
+    use rand::Rng;
+
+    use super::{
+        select_coins_bnb, CoinSelector, CoinSelectorOpt, InputCandidate, TXIN_BASE_WEIGHT,
+    };
+
+    pub struct TestDescriptors {
+        desc: Vec<Descriptor<DescriptorPublicKey>>,
+        assets: Assets<DescriptorPublicKey>,
+    }
+
+    impl TestDescriptors {
+        pub fn new(secp: &Secp256k1<All>) -> Self {
+            // let wpkh_str = "wpkh(xprv9uTXExXrKRwPwSpzRjhikVXNN6ggPX82Y3AkRTzMkqSNXwDBGqFeFpAyD1Xm8sjWpFXcYFDVNU8sT1t8YHaAZdSB3ZuBsgujo4uGWNxg3PT)";
+            // let pkh_str = "pkh(xprv9uBuvtdjghkz8D1qzsSXS9Vs64mqrUnXqzNccj2xcvnCHPpXKYE1U2Gbh9CDHk8UPyF2VuXpVkDA7fk5ZP4Hd9KnhUmTscKmhee9Dp5sBMK)";
+            // let sh_wpkh_str = "sh(wpkh(xprv9uet4SQi3UspHj89XtRy7fQiCS2HaCqqVRXutmpgDSvWXKDevc4CYTdbPPErttw42HdoXjSQjat6bcmreVaMKz7DHZmuiYPwLrmchZKSQs1))";
+            let tr_str = "tr(xprv9uBuvtdjghkz8D1qzsSXS9Vs64mqrUnXqzNccj2xcvnCHPpXKYE1U2Gbh9CDHk8UPyF2VuXpVkDA7fk5ZP4Hd9KnhUmTscKmhee9Dp5sBMK)";
+
+            // let (wpkh_desc, wpkh_sk_map) =
+            //     Descriptor::<DescriptorPublicKey>::parse_descriptor(secp, wpkh_str).unwrap();
+            // let (pkh_desc, pkh_sk_map) =
+            //     Descriptor::<DescriptorPublicKey>::parse_descriptor(secp, pkh_str).unwrap();
+            // let (sh_wpkh_desc, sh_wpkh_sk_map) =
+            //     Descriptor::<DescriptorPublicKey>::parse_descriptor(secp, sh_wpkh_str).unwrap();
+            let (tr_desc, tr_sks) =
+                Descriptor::<DescriptorPublicKey>::parse_descriptor(secp, tr_str).unwrap();
+
+            let desc = vec![tr_desc];
+
+            let assets = Assets {
+                keys: tr_sks.keys().cloned().collect(),
+                ..Default::default()
+            };
+
+            Self { desc, assets }
+        }
+
+        pub fn generate_candidate(&self, min: u64, max: u64) -> (Plan<DescriptorPublicKey>, TxOut) {
+            let mut rng = rand::thread_rng();
+            let desc_index = rng.gen_range(0_usize..self.desc.len());
+            let desc = self.desc[desc_index].at_derivation_index(0);
+            let plan = desc.plan_satisfaction(&self.assets).unwrap();
+            let value = rng.gen_range(min..max);
+
+            let txo = TxOut {
+                value,
+                script_pubkey: desc.script_pubkey(),
+            };
+
+            (plan, txo)
+        }
+
+        pub fn generate_candidates(
+            &self,
+            count: usize,
+            value_min: u64,
+            value_max: u64,
+        ) -> Vec<(Plan<DescriptorPublicKey>, TxOut)> {
+            (0..count)
+                .map(|_| self.generate_candidate(value_min, value_max))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn test_bnb() {
+        let secp = Secp256k1::default();
+        let test_desc = TestDescriptors::new(&secp);
+
+        let mut candidates = test_desc.generate_candidates(1000, 10_000, 100_000);
+        let (_, mut recipient_txo) = candidates.pop().unwrap();
+        recipient_txo.value = 150_000;
+        let (drain_plan, drain_txo) = candidates.pop().unwrap();
+
+        let cs_opts = CoinSelectorOpt::fund_outputs(
+            &[recipient_txo.clone()],
+            &[drain_txo.clone()],
+            TXIN_BASE_WEIGHT + drain_plan.expected_weight() as u32,
+        );
+        println!("cs_opts: {:#?}", cs_opts);
+
+        let cs_candidates = candidates
+            .iter()
+            .map(|(plan, txo)| {
+                InputCandidate::new_single(
+                    txo.value,
+                    TXIN_BASE_WEIGHT + plan.expected_weight() as u32,
+                    plan.witness_version().is_some(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut selection = CoinSelector::new(&cs_candidates, &cs_opts);
+        let has_solution = select_coins_bnb(100_000, &mut selection);
+
+        if has_solution {
+            let selected_sum = selection.sum();
+            let effective_target = selection
+                .options()
+                .effective_target(selected_sum.segwit_count > 0, selected_sum.input_count);
+
+            let count = selection.len();
+            let excess = selection.excess(effective_target);
+            let weight = selection.weight();
+            let fee = selection.fee();
+            let feerate = fee as f32 / weight as f32;
+            let waste = selected_sum.waste(&cs_opts) + excess;
+
+            let drain_value = selection.drain_value();
+            let fee_with_drain = fee - drain_value;
+            let weight_with_drain = weight + cs_opts.drain_weight;
+            let feerate_with_drain = fee_with_drain as f32 / weight_with_drain as f32;
+            let waste_with_drain = selected_sum.waste(&cs_opts) + cs_opts.drain_cost() as i64;
+
+            println!("---");
+            println!("count: {:#?}", count);
+            println!("excess: {:#?} satoshis", excess);
+            println!("weight: {:#?} wu", weight);
+            println!("fee: {:#?} satoshis", fee);
+            println!("feerate: {:#?} satoshis/vbyte", feerate * 4_f32);
+            println!("waste: {} satoshis", waste);
+            println!("---");
+            println!("drain_value: {:#?} satoshis", drain_value);
+            println!("weight_with_drain: {:#?} wu", weight_with_drain);
+            println!("fee_with_drain: {:#?} satoshis", fee_with_drain);
+            println!(
+                "feerate_with_drain: {:#?} satoshis/vbyte",
+                feerate_with_drain * 4_f32
+            );
+            println!("waste_with_drain: {} satoshis", waste_with_drain);
+        } else {
+            println!("no solution found");
+        }
+    }
 }
