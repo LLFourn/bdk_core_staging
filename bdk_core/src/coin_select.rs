@@ -51,6 +51,32 @@ impl InputCandidate {
     }
 }
 
+impl core::ops::Add for InputCandidate {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            input_count: self.input_count + rhs.input_count,
+            segwit_count: self.segwit_count + rhs.segwit_count,
+            value: self.value + rhs.value,
+            weight: self.weight + rhs.weight,
+        }
+    }
+}
+
+impl core::ops::Sub for InputCandidate {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self {
+        Self {
+            input_count: self.input_count - rhs.input_count,
+            segwit_count: self.segwit_count - rhs.segwit_count,
+            value: self.value - rhs.value,
+            weight: self.weight - rhs.weight,
+        }
+    }
+}
+
 impl core::ops::AddAssign for InputCandidate {
     fn add_assign(&mut self, rhs: Self) {
         self.input_count += rhs.input_count;
@@ -66,6 +92,12 @@ impl core::ops::SubAssign for InputCandidate {
         self.segwit_count -= rhs.segwit_count;
         self.value -= rhs.value;
         self.weight -= rhs.weight;
+    }
+}
+
+impl core::iter::Sum for InputCandidate {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::empty(), |acc, v| acc + v)
     }
 }
 
@@ -150,9 +182,20 @@ impl CoinSelectorOpt {
     }
 
     /// Selection target should be `recipients_sum + base_weight * effective_feerate`
-    pub fn effective_target(&self) -> i64 {
-        self.recipients_sum as i64
-            + (self.base_weight as f32 * self.effective_feerate).ceil() as i64
+    ///
+    /// If `include_segwit == true`, 2 additional WUs are included in `base_weight` to represent the
+    /// segwit `marker` and `flag` fields.
+    ///
+    /// `max_input_count` determines if additional WUs are to be included in `base_weight` due to
+    /// `vin_len` varint weight changes.
+    pub fn effective_target(&self, include_segwit: bool, max_input_count: usize) -> i64 {
+        let base_weight = self.base_weight
+            // additional weight from segwit headers
+            + if include_segwit { 2_u32 } else { 0_u32 }
+            // additional weight from `vin_len` varint changes
+            + (varint_size(max_input_count) - 1) * 4;
+
+        self.recipients_sum as i64 + (base_weight as f32 * self.effective_feerate).ceil() as i64
     }
 }
 
@@ -200,24 +243,36 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
-    /// Sum of the selected candidates.
+    /// Sum of the selected candidate inputs.
     pub fn sum(&self) -> &InputCandidate {
         &self.selected_sum
     }
 
     /// Excess of the current selection.
-    pub fn excess(&self) -> i64 {
-        self.selected_sum.effective_value(self.opts) - self.opts.effective_target()
+    /// The value will be negative if selection does not satisfy effective target.
+    pub fn excess(&self, effective_target: i64) -> i64 {
+        self.selected_sum.effective_value(self.opts) - effective_target
     }
 
-    pub fn current_weight_without_drain(&self) -> u32 {
+    /// Total fee payed with no drain output.
+    pub fn fee(&self) -> i64 {
+        self.selected_sum.value as i64 - self.opts.recipients_sum as i64
+    }
+
+    /// Total weight of a transaction formed from the current selection of candidates.
+    /// This value assumes no drain output.
+    pub fn weight(&self) -> u32 {
         let selected = self.sum();
         let is_segwit = selected.segwit_count > 0;
 
-        let extra_witness_weight = if is_segwit { 2_u32 } else { 0_u32 };
-        let extra_varint_weight = (varint_size(selected.input_count) - 1) * 4;
-
-        self.opts.base_weight + selected.weight + extra_witness_weight + extra_varint_weight
+        self.opts.base_weight
+            // weight from selected candidate inputs
+            + selected.weight
+            // additional weight due to the varint that records input count
+            + (varint_size(selected.input_count) - 1) * 4
+            // additional weight due to spending of segwit UTXOs; we need to include segwit 
+            // `marker` and `flag` fields
+            + if is_segwit { 2_u32 } else { 0_u32 }
     }
 
     pub fn iter_selected_indexes(&self) -> impl Iterator<Item = usize> + '_ {
@@ -272,8 +327,7 @@ impl<'a> CoinSelector<'a> {
 
     pub fn finish(&self) -> Result<Selection, SelectionFailure> {
         let selected = self.sum();
-
-        let base_weight = self.current_weight_without_drain();
+        let base_weight = self.weight();
 
         if selected.value < self.opts.recipients_sum {
             return Err(SelectionFailure::InsufficientFunds {
@@ -403,21 +457,27 @@ fn varint_size(v: usize) -> u32 {
 
 pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option<CoinSelector> {
     let opts = selection.options().clone();
-    let target_value = opts.effective_target();
+
+    let (target_value, mut remaining_value) = {
+        let remaining = selection.iter_unselected().cloned().sum::<InputCandidate>();
+        let all = *selection.sum() + remaining;
+
+        // we want to avoid undershooting the `target_value` so it is set as the "largest possibe"
+        // value given our candidates
+        let target_value = opts.effective_target(all.segwit_count > 0, all.input_count);
+        let remaining_value = remaining.effective_value(&opts);
+
+        // ensure we have enough to select with
+        if remaining_value < target_value {
+            return None;
+        }
+
+        (target_value, remaining_value)
+    };
+
     let cost_of_change = opts.drain_cost() as i64;
     let feerate_decreasing = opts.effective_feerate > opts.long_term_feerate;
     let upper_bound = target_value + cost_of_change;
-
-    // remaining value of current branch
-    let mut remaining_value = selection
-        .iter_unselected()
-        .map(|c| c.effective_value(&opts))
-        .sum::<i64>();
-
-    // ensure we have enough to select with
-    if remaining_value < target_value {
-        return None;
-    }
 
     // prepare pool
     let pool = {
@@ -442,10 +502,10 @@ pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option
 
         let backtrack = {
             let current_value = selection.sum().effective_value(&opts);
-            let current_waste = selection.sum().waste(&opts) + selection.excess();
+            let current_waste = selection.sum().waste(&opts) + selection.excess(target_value);
             let best_waste = best_selection
                 .as_ref()
-                .map(|b| b.sum().waste(&opts) + b.excess())
+                .map(|b| b.sum().waste(&opts) + b.excess(target_value))
                 .unwrap_or(i64::MAX);
 
             // backtrack if:
@@ -473,6 +533,7 @@ pub fn select_coins_bnb(max_tries: usize, mut selection: CoinSelector) -> Option
                 remaining_value += selection.candidate(pool[pos]).effective_value(&opts);
                 selection.is_selected(pool[pos])
             });
+
             match last_selected_pos {
                 Some(last_selected_pos) => {
                     pos = last_selected_pos;
