@@ -25,18 +25,23 @@ pub struct WeightedValue {
 pub struct CoinSelectorOpt {
     /// The value we need to select.
     pub target_value: u64,
+    /// Additional leeway for the target value.
+    pub max_extra_target: u64,
+
     /// The feerate we should try and achieve in sats per weight unit.
     pub target_feerate: f32,
-    /// TODO
+    /// The feerate
     pub long_term_feerate: Option<f32>,
     /// The minimum absolute fee.
     pub min_absolute_fee: u64,
+
     /// The weight of the template transaction including fixed inputs and outputs.
     pub base_weight: u32,
     /// Additional weight if we include the drain (change) output.
     pub drain_weight: u32,
     /// TODO
     pub spend_drain_weight: u32,
+
     /// Minimum value allowed for a drain (change) output.
     pub min_drain_value: u64,
 }
@@ -45,6 +50,7 @@ impl CoinSelectorOpt {
     pub fn from_weights(base_weight: u32, drain_weight: u32, spend_drain_weight: u32) -> Self {
         Self {
             target_value: 0,
+            max_extra_target: 0,
             // 0.25 per wu i.e. 1 sat per byte
             target_feerate: 0.25,
             long_term_feerate: None,
@@ -158,7 +164,7 @@ impl CoinSelector {
         }
     }
 
-    pub fn select_until_finished(&mut self) -> Result<Selection, SelectionFailure> {
+    pub fn select_until_finished(&mut self) -> Result<Vec<Selection>, SelectionFailure> {
         let mut selection = self.finish();
 
         if selection.is_ok() {
@@ -181,7 +187,7 @@ impl CoinSelector {
         self.selected().map(|(_, wv)| wv.value).sum::<u64>()
     }
 
-    pub fn finish(&self) -> Result<Selection, SelectionFailure> {
+    pub fn finish(&self) -> Result<Vec<Selection>, SelectionFailure> {
         let weight_without_drain = self.current_weight();
         let weight_with_drain = weight_without_drain + self.opts.drain_weight;
 
@@ -213,28 +219,55 @@ impl CoinSelector {
             (selected_value - target_value) as u64
         };
 
-        let drain_invalid = inputs_minus_outputs < fee_with_drain + self.opts.min_drain_value;
-
+        let drain_valid = inputs_minus_outputs >= fee_with_drain + self.opts.min_drain_value;
         let excess_without_drain = inputs_minus_outputs - fee_without_drain;
-        let drain_value = inputs_minus_outputs.saturating_sub(fee_with_drain);
-
-        // waste calculations
         let input_waste = self.waste_of_inputs();
-        let waste_without_drain = input_waste + excess_without_drain as i64;
-        let waste_with_drain = input_waste + self.opts.drain_waste();
 
-        Ok(Selection {
+        // prepare results
+        let mut results = Vec::with_capacity(3);
+
+        // no drain, excess to fee
+        results.push(Selection {
             selected: self.selected.clone(),
-            excess_without_drain,
-            drain_value,
-            drain_invalid,
-            fee_without_drain,
-            fee_with_drain,
-            weight_without_drain,
-            weight_with_drain,
-            waste_without_drain,
-            waste_with_drain,
-        })
+            excess: excess_without_drain,
+            drain: None,
+            recipient_value: self.opts.target_value,
+            fee: fee_without_drain + excess_without_drain,
+            weight: weight_without_drain,
+            waste: input_waste + excess_without_drain as i64,
+        });
+
+        // no drain, excess to recipient
+        if excess_without_drain <= self.opts.max_extra_target {
+            results.push(Selection {
+                selected: self.selected.clone(),
+                excess: excess_without_drain,
+                drain: None,
+                recipient_value: self.opts.target_value + excess_without_drain,
+                fee: fee_without_drain,
+                weight: weight_without_drain,
+                waste: input_waste,
+            });
+        }
+
+        // with drain
+        if drain_valid {
+            let drain_value = inputs_minus_outputs.saturating_sub(fee_with_drain);
+
+            results.push(Selection {
+                selected: self.selected.clone(),
+                excess: excess_without_drain,
+                drain: Some(drain_value),
+                recipient_value: self.opts.target_value,
+                fee: fee_with_drain,
+                weight: weight_with_drain,
+                waste: input_waste + self.opts.drain_waste(),
+            });
+        }
+
+        // sort by ascending waste
+        results.sort_unstable_by_key(|s| s.waste);
+        Ok(results)
     }
 }
 
@@ -312,18 +345,12 @@ impl SelectionConstraint {
 #[derive(Clone, Debug)]
 pub struct Selection {
     pub selected: BTreeSet<usize>,
-    pub excess_without_drain: u64, // excess = input values - target_value - fee
-    pub drain_value: u64,
-    pub drain_invalid: bool,
-
-    pub fee_without_drain: u64, // fee = input values - target_value - excess || fee = total_weight * target_feerate
-    pub fee_with_drain: u64,    //
-
-    pub weight_without_drain: u32, // weight without drain
-    pub weight_with_drain: u32,    // base_weight + drain_weight
-
-    pub waste_without_drain: i64, // waste of the inputs only (without drain: + excess, with drain: + cost_of_drain)
-    pub waste_with_drain: i64,
+    pub excess: u64,
+    pub drain: Option<u64>,
+    pub recipient_value: u64,
+    pub fee: u64,
+    pub weight: u32,
+    pub waste: i64,
 }
 
 impl Selection {

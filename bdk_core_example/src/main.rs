@@ -296,6 +296,7 @@ fn main() -> anyhow::Result<()> {
                 wv_candidates,
                 CoinSelectorOpt {
                     target_feerate: 0.5,
+                    min_drain_value: tracker.descriptor(change_keychain).dust_value(),
                     ..CoinSelectorOpt::fund_outputs(
                         &outputs,
                         &change_output,
@@ -305,15 +306,14 @@ fn main() -> anyhow::Result<()> {
             );
 
             // just select coins in the order provided until we have enough
-            let selection = coin_selector.select_until_finished()?;
+            // only use first result (least waste)
+            let selection = coin_selector.select_until_finished()?[0].clone();
 
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
-            if !selection.drain_invalid
-                && selection.drain_value >= tracker.descriptor(change_keychain).dust_value()
-            {
-                change_output.value = selection.drain_value;
+            if let Some(drain_value) = selection.drain {
+                change_output.value = drain_value;
                 // if the selection tells us to use change and the change value is sufficient we add it as an output
                 outputs.push(change_output)
             }
