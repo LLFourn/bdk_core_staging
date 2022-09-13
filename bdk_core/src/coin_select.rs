@@ -35,6 +35,8 @@ pub struct CoinSelectorOpt {
     pub drain_weight: u32,
     /// TODO
     pub spend_drain_weight: u32,
+    /// Minimum value allowed for a drain (change) output.
+    pub min_drain_value: u64,
 }
 
 impl CoinSelectorOpt {
@@ -48,6 +50,7 @@ impl CoinSelectorOpt {
             base_weight,
             drain_weight,
             spend_drain_weight,
+            min_drain_value: 546, // this default is conservative (dust threshold for P2PKH)
         }
     }
 
@@ -180,33 +183,28 @@ impl CoinSelector {
             .max(self.opts.min_absolute_fee);
 
         let inputs_minus_outputs = {
-            let inputs_minus_outputs = self.selected_value() as i64 - self.opts.target_value as i64;
-            if inputs_minus_outputs < fee_without_drain as i64 {
+            let target_value = self.opts.target_value as i64;
+            let selected_value = self.selected_value() as i64;
+
+            let (missing, unsatisfied) = SelectionConstraint::unsatisfied(
+                target_value,
+                selected_value,
+                fee_without_drain as i64,
+                self.opts.min_absolute_fee as i64,
+            );
+
+            if !unsatisfied.is_empty() {
                 return Err(SelectionFailure::InsufficientFunds {
-                    selected: self.selected_value(),
-                    needed: fee_without_drain + self.opts.target_value,
+                    selected: selected_value as _,
+                    missing,
+                    unsatisfied,
                 });
             }
-            // if inputs_minus_outputs < self.opts.min_absolute_fee as i64 {
-            //     return Err(SelectionFailure::AbsoluteFeeTooLow {
-            //         needed: self.opts.min_absolute_fee,
-            //         had: inputs_minus_outputs as u64,
-            //     });
-            // }
-            inputs_minus_outputs as u64
+
+            (selected_value - target_value) as u64
         };
 
-        // // check fee rate satisfied
-        // let feerate_without_drain = inputs_minus_outputs as f32 / weight_without_drain as f32;
-        // // we simply don't have enough fee to achieve the feerate
-        // if feerate_without_drain < self.opts.target_feerate {
-        //     return Err(SelectionFailure::FeerateTooLow {
-        //         needed: self.opts.target_feerate,
-        //         had: feerate_without_drain,
-        //     });
-        // }
-
-        let drain_invalid = inputs_minus_outputs < fee_with_drain; // TODO: We need minimum drain value
+        let drain_invalid = inputs_minus_outputs < fee_with_drain + self.opts.min_drain_value;
 
         let excess_without_drain = inputs_minus_outputs - fee_without_drain;
         let drain_value = inputs_minus_outputs.saturating_sub(fee_with_drain);
@@ -233,31 +231,74 @@ impl CoinSelector {
 
 #[derive(Clone, Debug)]
 pub enum SelectionFailure {
-    InsufficientFunds { selected: u64, needed: u64 },
-    FeerateTooLow { needed: f32, had: f32 },
-    AbsoluteFeeTooLow { needed: u64, had: u64 },
+    InsufficientFunds {
+        selected: u64,
+        missing: u64,
+        unsatisfied: Vec<SelectionConstraint>,
+    },
 }
 
 impl core::fmt::Display for SelectionFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            SelectionFailure::InsufficientFunds { selected, needed } => write!(
+            SelectionFailure::InsufficientFunds {
+                selected,
+                missing,
+                unsatisfied,
+            } => write!(
                 f,
-                "insufficient coins selected, had {} needed {}",
-                selected, needed
+                "insufficient coins selected; selected={}, missing={}, unsatisfied={:?}",
+                selected, missing, unsatisfied
             ),
-            SelectionFailure::FeerateTooLow { needed, had } => {
-                write!(f, "feerate too low, needed {}, had {}", needed, had)
-            }
-            SelectionFailure::AbsoluteFeeTooLow { needed, had } => {
-                write!(f, "absolute fee too low, needed {}, had {}", needed, had)
-            }
         }
     }
 }
 
 #[cfg(feature = "std")]
 impl std::error::Error for SelectionFailure {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionConstraint {
+    /// The target is not met
+    TargetValue,
+    /// The target fee (given the feerate) is not met
+    TargetFee,
+    /// Min absolute fee in not met
+    MinAbsoluteFee,
+}
+
+impl SelectionConstraint {
+    /// Returns the value required to satisfy all constraints and a vec of unsatisfied contraints.
+    pub fn unsatisfied(
+        target_value: i64,
+        selected_value: i64,
+        fee_without_drain: i64,
+        min_absolute_fee: i64,
+    ) -> (u64, Vec<Self>) {
+        let mut unsatisfied = Vec::with_capacity(3);
+        let mut remaining = 0_i64;
+
+        let mut update = |c: Self, v: i64| {
+            if v < 0 {
+                unsatisfied.push(c);
+                let v = v.abs();
+                if v > remaining {
+                    remaining = v;
+                }
+            }
+        };
+
+        let target_value_surplus = selected_value - target_value;
+        let target_fee_surplus = target_value_surplus - fee_without_drain;
+        let min_absolute_fee_surplus = target_value_surplus - min_absolute_fee;
+
+        update(Self::TargetValue, target_value_surplus);
+        update(Self::TargetFee, target_fee_surplus);
+        update(Self::MinAbsoluteFee, min_absolute_fee_surplus);
+
+        (remaining as u64, unsatisfied)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Selection {
