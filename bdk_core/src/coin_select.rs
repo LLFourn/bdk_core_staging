@@ -16,6 +16,8 @@ pub struct WeightedValue {
     /// Weight of including this `txin`: `prevout`, `nSequence`, `scriptSig` and `scriptWitness` are
     /// all included.
     pub weight: u32,
+    /// Number of inputs; so we can calculate extra `varint` weight due to `vin` len changes.
+    pub input_count: usize,
     pub is_segwit: bool,
 }
 
@@ -31,7 +33,7 @@ pub struct CoinSelectorOpt {
     pub min_absolute_fee: u64,
     /// The weight of the template transaction including fixed inputs and outputs.
     pub base_weight: u32,
-    /// The weight of the drain (change) output.
+    /// Additional weight if we include the drain (change) output.
     pub drain_weight: u32,
     /// TODO
     pub spend_drain_weight: u32,
@@ -125,7 +127,14 @@ impl CoinSelector {
             .find(|(_, wv)| wv.is_segwit)
             .map(|_| 2)
             .unwrap_or(0);
-        self.opts.base_weight + self.input_weight() + witness_header_extra_weight
+        let vin_count_varint_extra_weight = {
+            let input_count = self.selected().map(|(_, wv)| wv.input_count).sum::<usize>();
+            (varint_size(input_count) - 1) * 4
+        };
+        self.opts.base_weight
+            + self.input_weight()
+            + witness_header_extra_weight
+            + vin_count_varint_extra_weight
     }
 
     pub fn selected(&self) -> impl Iterator<Item = (usize, WeightedValue)> + '_ {
@@ -324,4 +333,17 @@ impl Selection {
     ) -> impl Iterator<Item = &'a T> + 'a {
         self.selected.iter().map(|i| &candidates[*i])
     }
+}
+
+fn varint_size(v: usize) -> u32 {
+    if v <= 0xfc {
+        return 1;
+    }
+    if v <= 0xffff {
+        return 3;
+    }
+    if v <= 0xffff_ffff {
+        return 5;
+    }
+    return 9;
 }

@@ -267,6 +267,7 @@ fn main() -> anyhow::Result<()> {
                 .map(|(plan, utxo)| WeightedValue {
                     value: utxo.value,
                     weight: TXIN_BASE_WEIGHT + plan.expected_weight() as u32,
+                    input_count: 1,
                     is_segwit: plan.witness_version().is_some(),
                 })
                 .collect();
