@@ -7,7 +7,7 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue},
+    coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue, TXIN_BASE_WEIGHT},
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
 };
@@ -266,7 +266,7 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|(plan, utxo)| WeightedValue {
                     value: utxo.value,
-                    weight: plan.expected_weight() as u32,
+                    weight: TXIN_BASE_WEIGHT + plan.expected_weight() as u32,
                     is_segwit: plan.witness_version().is_some(),
                 })
                 .collect();
@@ -276,9 +276,17 @@ fn main() -> anyhow::Result<()> {
                 script_pubkey: address.script_pubkey(),
             }];
 
+            let (change_derivation_index, change_script) =
+                tracker.derive_next_unused(change_keychain);
+            let change_script = change_script.clone();
+            let change_plan = tracker
+                .descriptor(change_keychain)
+                .at_derivation_index(change_derivation_index)
+                .plan_satisfaction(&assets)
+                .expect("failed to obtain change plan");
             let mut change_output = TxOut {
                 value: 0,
-                script_pubkey: tracker.derive_next_unused(change_keychain).1.clone(),
+                script_pubkey: change_script,
             };
 
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
@@ -287,7 +295,11 @@ fn main() -> anyhow::Result<()> {
                 wv_candidates,
                 CoinSelectorOpt {
                     target_feerate: 0.5,
-                    ..CoinSelectorOpt::fund_outputs(&outputs, &change_output)
+                    ..CoinSelectorOpt::fund_outputs(
+                        &outputs,
+                        &change_output,
+                        TXIN_BASE_WEIGHT + change_plan.expected_weight() as u32,
+                    )
                 },
             );
 
@@ -297,10 +309,10 @@ fn main() -> anyhow::Result<()> {
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
-            if selection.use_drain
-                && selection.excess >= tracker.descriptor(change_keychain).dust_value()
+            if !selection.drain_invalid
+                && selection.drain_value >= tracker.descriptor(change_keychain).dust_value()
             {
-                change_output.value = selection.excess;
+                change_output.value = selection.drain_value;
                 // if the selection tells us to use change and the change value is sufficient we add it as an output
                 outputs.push(change_output)
             }
