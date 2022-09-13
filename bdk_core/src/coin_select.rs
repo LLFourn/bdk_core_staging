@@ -242,7 +242,8 @@ impl CoinSelector {
         });
 
         // no drain, excess to recipient
-        if excess_without_drain <= self.opts.max_extra_target {
+        // if `excess == 0`, this result will be the same as the previous, so we don't consider it
+        if excess_without_drain > 0 && excess_without_drain <= self.opts.max_extra_target {
             results.push(Selection {
                 selected: self.selected.clone(),
                 excess: excess_without_drain,
@@ -512,4 +513,102 @@ pub fn coin_select_bnb(
         *selection = best_selection;
     }
     selection.finish()
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use alloc::vec::Vec;
+    use bitcoin::{
+        secp256k1::{All, Secp256k1},
+        TxOut,
+    };
+    use miniscript::{
+        plan::{Assets, Plan},
+        Descriptor, DescriptorPublicKey,
+    };
+    use rand::Rng;
+    pub struct TestDescriptors {
+        descriptors: Vec<Descriptor<DescriptorPublicKey>>,
+        assets: Assets<DescriptorPublicKey>,
+    }
+
+    impl TestDescriptors {
+        pub fn new(secp: &Secp256k1<All>) -> Self {
+            let tr_str = "tr(xprv9uBuvtdjghkz8D1qzsSXS9Vs64mqrUnXqzNccj2xcvnCHPpXKYE1U2Gbh9CDHk8UPyF2VuXpVkDA7fk5ZP4Hd9KnhUmTscKmhee9Dp5sBMK)";
+            let (tr_desc, tr_sks) =
+                Descriptor::<DescriptorPublicKey>::parse_descriptor(secp, tr_str).unwrap();
+
+            let assets = Assets {
+                keys: tr_sks.keys().cloned().collect(),
+                ..Default::default()
+            };
+
+            let descriptors = vec![tr_desc];
+            Self {
+                descriptors,
+                assets,
+            }
+        }
+
+        pub fn generate_candidate(&self, min: u64, max: u64) -> (Plan<DescriptorPublicKey>, TxOut) {
+            let mut rng = rand::thread_rng();
+            let desc_index = rng.gen_range(0_usize..self.descriptors.len());
+            let desc = self.descriptors[desc_index].at_derivation_index(0);
+            let plan = desc.plan_satisfaction(&self.assets).unwrap();
+            let value = rng.gen_range(min..max);
+
+            let txo = TxOut {
+                value,
+                script_pubkey: desc.script_pubkey(),
+            };
+
+            (plan, txo)
+        }
+
+        pub fn generate_candidates(
+            &self,
+            count: usize,
+            min: u64,
+            max: u64,
+        ) -> Vec<(Plan<DescriptorPublicKey>, TxOut)> {
+            (0..count)
+                .map(|_| self.generate_candidate(min, max))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn test_bnb() {
+        let secp = Secp256k1::default();
+        let test_desc = TestDescriptors::new(&secp);
+
+        let mut candidates = test_desc.generate_candidates(1000, 10_000, 100_000);
+        let (_, mut recipient_txo) = candidates.pop().unwrap();
+        recipient_txo.value = 150_000;
+        let (drain_plan, drain_txo) = candidates.pop().unwrap();
+
+        let cs_opts = CoinSelectorOpt::fund_outputs(
+            &[recipient_txo.clone()],
+            &drain_txo,
+            TXIN_BASE_WEIGHT + drain_plan.expected_weight() as u32,
+        );
+        println!("cs_opts: {:#?}", cs_opts);
+
+        let cs_candidates = candidates
+            .iter()
+            .map(|(plan, txo)| WeightedValue {
+                value: txo.value,
+                weight: TXIN_BASE_WEIGHT + plan.expected_weight() as u32,
+                input_count: 1,
+                is_segwit: plan.witness_version().is_some(),
+            })
+            .collect::<Vec<_>>();
+
+        let mut selection = CoinSelector::new(cs_candidates, cs_opts);
+        match coin_select_bnb(100_000, &mut selection) {
+            Ok(res) => println!("results: {:#?}", res),
+            Err(err) => println!("err: {:#?}", err),
+        };
+    }
 }
