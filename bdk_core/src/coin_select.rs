@@ -385,7 +385,7 @@ pub fn coin_select_bnb(
     selection: &mut CoinSelector,
 ) -> Result<Vec<Selection>, SelectionFailure> {
     fn effective_value(candidate: &WeightedValue, opts: &CoinSelectorOpt) -> i64 {
-        candidate.value as i64 - (candidate.weight as f32 * opts.target_feerate) as i64
+        candidate.value as i64 - (candidate.weight as f32 * opts.target_feerate).ceil() as i64
     }
 
     fn selected_value(selection: &CoinSelector) -> i64 {
@@ -393,6 +393,10 @@ pub fn coin_select_bnb(
             .selected()
             .map(|(_, c)| effective_value(&c, &selection.opts()))
             .sum::<i64>()
+    }
+
+    fn is_selected(selection: &CoinSelector, index: usize) -> bool {
+        selection.selected().find(|(i, _)| *i == index).is_some()
     }
 
     let opts = selection.opts();
@@ -415,7 +419,7 @@ pub fn coin_select_bnb(
             + if has_segwit { 2_u32 } else { 0_u32 }
             + (varint_size(max_input_count) - 1) * 4;
 
-        opts.target_value as i64 + (base_weight as f32 * opts.target_feerate) as i64
+        opts.target_value as i64 + (base_weight as f32 * opts.target_feerate).ceil() as i64
     };
 
     let pool = {
@@ -471,8 +475,10 @@ pub fn coin_select_bnb(
                 true
             } else if current_value >= target_value {
                 // we have found a solution, is the current waste better than our best?
-                let current_waste = current_input_waste + selected_value(&selection) - target_value;
+                let current_waste = current_input_waste + current_value - target_value;
                 if current_waste <= best_waste {
+                    #[cfg(feature = "std")]
+                    println!("solution @ try {} with waste {}", try_index, current_waste);
                     best_selection.replace(selection.clone());
                 }
                 true
@@ -483,10 +489,7 @@ pub fn coin_select_bnb(
 
         if backtrack {
             let last_selected_pos = (0..pos).rev().find(|&pos| {
-                let is_selected = selection
-                    .selected()
-                    .find(|(index, _)| *index == pool[pos])
-                    .is_some();
+                let is_selected = is_selected(selection, pool[pos]);
                 if !is_selected {
                     remaining_value += effective_value(&selection.candidates()[pool[pos]], &opts);
                 }
@@ -503,9 +506,22 @@ pub fn coin_select_bnb(
             }
         }
 
-        // select next
         let candidate = selection.candidates()[pool[pos]];
         remaining_value -= effective_value(&candidate, &opts);
+
+        // if the candidate at the previous position is NOT selected and has the same weight and
+        // value as the current candidate, we skip the current candidate
+        if pos > 0 {
+            let prev_candidate = selection.candidates()[pool[pos - 1]];
+            if !is_selected(selection, pool[pos - 1])
+                && candidate.value == prev_candidate.value
+                && candidate.weight == prev_candidate.weight
+            {
+                // println!("skipped @ try {}", try_index);
+                continue;
+            }
+        }
+
         selection.select(pool[pos]);
     }
 
@@ -583,16 +599,22 @@ mod test {
         let secp = Secp256k1::default();
         let test_desc = TestDescriptors::new(&secp);
 
-        let mut candidates = test_desc.generate_candidates(1000, 10_000, 100_000);
+        let mut candidates = test_desc.generate_candidates(1000, 1000, 10_000);
         let (_, mut recipient_txo) = candidates.pop().unwrap();
-        recipient_txo.value = 150_000;
+        recipient_txo.value = 110_000;
         let (drain_plan, drain_txo) = candidates.pop().unwrap();
 
-        let cs_opts = CoinSelectorOpt::fund_outputs(
-            &[recipient_txo.clone()],
-            &drain_txo,
-            TXIN_BASE_WEIGHT + drain_plan.expected_weight() as u32,
-        );
+        let cs_opts = CoinSelectorOpt {
+            target_feerate: 0.25,
+            long_term_feerate: Some(0.25),
+            // max_extra_target: 1000,
+            ..CoinSelectorOpt::fund_outputs(
+                &[recipient_txo.clone()],
+                &drain_txo,
+                TXIN_BASE_WEIGHT + drain_plan.expected_weight() as u32,
+            )
+        };
+
         println!("cs_opts: {:#?}", cs_opts);
 
         let cs_candidates = candidates
@@ -607,7 +629,14 @@ mod test {
 
         let mut selection = CoinSelector::new(cs_candidates, cs_opts);
         match coin_select_bnb(100_000, &mut selection) {
-            Ok(res) => println!("results: {:#?}", res),
+            Ok(results) => {
+                println!("results: {:#?}", results);
+                for res in results {
+                    let feerate = res.fee as f32 / res.weight as f32;
+                    assert!(feerate >= cs_opts.target_feerate, "feerate undershot");
+                    println!("feerate: {} sats/wu", feerate);
+                }
+            }
             Err(err) => println!("err: {:#?}", err),
         };
     }
