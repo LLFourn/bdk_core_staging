@@ -110,6 +110,10 @@ impl CoinSelector {
         self.selected.insert(index);
     }
 
+    pub fn deselect(&mut self, index: usize) {
+        self.selected.remove(&index);
+    }
+
     /// Weight of all inputs.
     pub fn input_weight(&self) -> u32 {
         self.selected
@@ -373,4 +377,139 @@ fn varint_size(v: usize) -> u32 {
         return 5;
     }
     return 9;
+}
+
+pub fn coin_select_bnb(
+    max_tries: usize,
+    selection: &mut CoinSelector,
+) -> Result<Vec<Selection>, SelectionFailure> {
+    fn effective_value(candidate: &WeightedValue, opts: &CoinSelectorOpt) -> i64 {
+        candidate.value as i64 - (candidate.weight as f32 * opts.target_feerate) as i64
+    }
+
+    fn selected_value(selection: &CoinSelector) -> i64 {
+        selection
+            .selected()
+            .map(|(_, c)| effective_value(&c, &selection.opts()))
+            .sum::<i64>()
+    }
+
+    let opts = selection.opts();
+
+    let target_value = {
+        let has_segwit = selection
+            .candidates()
+            .iter()
+            .find(|c| c.is_segwit)
+            .is_some();
+
+        let max_input_count = selection
+            .candidates()
+            .iter()
+            .map(|c| c.input_count)
+            .sum::<usize>();
+
+        let base_weight = selection.input_weight()
+            + opts.base_weight
+            + if has_segwit { 2_u32 } else { 0_u32 }
+            + (varint_size(max_input_count) - 1) * 4;
+
+        opts.target_value as i64 + (base_weight as f32 * opts.target_feerate) as i64
+    };
+
+    let pool = {
+        let mut pool = selection
+            .unselected()
+            .into_iter()
+            .filter(|&index| effective_value(&selection.candidates()[index], &opts) > 0)
+            .collect::<Vec<_>>();
+        pool.sort_unstable_by_key(|&index| effective_value(&selection.candidates()[index], &opts));
+        pool.reverse();
+        pool
+    };
+    let mut pos = 0_usize;
+
+    let mut remaining_value = pool
+        .iter()
+        .map(|&index| effective_value(&selection.candidates()[index], &opts))
+        .sum::<i64>();
+
+    if remaining_value <= target_value {
+        todo!("what is a good way of handling this error?");
+    }
+
+    let drain_cost = (opts.drain_weight as f32 * opts.target_feerate
+        + opts.spend_drain_weight as f32 * opts.long_term_feerate.unwrap_or(opts.target_feerate))
+        as i64;
+    let feerate_decreasing =
+        opts.target_feerate > opts.long_term_feerate.unwrap_or(opts.target_feerate);
+    let upper_bound = target_value + drain_cost + opts.max_extra_target as i64;
+
+    let mut best_selection = Option::<CoinSelector>::None;
+
+    for try_index in 0..max_tries {
+        if try_index > 0 {
+            pos += 1;
+        }
+
+        let backtrack = {
+            let current_value = selected_value(selection);
+            let current_input_waste = selection.waste_of_inputs();
+
+            let best_waste = best_selection
+                .as_ref()
+                .map(|b| b.waste_of_inputs() + selected_value(b) - target_value)
+                .unwrap_or(i64::MAX);
+
+            if current_value + remaining_value < target_value || current_value > upper_bound {
+                // remaining value is not enough to reach target OR current value surpasses upper bound
+                true
+            } else if feerate_decreasing && current_input_waste > best_waste {
+                // when feerate_decreasing, waste is guaranteed to increase with each selection,
+                // so backtrack when we have already surpassed best waste
+                true
+            } else if current_value >= target_value {
+                // we have found a solution, is the current waste better than our best?
+                let current_waste = current_input_waste + selected_value(&selection) - target_value;
+                if current_waste <= best_waste {
+                    best_selection.replace(selection.clone());
+                }
+                true
+            } else {
+                false
+            }
+        };
+
+        if backtrack {
+            let last_selected_pos = (0..pos).rev().find(|&pos| {
+                let is_selected = selection
+                    .selected()
+                    .find(|(index, _)| *index == pool[pos])
+                    .is_some();
+                if !is_selected {
+                    remaining_value += effective_value(&selection.candidates()[pool[pos]], &opts);
+                }
+                is_selected
+            });
+
+            match last_selected_pos {
+                Some(last_selected_pos) => {
+                    pos = last_selected_pos;
+                    selection.deselect(pool[pos]);
+                    continue;
+                }
+                None => break, // nothing is selected, all solutions searched
+            }
+        }
+
+        // select next
+        let candidate = selection.candidates()[pool[pos]];
+        remaining_value -= effective_value(&candidate, &opts);
+        selection.select(pool[pos]);
+    }
+
+    if let Some(best_selection) = best_selection {
+        *selection = best_selection;
+    }
+    selection.finish()
 }
