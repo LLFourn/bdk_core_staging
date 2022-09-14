@@ -21,6 +21,14 @@ pub struct WeightedValue {
     pub is_segwit: bool,
 }
 
+impl WeightedValue {
+    /// Effective feerate of this input candidate.
+    /// `actual_value - input_weight * feerate`
+    pub fn effective_value(&self, opts: &CoinSelectorOpt) -> f32 {
+        self.value as f32 - self.weight as f32 * opts.target_feerate
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CoinSelectorOpt {
     /// The value we need to select.
@@ -92,6 +100,10 @@ impl CoinSelector {
         &self.candidates
     }
 
+    pub fn candidate(&self, index: usize) -> &WeightedValue {
+        &self.candidates[index]
+    }
+
     pub fn new(candidates: Vec<WeightedValue>, opts: CoinSelectorOpt) -> Self {
         Self {
             candidates,
@@ -113,16 +125,34 @@ impl CoinSelector {
         self.selected.remove(&index);
     }
 
-    /// Weight of all inputs.
-    pub fn input_weight(&self) -> u32 {
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selected.contains(&index)
+    }
+
+    /// Weight sum of all selected inputs.
+    pub fn selected_weight(&self) -> u32 {
         self.selected
             .iter()
             .map(|&index| self.candidates[index].weight)
             .sum()
     }
 
-    pub fn waste_of_inputs(&self) -> f32 {
-        self.input_weight() as f32
+    /// Effective value sum of all selected inputs.
+    pub fn selected_effective_value(&self) -> f32 {
+        let (total_value, total_weight) = self
+            .selected
+            .iter()
+            .map(|&index| self.candidates[index])
+            .fold((0_u64, 0_u32), |(value, weight), cand| {
+                (value + cand.value, weight + cand.weight)
+            });
+
+        total_value as f32 - total_weight as f32 * self.opts.target_feerate
+    }
+
+    /// Waste sum of all selected inputs.
+    pub fn selected_waste(&self) -> f32 {
+        self.selected_weight() as f32
             * (self.opts.target_feerate
                 - self
                     .opts
@@ -130,6 +160,7 @@ impl CoinSelector {
                     .unwrap_or(self.opts.target_feerate))
     }
 
+    /// Current weight of template tx + selected inputs.
     pub fn current_weight(&self) -> u32 {
         let witness_header_extra_weight = self
             .selected()
@@ -141,9 +172,16 @@ impl CoinSelector {
             (varint_size(input_count) - 1) * 4
         };
         self.opts.base_weight
-            + self.input_weight()
+            + self.selected_weight()
             + witness_header_extra_weight
             + vin_count_varint_extra_weight
+    }
+
+    /// Current excess.
+    pub fn current_excess(&self) -> f32 {
+        let effective_target =
+            self.opts.target_value as f32 + self.opts.base_weight as f32 * self.opts.target_feerate;
+        self.selected_effective_value() - effective_target
     }
 
     pub fn selected(&self) -> impl Iterator<Item = (usize, WeightedValue)> + '_ {
@@ -224,7 +262,7 @@ impl CoinSelector {
 
         let drain_valid = inputs_minus_outputs >= fee_with_drain + self.opts.min_drain_value;
         let excess_without_drain = inputs_minus_outputs - fee_without_drain;
-        let input_waste = self.waste_of_inputs();
+        let input_waste = self.selected_waste();
 
         // prepare results
         let mut results = Vec::with_capacity(3);
@@ -380,21 +418,6 @@ fn varint_size(v: usize) -> u32 {
 }
 
 pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
-    fn effective_value(candidate: &WeightedValue, opts: &CoinSelectorOpt) -> f32 {
-        candidate.value as f32 - candidate.weight as f32 * opts.target_feerate
-    }
-
-    fn selected_value(selection: &CoinSelector) -> f32 {
-        selection
-            .selected()
-            .map(|(_, c)| effective_value(&c, &selection.opts()))
-            .sum()
-    }
-
-    fn is_selected(selection: &CoinSelector, index: usize) -> bool {
-        selection.selected().find(|(i, _)| *i == index).is_some()
-    }
-
     let opts = selection.opts();
 
     let base_weight = {
@@ -410,7 +433,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
             .map(|c| c.input_count)
             .sum::<usize>();
 
-        selection.input_weight()
+        selection.selected_weight()
             + opts.base_weight
             + if has_segwit { 2_u32 } else { 0_u32 }
             + (varint_size(max_input_count) - 1) * 4
@@ -422,12 +445,12 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         let mut pool = selection
             .unselected()
             .into_iter()
-            .filter(|&index| effective_value(&selection.candidates()[index], &opts) > 0.0)
+            .filter(|&index| selection.candidate(index).effective_value(&opts) > 0.0)
             .collect::<Vec<_>>();
         // sort by descending effective value
         pool.sort_unstable_by(|&a, &b| {
-            let a = effective_value(&selection.candidates()[a], &opts);
-            let b = effective_value(&selection.candidates()[b], &opts);
+            let a = selection.candidate(a).effective_value(&opts);
+            let b = selection.candidate(b).effective_value(&opts);
             b.total_cmp(&a)
         });
         pool
@@ -438,7 +461,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
     let target_value = opts.target_value as f32 + base_weight as f32 * opts.target_feerate;
     let mut remaining_value = pool
         .iter()
-        .map(|&index| effective_value(&selection.candidates()[index], &opts))
+        .map(|&index| selection.candidate(index).effective_value(&opts))
         .sum::<f32>();
 
     if remaining_value < target_value {
@@ -448,7 +471,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
     let absolute_target_value = opts.target_value + opts.min_absolute_fee;
     let mut absolute_remaining_value = pool
         .iter()
-        .map(|&i| selection.candidates()[i].value)
+        .map(|&i| selection.candidate(i).value)
         .sum::<u64>();
 
     if absolute_remaining_value < absolute_target_value {
@@ -471,13 +494,13 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         }
 
         let backtrack = {
-            let current_value = selected_value(selection);
+            let current_value = selection.selected_effective_value();
             let absolute_current_value = selection.selected().map(|(_, c)| c.value).sum::<u64>();
-            let current_input_waste = selection.waste_of_inputs();
+            let current_input_waste = selection.selected_waste();
 
             let best_waste = best_selection
                 .as_ref()
-                .map(|b| b.waste_of_inputs() + selected_value(b) - target_value)
+                .map(|b| b.selected_waste() + b.current_excess())
                 .unwrap_or(f32::MAX);
 
             if current_value + remaining_value < target_value
@@ -512,10 +535,10 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         if backtrack {
             // println!("backtrack @ try {}", try_index);
             let last_selected_pos = (0..pos).rev().find(|&pos| {
-                let is_selected = is_selected(selection, pool[pos]);
+                let is_selected = selection.is_selected(pool[pos]);
                 if !is_selected {
-                    let candidate = &selection.candidates()[pool[pos]];
-                    remaining_value += effective_value(candidate, &opts);
+                    let candidate = &selection.candidate(pool[pos]);
+                    remaining_value += candidate.effective_value(&opts);
                     absolute_remaining_value += candidate.value;
                 }
                 is_selected
@@ -531,15 +554,15 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
             }
         }
 
-        let candidate = selection.candidates()[pool[pos]];
-        remaining_value -= effective_value(&candidate, &opts);
+        let candidate = selection.candidate(pool[pos]);
+        remaining_value -= candidate.effective_value(&opts);
         absolute_remaining_value -= candidate.value;
 
         // if the candidate at the previous position is NOT selected and has the same weight and
         // value as the current candidate, we skip the current candidate
         if pos > 0 {
-            let prev_candidate = selection.candidates()[pool[pos - 1]];
-            if !is_selected(selection, pool[pos - 1])
+            let prev_candidate = selection.candidate(pool[pos - 1]);
+            if !selection.is_selected(pool[pos - 1])
                 && candidate.value == prev_candidate.value
                 && candidate.weight == prev_candidate.weight
             {
@@ -628,16 +651,17 @@ mod test {
         let secp = Secp256k1::default();
         let test_desc = TestDescriptors::new(&secp);
 
-        (0..10).for_each(|_| {
-            let mut candidates = test_desc.generate_candidates(1000, 1000, 10_000);
+        (0..5).for_each(|_| {
+            println!("-----");
+            let mut candidates = test_desc.generate_candidates(200, 1000, 10_000);
             let (_, mut recipient_txo) = candidates.pop().unwrap();
-            recipient_txo.value = 110_000;
+            recipient_txo.value = 123_123;
             let (drain_plan, drain_txo) = candidates.pop().unwrap();
 
             let cs_opts = CoinSelectorOpt {
-                target_feerate: 0.3,
+                target_feerate: 0.5,
                 long_term_feerate: Some(0.25),
-                min_absolute_fee: 100,
+                min_absolute_fee: 2000,
                 // max_extra_target: 1000,
                 ..CoinSelectorOpt::fund_outputs(
                     &[recipient_txo.clone()],
@@ -659,7 +683,7 @@ mod test {
                 .collect::<Vec<_>>();
 
             let mut selection = CoinSelector::new(cs_candidates, cs_opts);
-            if coin_select_bnb(100_000, &mut selection) {
+            if coin_select_bnb(21_000, &mut selection) {
                 let results = selection
                     .finish()
                     .expect("bnb returned true so finish should succeed");
