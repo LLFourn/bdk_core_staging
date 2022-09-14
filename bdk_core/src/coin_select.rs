@@ -205,7 +205,7 @@ impl CoinSelector {
         }
     }
 
-    pub fn select_until_finished(&mut self) -> Result<Vec<Selection>, SelectionFailure> {
+    pub fn select_until_finished(&mut self) -> Result<Selection, SelectionFailure> {
         let mut selection = self.finish();
 
         if selection.is_ok() {
@@ -228,7 +228,7 @@ impl CoinSelector {
         self.selected().map(|(_, wv)| wv.value).sum::<u64>()
     }
 
-    pub fn finish(&self) -> Result<Vec<Selection>, SelectionFailure> {
+    pub fn finish(&self) -> Result<Selection, SelectionFailure> {
         let weight_without_drain = self.current_weight();
         let weight_with_drain = weight_without_drain + self.opts.drain_weight;
 
@@ -273,56 +273,59 @@ impl CoinSelector {
         let fee_without_drain = fee_without_drain.max(self.opts.min_absolute_fee);
         let fee_with_drain = fee_with_drain.max(self.opts.min_absolute_fee);
 
-        let drain_valid = inputs_minus_outputs >= fee_with_drain + self.opts.min_drain_value;
         let excess_without_drain = inputs_minus_outputs - fee_without_drain;
         let input_waste = self.selected_waste();
 
-        // prepare results
-        let mut results = Vec::with_capacity(3);
+        // begin preparing excess strategies for final selection
+        let mut excess_strategies = Vec::with_capacity(3);
 
         // no drain, excess to fee
-        results.push(Selection {
-            selected: self.selected.clone(),
-            excess: excess_without_drain,
-            drain: None,
-            recipient_value: self.opts.target_value,
-            fee: fee_without_drain + excess_without_drain,
-            weight: weight_without_drain,
-            waste: input_waste + excess_without_drain as f32,
-        });
+        excess_strategies.push((
+            ExcessStrategy::ToFee,
+            SelectionMeta {
+                fee: fee_without_drain + excess_without_drain,
+                weight: weight_without_drain,
+                waste: input_waste + excess_without_drain as f32,
+            },
+        ));
 
         // no drain, excess to recipient
         // if `excess == 0`, this result will be the same as the previous, so we don't consider it
         if excess_without_drain > 0 && excess_without_drain <= self.opts.max_extra_target {
-            results.push(Selection {
-                selected: self.selected.clone(),
-                excess: excess_without_drain,
-                drain: None,
-                recipient_value: self.opts.target_value + excess_without_drain,
-                fee: fee_without_drain,
-                weight: weight_without_drain,
-                waste: input_waste,
-            });
+            excess_strategies.push((
+                ExcessStrategy::ToRecipient {
+                    recipient_value: self.opts.target_value + excess_without_drain,
+                },
+                SelectionMeta {
+                    fee: fee_without_drain,
+                    weight: weight_without_drain,
+                    waste: input_waste,
+                },
+            ));
         }
 
         // with drain
-        if drain_valid {
-            let drain_value = inputs_minus_outputs.saturating_sub(fee_with_drain);
-
-            results.push(Selection {
-                selected: self.selected.clone(),
-                excess: excess_without_drain,
-                drain: Some(drain_value),
-                recipient_value: self.opts.target_value,
-                fee: fee_with_drain,
-                weight: weight_with_drain,
-                waste: input_waste + self.opts.drain_waste(),
-            });
+        if inputs_minus_outputs >= fee_with_drain + self.opts.min_drain_value {
+            excess_strategies.push((
+                ExcessStrategy::ToDrain {
+                    drain_value: inputs_minus_outputs.saturating_sub(fee_with_drain),
+                },
+                SelectionMeta {
+                    fee: fee_with_drain,
+                    weight: weight_with_drain,
+                    waste: input_waste + self.opts.drain_waste(),
+                },
+            ));
         }
 
         // sort by ascending waste
-        results.sort_unstable_by(|a, b| a.waste.total_cmp(&b.waste));
-        Ok(results)
+        excess_strategies.sort_unstable_by(|(_, a), (_, b)| a.waste.total_cmp(&b.waste));
+
+        Ok(Selection {
+            selected: self.selected.clone(),
+            excess: excess_without_drain,
+            excess_strategies,
+        })
     }
 }
 
@@ -378,11 +381,42 @@ impl core::fmt::Display for SelectionConstraint {
 pub struct Selection {
     pub selected: BTreeSet<usize>,
     pub excess: u64,
-    pub drain: Option<u64>,
-    pub recipient_value: u64,
+    pub excess_strategies: Vec<(ExcessStrategy, SelectionMeta)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ExcessStrategy {
+    ToFee,
+    ToRecipient { recipient_value: u64 },
+    ToDrain { drain_value: u64 },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SelectionMeta {
     pub fee: u64,
     pub weight: u32,
     pub waste: f32,
+}
+
+impl core::fmt::Display for ExcessStrategy {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ExcessStrategy::ToFee => core::write!(f, "to_fee"),
+            ExcessStrategy::ToRecipient { recipient_value } => {
+                core::write!(f, "to_recipient(recipient_value = {})", recipient_value)
+            }
+            ExcessStrategy::ToDrain { drain_value } => {
+                core::write!(f, "to_drain(drain_value = {})", drain_value)
+            }
+        }
+    }
+}
+
+impl SelectionMeta {
+    /// returns feerate in sats/wu
+    pub fn feerate(&self) -> f32 {
+        self.fee as f32 / self.weight as f32
+    }
 }
 
 impl Selection {
@@ -651,7 +685,7 @@ mod test {
             let cs_opts = CoinSelectorOpt {
                 target_feerate: 0.75,
                 long_term_feerate: Some(0.25),
-                min_absolute_fee: 2000,
+                // min_absolute_fee: 2000,
                 // max_extra_target: 1000,
                 ..CoinSelectorOpt::fund_outputs(
                     &[recipient_txo.clone()],
@@ -677,11 +711,11 @@ mod test {
                 let results = selection
                     .finish()
                     .expect("bnb returned true so finish should succeed");
-                println!("results: {:#?}", results);
-                for res in results {
-                    let feerate = res.fee as f32 / res.weight as f32;
+                println!("result: {:#?}", results);
+                for (strat, meta) in results.excess_strategies {
+                    let feerate = meta.feerate();
                     assert!(feerate >= cs_opts.target_feerate, "feerate undershot");
-                    println!("feerate: {} sats/wu", feerate);
+                    println!("{}: feerate: {} sats/wu", strat, feerate);
                 }
             } else {
                 println!("no bnb result!");

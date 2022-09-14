@@ -7,7 +7,7 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue, TXIN_BASE_WEIGHT},
+    coin_select::{CoinSelector, CoinSelectorOpt, ExcessStrategy, WeightedValue, TXIN_BASE_WEIGHT},
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
 };
@@ -307,12 +307,13 @@ fn main() -> anyhow::Result<()> {
 
             // just select coins in the order provided until we have enough
             // only use first result (least waste)
-            let selection = coin_selector.select_until_finished()?[0].clone();
+            let selection = coin_selector.select_until_finished()?;
+            let (excess_strategy, _) = selection.excess_strategies[0];
 
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
-            if let Some(drain_value) = selection.drain {
+            if let ExcessStrategy::ToDrain { drain_value } = excess_strategy {
                 change_output.value = drain_value;
                 // if the selection tells us to use change and the change value is sufficient we add it as an output
                 outputs.push(change_output)
