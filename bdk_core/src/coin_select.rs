@@ -270,7 +270,7 @@ impl CoinSelector {
         }
 
         // sort by ascending waste
-        results.sort_unstable_by(|a, b| a.waste.partial_cmp(&b.waste).unwrap());
+        results.sort_unstable_by(|a, b| a.waste.total_cmp(&b.waste));
         Ok(results)
     }
 }
@@ -379,10 +379,7 @@ fn varint_size(v: usize) -> u32 {
     return 9;
 }
 
-pub fn coin_select_bnb(
-    max_tries: usize,
-    selection: &mut CoinSelector,
-) -> Result<Vec<Selection>, SelectionFailure> {
+pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
     fn effective_value(candidate: &WeightedValue, opts: &CoinSelectorOpt) -> f32 {
         candidate.value as f32 - candidate.weight as f32 * opts.target_feerate
     }
@@ -400,7 +397,7 @@ pub fn coin_select_bnb(
 
     let opts = selection.opts();
 
-    let target_value = {
+    let base_weight = {
         let has_segwit = selection
             .candidates()
             .iter()
@@ -413,12 +410,10 @@ pub fn coin_select_bnb(
             .map(|c| c.input_count)
             .sum::<usize>();
 
-        let base_weight = selection.input_weight()
+        selection.input_weight()
             + opts.base_weight
             + if has_segwit { 2_u32 } else { 0_u32 }
-            + (varint_size(max_input_count) - 1) * 4;
-
-        opts.target_value as f32 + base_weight as f32 * opts.target_feerate
+            + (varint_size(max_input_count) - 1) * 4
     };
 
     let pool = {
@@ -433,26 +428,40 @@ pub fn coin_select_bnb(
         pool.sort_unstable_by(|&a, &b| {
             let a = effective_value(&selection.candidates()[a], &opts);
             let b = effective_value(&selection.candidates()[b], &opts);
-            b.partial_cmp(&a).expect("failed to compare")
+            b.total_cmp(&a)
         });
         pool
     };
+
     let mut pos = 0_usize;
 
+    let target_value = opts.target_value as f32 + base_weight as f32 * opts.target_feerate;
     let mut remaining_value = pool
         .iter()
         .map(|&index| effective_value(&selection.candidates()[index], &opts))
         .sum::<f32>();
 
-    if remaining_value <= target_value {
-        todo!("what is a good way of handling this error?");
+    if remaining_value < target_value {
+        return false;
+    }
+
+    let absolute_target_value = opts.target_value + opts.min_absolute_fee;
+    let mut absolute_remaining_value = pool
+        .iter()
+        .map(|&i| selection.candidates()[i].value)
+        .sum::<u64>();
+
+    if absolute_remaining_value < absolute_target_value {
+        return false;
     }
 
     let drain_cost = opts.drain_weight as f32 * opts.target_feerate
         + opts.spend_drain_weight as f32 * opts.long_term_feerate.unwrap_or(opts.target_feerate);
     let feerate_decreasing =
         opts.target_feerate > opts.long_term_feerate.unwrap_or(opts.target_feerate);
-    let upper_bound = target_value + drain_cost + opts.max_extra_target as f32;
+
+    let upper_bound = target_value + drain_cost;
+    let absolute_upper_bound = absolute_target_value + opts.max_extra_target;
 
     let mut best_selection = Option::<CoinSelector>::None;
 
@@ -463,6 +472,7 @@ pub fn coin_select_bnb(
 
         let backtrack = {
             let current_value = selected_value(selection);
+            let absolute_current_value = selection.selected().map(|(_, c)| c.value).sum::<u64>();
             let current_input_waste = selection.waste_of_inputs();
 
             let best_waste = best_selection
@@ -470,14 +480,21 @@ pub fn coin_select_bnb(
                 .map(|b| b.waste_of_inputs() + selected_value(b) - target_value)
                 .unwrap_or(f32::MAX);
 
-            if current_value + remaining_value < target_value || current_value > upper_bound {
-                // remaining value is not enough to reach target OR current value surpasses upper bound
+            if current_value + remaining_value < target_value
+                || absolute_current_value + absolute_remaining_value < absolute_target_value
+            {
+                // remaining value is not enough to reach target
+                true
+            } else if absolute_current_value > absolute_upper_bound && current_value > upper_bound {
+                // absolute value AND current value both surpasses upper bounds
                 true
             } else if feerate_decreasing && current_input_waste > best_waste {
                 // when feerate_decreasing, waste is guaranteed to increase with each selection,
                 // so backtrack when we have already surpassed best waste
                 true
-            } else if current_value >= target_value {
+            } else if current_value >= target_value
+                && absolute_current_value >= absolute_target_value
+            {
                 // we have found a solution, is the current waste better than our best?
                 let current_waste = current_input_waste + current_value - target_value;
                 if current_waste <= best_waste {
@@ -485,6 +502,7 @@ pub fn coin_select_bnb(
                     println!("solution @ try {} with waste {}", try_index, current_waste);
                     best_selection.replace(selection.clone());
                 }
+
                 true
             } else {
                 false
@@ -492,10 +510,13 @@ pub fn coin_select_bnb(
         };
 
         if backtrack {
+            // println!("backtrack @ try {}", try_index);
             let last_selected_pos = (0..pos).rev().find(|&pos| {
                 let is_selected = is_selected(selection, pool[pos]);
                 if !is_selected {
-                    remaining_value += effective_value(&selection.candidates()[pool[pos]], &opts);
+                    let candidate = &selection.candidates()[pool[pos]];
+                    remaining_value += effective_value(candidate, &opts);
+                    absolute_remaining_value += candidate.value;
                 }
                 is_selected
             });
@@ -512,6 +533,7 @@ pub fn coin_select_bnb(
 
         let candidate = selection.candidates()[pool[pos]];
         remaining_value -= effective_value(&candidate, &opts);
+        absolute_remaining_value -= candidate.value;
 
         // if the candidate at the previous position is NOT selected and has the same weight and
         // value as the current candidate, we skip the current candidate
@@ -529,10 +551,13 @@ pub fn coin_select_bnb(
         selection.select(pool[pos]);
     }
 
-    if let Some(best_selection) = best_selection {
-        *selection = best_selection;
+    match best_selection {
+        Some(best_selection) => {
+            *selection = best_selection;
+            true
+        }
+        None => false,
     }
-    selection.finish()
 }
 
 #[cfg(test)]
@@ -603,46 +628,50 @@ mod test {
         let secp = Secp256k1::default();
         let test_desc = TestDescriptors::new(&secp);
 
-        let mut candidates = test_desc.generate_candidates(100, 1000, 10_000);
-        let (_, mut recipient_txo) = candidates.pop().unwrap();
-        recipient_txo.value = 110_000;
-        let (drain_plan, drain_txo) = candidates.pop().unwrap();
+        (0..10).for_each(|_| {
+            let mut candidates = test_desc.generate_candidates(1000, 1000, 10_000);
+            let (_, mut recipient_txo) = candidates.pop().unwrap();
+            recipient_txo.value = 110_000;
+            let (drain_plan, drain_txo) = candidates.pop().unwrap();
 
-        let cs_opts = CoinSelectorOpt {
-            target_feerate: 0.26,
-            long_term_feerate: Some(0.25),
-            // min_absolute_fee: 1000,
-            // max_extra_target: 1000,
-            ..CoinSelectorOpt::fund_outputs(
-                &[recipient_txo.clone()],
-                &drain_txo,
-                TXIN_BASE_WEIGHT + drain_plan.expected_weight() as u32,
-            )
-        };
+            let cs_opts = CoinSelectorOpt {
+                target_feerate: 0.3,
+                long_term_feerate: Some(0.25),
+                min_absolute_fee: 100,
+                // max_extra_target: 1000,
+                ..CoinSelectorOpt::fund_outputs(
+                    &[recipient_txo.clone()],
+                    &drain_txo,
+                    TXIN_BASE_WEIGHT + drain_plan.expected_weight() as u32,
+                )
+            };
 
-        println!("cs_opts: {:#?}", cs_opts);
+            println!("cs_opts: {:#?}", cs_opts);
 
-        let cs_candidates = candidates
-            .iter()
-            .map(|(plan, txo)| WeightedValue {
-                value: txo.value,
-                weight: TXIN_BASE_WEIGHT + plan.expected_weight() as u32,
-                input_count: 1,
-                is_segwit: plan.witness_version().is_some(),
-            })
-            .collect::<Vec<_>>();
+            let cs_candidates = candidates
+                .iter()
+                .map(|(plan, txo)| WeightedValue {
+                    value: txo.value,
+                    weight: TXIN_BASE_WEIGHT + plan.expected_weight() as u32,
+                    input_count: 1,
+                    is_segwit: plan.witness_version().is_some(),
+                })
+                .collect::<Vec<_>>();
 
-        let mut selection = CoinSelector::new(cs_candidates, cs_opts);
-        match coin_select_bnb(100_000, &mut selection) {
-            Ok(results) => {
+            let mut selection = CoinSelector::new(cs_candidates, cs_opts);
+            if coin_select_bnb(100_000, &mut selection) {
+                let results = selection
+                    .finish()
+                    .expect("bnb returned true so finish should succeed");
                 println!("results: {:#?}", results);
                 for res in results {
                     let feerate = res.fee as f32 / res.weight as f32;
                     assert!(feerate >= cs_opts.target_feerate, "feerate undershot");
                     println!("feerate: {} sats/wu", feerate);
                 }
+            } else {
+                println!("no bnb result!");
             }
-            Err(err) => println!("err: {:#?}", err),
-        };
+        })
     }
 }
