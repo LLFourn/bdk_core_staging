@@ -81,10 +81,9 @@ impl CoinSelectorOpt {
         }
     }
 
-    pub fn drain_waste(&self) -> i64 {
-        (self.drain_weight as f32 * self.target_feerate
-            + self.spend_drain_weight as f32
-                * self.long_term_feerate.unwrap_or(self.target_feerate)) as i64
+    pub fn drain_waste(&self) -> f32 {
+        self.drain_weight as f32 * self.target_feerate
+            + self.spend_drain_weight as f32 * self.long_term_feerate.unwrap_or(self.target_feerate)
     }
 }
 
@@ -122,13 +121,13 @@ impl CoinSelector {
             .sum()
     }
 
-    pub fn waste_of_inputs(&self) -> i64 {
-        (self.input_weight() as f32
+    pub fn waste_of_inputs(&self) -> f32 {
+        self.input_weight() as f32
             * (self.opts.target_feerate
                 - self
                     .opts
                     .long_term_feerate
-                    .unwrap_or(self.opts.target_feerate))) as i64
+                    .unwrap_or(self.opts.target_feerate))
     }
 
     pub fn current_weight(&self) -> u32 {
@@ -238,7 +237,7 @@ impl CoinSelector {
             recipient_value: self.opts.target_value,
             fee: fee_without_drain + excess_without_drain,
             weight: weight_without_drain,
-            waste: input_waste + excess_without_drain as i64,
+            waste: input_waste + excess_without_drain as f32,
         });
 
         // no drain, excess to recipient
@@ -271,7 +270,7 @@ impl CoinSelector {
         }
 
         // sort by ascending waste
-        results.sort_unstable_by_key(|s| s.waste);
+        results.sort_unstable_by(|a, b| a.waste.partial_cmp(&b.waste).unwrap());
         Ok(results)
     }
 }
@@ -355,7 +354,7 @@ pub struct Selection {
     pub recipient_value: u64,
     pub fee: u64,
     pub weight: u32,
-    pub waste: i64,
+    pub waste: f32,
 }
 
 impl Selection {
@@ -384,15 +383,15 @@ pub fn coin_select_bnb(
     max_tries: usize,
     selection: &mut CoinSelector,
 ) -> Result<Vec<Selection>, SelectionFailure> {
-    fn effective_value(candidate: &WeightedValue, opts: &CoinSelectorOpt) -> i64 {
-        candidate.value as i64 - (candidate.weight as f32 * opts.target_feerate).ceil() as i64
+    fn effective_value(candidate: &WeightedValue, opts: &CoinSelectorOpt) -> f32 {
+        candidate.value as f32 - candidate.weight as f32 * opts.target_feerate
     }
 
-    fn selected_value(selection: &CoinSelector) -> i64 {
+    fn selected_value(selection: &CoinSelector) -> f32 {
         selection
             .selected()
             .map(|(_, c)| effective_value(&c, &selection.opts()))
-            .sum::<i64>()
+            .sum()
     }
 
     fn is_selected(selection: &CoinSelector, index: usize) -> bool {
@@ -419,17 +418,23 @@ pub fn coin_select_bnb(
             + if has_segwit { 2_u32 } else { 0_u32 }
             + (varint_size(max_input_count) - 1) * 4;
 
-        opts.target_value as i64 + (base_weight as f32 * opts.target_feerate).ceil() as i64
+        opts.target_value as f32 + base_weight as f32 * opts.target_feerate
     };
 
     let pool = {
+        // TODO: Another optimisation we could do is figure out candidate with smallest waste, and
+        // if we find a result with waste equal to this, we can just break.
         let mut pool = selection
             .unselected()
             .into_iter()
-            .filter(|&index| effective_value(&selection.candidates()[index], &opts) > 0)
+            .filter(|&index| effective_value(&selection.candidates()[index], &opts) > 0.0)
             .collect::<Vec<_>>();
-        pool.sort_unstable_by_key(|&index| effective_value(&selection.candidates()[index], &opts));
-        pool.reverse();
+        // sort by descending effective value
+        pool.sort_unstable_by(|&a, &b| {
+            let a = effective_value(&selection.candidates()[a], &opts);
+            let b = effective_value(&selection.candidates()[b], &opts);
+            b.partial_cmp(&a).expect("failed to compare")
+        });
         pool
     };
     let mut pos = 0_usize;
@@ -437,18 +442,17 @@ pub fn coin_select_bnb(
     let mut remaining_value = pool
         .iter()
         .map(|&index| effective_value(&selection.candidates()[index], &opts))
-        .sum::<i64>();
+        .sum::<f32>();
 
     if remaining_value <= target_value {
         todo!("what is a good way of handling this error?");
     }
 
-    let drain_cost = (opts.drain_weight as f32 * opts.target_feerate
-        + opts.spend_drain_weight as f32 * opts.long_term_feerate.unwrap_or(opts.target_feerate))
-        as i64;
+    let drain_cost = opts.drain_weight as f32 * opts.target_feerate
+        + opts.spend_drain_weight as f32 * opts.long_term_feerate.unwrap_or(opts.target_feerate);
     let feerate_decreasing =
         opts.target_feerate > opts.long_term_feerate.unwrap_or(opts.target_feerate);
-    let upper_bound = target_value + drain_cost + opts.max_extra_target as i64;
+    let upper_bound = target_value + drain_cost + opts.max_extra_target as f32;
 
     let mut best_selection = Option::<CoinSelector>::None;
 
@@ -464,7 +468,7 @@ pub fn coin_select_bnb(
             let best_waste = best_selection
                 .as_ref()
                 .map(|b| b.waste_of_inputs() + selected_value(b) - target_value)
-                .unwrap_or(i64::MAX);
+                .unwrap_or(f32::MAX);
 
             if current_value + remaining_value < target_value || current_value > upper_bound {
                 // remaining value is not enough to reach target OR current value surpasses upper bound
@@ -599,14 +603,15 @@ mod test {
         let secp = Secp256k1::default();
         let test_desc = TestDescriptors::new(&secp);
 
-        let mut candidates = test_desc.generate_candidates(1000, 1000, 10_000);
+        let mut candidates = test_desc.generate_candidates(100, 1000, 10_000);
         let (_, mut recipient_txo) = candidates.pop().unwrap();
         recipient_txo.value = 110_000;
         let (drain_plan, drain_txo) = candidates.pop().unwrap();
 
         let cs_opts = CoinSelectorOpt {
-            target_feerate: 0.25,
+            target_feerate: 0.26,
             long_term_feerate: Some(0.25),
+            // min_absolute_fee: 1000,
             // max_extra_target: 1000,
             ..CoinSelectorOpt::fund_outputs(
                 &[recipient_txo.clone()],
