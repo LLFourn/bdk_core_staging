@@ -55,7 +55,7 @@ pub struct CoinSelectorOpt {
 }
 
 impl CoinSelectorOpt {
-    pub fn from_weights(base_weight: u32, drain_weight: u32, spend_drain_weight: u32) -> Self {
+    fn from_weights(base_weight: u32, drain_weight: u32, spend_drain_weight: u32) -> Self {
         Self {
             target_value: 0,
             max_extra_target: 0,
@@ -232,33 +232,46 @@ impl CoinSelector {
         let weight_without_drain = self.current_weight();
         let weight_with_drain = weight_without_drain + self.opts.drain_weight;
 
-        let fee_with_drain = ((self.opts.target_feerate * weight_with_drain as f32).ceil() as u64)
-            .max(self.opts.min_absolute_fee);
-        let fee_without_drain = ((self.opts.target_feerate * weight_without_drain as f32).ceil()
-            as u64)
-            .max(self.opts.min_absolute_fee);
+        let fee_without_drain =
+            (weight_without_drain as f32 * self.opts.target_feerate).ceil() as u64;
+        let fee_with_drain = (weight_with_drain as f32 * self.opts.target_feerate).ceil() as u64;
 
         let inputs_minus_outputs = {
-            let target_value = self.opts.target_value as i64;
-            let selected_value = self.selected_value() as i64;
+            let target_value = self.opts.target_value;
+            let selected = self.selected_value();
 
-            let (missing, unsatisfied) = SelectionConstraint::unsatisfied(
-                target_value,
-                selected_value,
-                fee_without_drain as i64,
-                self.opts.min_absolute_fee as i64,
-            );
+            // calculate "missed" constraints
+            let target_value_missed = target_value
+                .checked_sub(selected)
+                .map(|v| (SelectionConstraint::TargetValue, v));
+            let target_fee_missed = (target_value + fee_without_drain)
+                .checked_sub(selected)
+                .map(|v| (SelectionConstraint::TargetFee, v));
+            let absolute_fee_missed = (target_value + self.opts.min_absolute_fee)
+                .checked_sub(selected)
+                .map(|v| (SelectionConstraint::MinAbsoluteFee, v));
 
-            if !unsatisfied.is_empty() {
+            // find missed constraint with largest "missing" value
+            let missing = target_value_missed
+                .into_iter()
+                .chain(target_fee_missed)
+                .chain(absolute_fee_missed)
+                .filter(|(_, v)| *v > 0)
+                .reduce(|a, b| if a.1 > b.1 { a } else { b });
+
+            if let Some((constraint, missing)) = missing {
                 return Err(SelectionFailure::InsufficientFunds {
-                    selected: selected_value as _,
+                    selected,
                     missing,
-                    unsatisfied,
+                    constraint,
                 });
             }
 
-            (selected_value - target_value) as u64
+            (selected - target_value) as u64
         };
+
+        let fee_without_drain = fee_without_drain.max(self.opts.min_absolute_fee);
+        let fee_with_drain = fee_with_drain.max(self.opts.min_absolute_fee);
 
         let drain_valid = inputs_minus_outputs >= fee_with_drain + self.opts.min_drain_value;
         let excess_without_drain = inputs_minus_outputs - fee_without_drain;
@@ -318,7 +331,7 @@ pub enum SelectionFailure {
     InsufficientFunds {
         selected: u64,
         missing: u64,
-        unsatisfied: Vec<SelectionConstraint>,
+        constraint: SelectionConstraint,
     },
 }
 
@@ -328,11 +341,11 @@ impl core::fmt::Display for SelectionFailure {
             SelectionFailure::InsufficientFunds {
                 selected,
                 missing,
-                unsatisfied,
+                constraint,
             } => write!(
                 f,
-                "insufficient coins selected; selected={}, missing={}, unsatisfied={:?}",
-                selected, missing, unsatisfied
+                "insufficient coins selected; selected={}, missing={}, unsatisfied_constraint={:?}",
+                selected, missing, constraint
             ),
         }
     }
@@ -351,36 +364,13 @@ pub enum SelectionConstraint {
     MinAbsoluteFee,
 }
 
-impl SelectionConstraint {
-    /// Returns the value required to satisfy all constraints and a vec of unsatisfied contraints.
-    pub fn unsatisfied(
-        target_value: i64,
-        selected_value: i64,
-        fee_without_drain: i64,
-        min_absolute_fee: i64,
-    ) -> (u64, Vec<Self>) {
-        let mut unsatisfied = Vec::with_capacity(3);
-        let mut remaining = 0_i64;
-
-        let mut update = |c: Self, v: i64| {
-            if v < 0 {
-                unsatisfied.push(c);
-                let v = v.abs();
-                if v > remaining {
-                    remaining = v;
-                }
-            }
-        };
-
-        let target_value_surplus = selected_value - target_value;
-        let target_fee_surplus = target_value_surplus - fee_without_drain;
-        let min_absolute_fee_surplus = target_value_surplus - min_absolute_fee;
-
-        update(Self::TargetValue, target_value_surplus);
-        update(Self::TargetFee, target_fee_surplus);
-        update(Self::MinAbsoluteFee, min_absolute_fee_surplus);
-
-        (remaining as u64, unsatisfied)
+impl core::fmt::Display for SelectionConstraint {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            SelectionConstraint::TargetValue => core::write!(f, "target_value"),
+            SelectionConstraint::TargetFee => core::write!(f, "target_fee"),
+            SelectionConstraint::MinAbsoluteFee => core::write!(f, "min_absolute_fee"),
+        }
     }
 }
 
@@ -659,7 +649,7 @@ mod test {
             let (drain_plan, drain_txo) = candidates.pop().unwrap();
 
             let cs_opts = CoinSelectorOpt {
-                target_feerate: 0.5,
+                target_feerate: 0.75,
                 long_term_feerate: Some(0.25),
                 min_absolute_fee: 2000,
                 // max_extra_target: 1000,
