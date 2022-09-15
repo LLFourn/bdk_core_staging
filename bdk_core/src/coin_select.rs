@@ -1,4 +1,7 @@
-use crate::{collections::BTreeSet, Vec};
+use crate::{
+    collections::{BTreeSet, HashMap},
+    Vec,
+};
 use bitcoin::{LockTime, Transaction, TxOut};
 
 pub const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
@@ -24,8 +27,9 @@ pub struct WeightedValue {
 impl WeightedValue {
     /// Effective feerate of this input candidate.
     /// `actual_value - input_weight * feerate`
-    pub fn effective_value(&self, opts: &CoinSelectorOpt) -> f32 {
-        self.value as f32 - self.weight as f32 * opts.target_feerate
+    pub fn effective_value(&self, opts: &CoinSelectorOpt) -> i64 {
+        // we prefer undershooting the candidate's effective value
+        self.value as i64 - (self.weight as f32 * opts.target_feerate).ceil() as i64
     }
 }
 
@@ -89,9 +93,13 @@ impl CoinSelectorOpt {
         }
     }
 
-    pub fn drain_waste(&self) -> f32 {
-        self.drain_weight as f32 * self.target_feerate
-            + self.spend_drain_weight as f32 * self.long_term_feerate.unwrap_or(self.target_feerate)
+    pub fn long_term_feerate(&self) -> f32 {
+        self.long_term_feerate.unwrap_or(self.target_feerate)
+    }
+
+    pub fn drain_waste(&self) -> i64 {
+        (self.drain_weight as f32 * self.target_feerate
+            + self.spend_drain_weight as f32 * self.long_term_feerate()) as i64
     }
 }
 
@@ -129,6 +137,10 @@ impl CoinSelector {
         self.selected.contains(&index)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.selected.is_empty()
+    }
+
     /// Weight sum of all selected inputs.
     pub fn selected_weight(&self) -> u32 {
         self.selected
@@ -138,26 +150,17 @@ impl CoinSelector {
     }
 
     /// Effective value sum of all selected inputs.
-    pub fn selected_effective_value(&self) -> f32 {
-        let (total_value, total_weight) = self
-            .selected
+    pub fn selected_effective_value(&self) -> i64 {
+        self.selected
             .iter()
-            .map(|&index| self.candidates[index])
-            .fold((0_u64, 0_u32), |(value, weight), cand| {
-                (value + cand.value, weight + cand.weight)
-            });
-
-        total_value as f32 - total_weight as f32 * self.opts.target_feerate
+            .map(|&index| self.candidates[index].effective_value(&self.opts))
+            .sum()
     }
 
     /// Waste sum of all selected inputs.
-    pub fn selected_waste(&self) -> f32 {
-        self.selected_weight() as f32
-            * (self.opts.target_feerate
-                - self
-                    .opts
-                    .long_term_feerate
-                    .unwrap_or(self.opts.target_feerate))
+    pub fn selected_waste(&self) -> i64 {
+        (self.selected_weight() as f32 * (self.opts.target_feerate - self.opts.long_term_feerate()))
+            as i64
     }
 
     /// Current weight of template tx + selected inputs.
@@ -178,9 +181,9 @@ impl CoinSelector {
     }
 
     /// Current excess.
-    pub fn current_excess(&self) -> f32 {
-        let effective_target =
-            self.opts.target_value as f32 + self.opts.base_weight as f32 * self.opts.target_feerate;
+    pub fn current_excess(&self) -> i64 {
+        let effective_target = self.opts.target_value as i64
+            + (self.opts.base_weight as f32 * self.opts.target_feerate) as i64;
         self.selected_effective_value() - effective_target
     }
 
@@ -240,32 +243,31 @@ impl CoinSelector {
             let target_value = self.opts.target_value;
             let selected = self.selected_value();
 
-            // calculate "missed" constraints
-            let target_value_missed = target_value
-                .checked_sub(selected)
-                .map(|v| (SelectionConstraint::TargetValue, v));
-            let target_fee_missed = (target_value + fee_without_drain)
-                .checked_sub(selected)
-                .map(|v| (SelectionConstraint::TargetFee, v));
-            let absolute_fee_missed = (target_value + self.opts.min_absolute_fee)
-                .checked_sub(selected)
-                .map(|v| (SelectionConstraint::MinAbsoluteFee, v));
-
-            // find missed constraint with largest "missing" value
-            let missing = target_value_missed
-                .into_iter()
-                .chain(target_fee_missed)
-                .chain(absolute_fee_missed)
-                .filter(|(_, v)| *v > 0)
-                .reduce(|a, b| if a.1 > b.1 { a } else { b });
-
-            if let Some((constraint, missing)) = missing {
-                return Err(SelectionFailure::InsufficientFunds {
+            // find the largest unsatisfied constraint (if any), and return error of that constraint
+            [
+                (
+                    SelectionConstraint::TargetValue,
+                    target_value.saturating_sub(selected),
+                ),
+                (
+                    SelectionConstraint::TargetFee,
+                    (target_value + fee_without_drain).saturating_sub(selected),
+                ),
+                (
+                    SelectionConstraint::MinAbsoluteFee,
+                    (target_value + self.opts.min_absolute_fee).saturating_sub(selected),
+                ),
+            ]
+            .into_iter()
+            .filter(|&(_, v)| v > 0)
+            .max_by_key(|&(_, v)| v)
+            .map_or(Ok(()), |(constraint, missing)| {
+                Err(SelectionFailure::InsufficientFunds {
                     selected,
                     missing,
                     constraint,
-                });
-            }
+                })
+            })?;
 
             (selected - target_value) as u64
         };
@@ -277,49 +279,49 @@ impl CoinSelector {
         let input_waste = self.selected_waste();
 
         // begin preparing excess strategies for final selection
-        let mut excess_strategies = Vec::with_capacity(3);
+        let mut excess_strategies = HashMap::new();
 
         // no drain, excess to fee
-        excess_strategies.push((
-            ExcessStrategy::ToFee,
-            SelectionMeta {
+        // excess_strategies.
+        excess_strategies.insert(
+            ExcessStrategyKind::ToFee,
+            ExcessStrategy {
+                recipient_value: self.opts.target_value,
+                drain_value: None,
                 fee: fee_without_drain + excess_without_drain,
                 weight: weight_without_drain,
-                waste: input_waste + excess_without_drain as f32,
+                waste: input_waste + excess_without_drain as i64,
             },
-        ));
+        );
 
         // no drain, excess to recipient
         // if `excess == 0`, this result will be the same as the previous, so we don't consider it
         if excess_without_drain > 0 && excess_without_drain <= self.opts.max_extra_target {
-            excess_strategies.push((
-                ExcessStrategy::ToRecipient {
+            excess_strategies.insert(
+                ExcessStrategyKind::ToRecipient,
+                ExcessStrategy {
                     recipient_value: self.opts.target_value + excess_without_drain,
-                },
-                SelectionMeta {
+                    drain_value: None,
                     fee: fee_without_drain,
                     weight: weight_without_drain,
                     waste: input_waste,
                 },
-            ));
+            );
         }
 
         // with drain
         if inputs_minus_outputs >= fee_with_drain + self.opts.min_drain_value {
-            excess_strategies.push((
-                ExcessStrategy::ToDrain {
-                    drain_value: inputs_minus_outputs.saturating_sub(fee_with_drain),
-                },
-                SelectionMeta {
+            excess_strategies.insert(
+                ExcessStrategyKind::ToDrain,
+                ExcessStrategy {
+                    recipient_value: self.opts.target_value,
+                    drain_value: Some(inputs_minus_outputs.saturating_sub(fee_with_drain)),
                     fee: fee_with_drain,
                     weight: weight_with_drain,
                     waste: input_waste + self.opts.drain_waste(),
                 },
-            ));
+            );
         }
-
-        // sort by ascending waste
-        excess_strategies.sort_unstable_by(|(_, a), (_, b)| a.waste.total_cmp(&b.waste));
 
         Ok(Selection {
             selected: self.selected.clone(),
@@ -381,38 +383,36 @@ impl core::fmt::Display for SelectionConstraint {
 pub struct Selection {
     pub selected: BTreeSet<usize>,
     pub excess: u64,
-    pub excess_strategies: Vec<(ExcessStrategy, SelectionMeta)>,
+    pub excess_strategies: HashMap<ExcessStrategyKind, ExcessStrategy>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum ExcessStrategy {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, core::hash::Hash)]
+pub enum ExcessStrategyKind {
     ToFee,
-    ToRecipient { recipient_value: u64 },
-    ToDrain { drain_value: u64 },
+    ToRecipient,
+    ToDrain,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SelectionMeta {
+pub struct ExcessStrategy {
+    pub recipient_value: u64,
+    pub drain_value: Option<u64>,
     pub fee: u64,
     pub weight: u32,
-    pub waste: f32,
+    pub waste: i64,
 }
 
-impl core::fmt::Display for ExcessStrategy {
+impl core::fmt::Display for ExcessStrategyKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            ExcessStrategy::ToFee => core::write!(f, "to_fee"),
-            ExcessStrategy::ToRecipient { recipient_value } => {
-                core::write!(f, "to_recipient(recipient_value = {})", recipient_value)
-            }
-            ExcessStrategy::ToDrain { drain_value } => {
-                core::write!(f, "to_drain(drain_value = {})", drain_value)
-            }
+            ExcessStrategyKind::ToFee => core::write!(f, "to_fee"),
+            ExcessStrategyKind::ToRecipient => core::write!(f, "to_recipient"),
+            ExcessStrategyKind::ToDrain => core::write!(f, "to_drain"),
         }
     }
 }
 
-impl SelectionMeta {
+impl ExcessStrategy {
     /// returns feerate in sats/wu
     pub fn feerate(&self) -> f32 {
         self.fee as f32 / self.weight as f32
@@ -425,6 +425,14 @@ impl Selection {
         candidates: &'a [T],
     ) -> impl Iterator<Item = &'a T> + 'a {
         self.selected.iter().map(|i| &candidates[*i])
+    }
+
+    /// Returns the [`ExcessStrategy`] that results in the least waste.
+    pub fn best_strategy(&self) -> (&ExcessStrategyKind, &ExcessStrategy) {
+        self.excess_strategies
+            .iter()
+            .min_by_key(|&(_, a)| a.waste)
+            .expect("selection has no excess strategy")
     }
 }
 
@@ -441,21 +449,19 @@ fn varint_size(v: usize) -> u32 {
     return 9;
 }
 
+/// TODO: If we first find a solution that minimises excess, could we use that intial solution
+/// to further minimize waste (or some other constraints)? This way, we could "decouple the
+/// constraints" needed for each "section" of coin selection.
 pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
     let opts = selection.opts();
 
     let base_weight = {
-        let has_segwit = selection
+        let (has_segwit, max_input_count) = selection
             .candidates()
             .iter()
-            .find(|c| c.is_segwit)
-            .is_some();
-
-        let max_input_count = selection
-            .candidates()
-            .iter()
-            .map(|c| c.input_count)
-            .sum::<usize>();
+            .fold((false, 0_usize), |(is_segwit, input_count), c| {
+                (is_segwit || c.is_segwit, input_count + c.input_count)
+            });
 
         selection.selected_weight()
             + opts.base_weight
@@ -469,24 +475,25 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         let mut pool = selection
             .unselected()
             .into_iter()
-            .filter(|&index| selection.candidate(index).effective_value(&opts) > 0.0)
+            .filter(|&index| selection.candidate(index).effective_value(&opts) > 0)
             .collect::<Vec<_>>();
         // sort by descending effective value
         pool.sort_unstable_by(|&a, &b| {
             let a = selection.candidate(a).effective_value(&opts);
             let b = selection.candidate(b).effective_value(&opts);
-            b.total_cmp(&a)
+            b.cmp(&a)
         });
         pool
     };
 
     let mut pos = 0_usize;
 
-    let target_value = opts.target_value as f32 + base_weight as f32 * opts.target_feerate;
+    let target_value =
+        opts.target_value as i64 + (base_weight as f32 * opts.target_feerate).ceil() as i64;
     let mut remaining_value = pool
         .iter()
         .map(|&index| selection.candidate(index).effective_value(&opts))
-        .sum::<f32>();
+        .sum::<i64>();
 
     if remaining_value < target_value {
         return false;
@@ -502,20 +509,19 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         return false;
     }
 
-    let drain_cost = opts.drain_weight as f32 * opts.target_feerate
-        + opts.spend_drain_weight as f32 * opts.long_term_feerate.unwrap_or(opts.target_feerate);
-    let feerate_decreasing =
-        opts.target_feerate > opts.long_term_feerate.unwrap_or(opts.target_feerate);
+    let feerate_decreasing = opts.target_feerate > opts.long_term_feerate();
 
-    let upper_bound = target_value + drain_cost;
-    let absolute_upper_bound = absolute_target_value + opts.max_extra_target;
+    let upper_bound = target_value + opts.drain_waste();
+    let absolute_upper_bound = absolute_target_value
+        + core::cmp::max(
+            opts.max_extra_target,
+            (opts.drain_weight as f32 * opts.target_feerate) as u64,
+        );
 
     let mut best_selection = Option::<CoinSelector>::None;
 
     for try_index in 0..max_tries {
-        if try_index > 0 {
-            pos += 1;
-        }
+        pos += (try_index > 0) as usize; // do not increment `pos` on first round
 
         let backtrack = {
             let current_value = selection.selected_effective_value();
@@ -525,14 +531,14 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
             let best_waste = best_selection
                 .as_ref()
                 .map(|b| b.selected_waste() + b.current_excess())
-                .unwrap_or(f32::MAX);
+                .unwrap_or(i64::MAX);
 
             if current_value + remaining_value < target_value
                 || absolute_current_value + absolute_remaining_value < absolute_target_value
             {
                 // remaining value is not enough to reach target
                 true
-            } else if absolute_current_value > absolute_upper_bound && current_value > upper_bound {
+            } else if current_value > upper_bound && absolute_current_value > absolute_upper_bound {
                 // absolute value AND current value both surpasses upper bounds
                 true
             } else if feerate_decreasing && current_input_waste > best_waste {
@@ -584,7 +590,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
 
         // if the candidate at the previous position is NOT selected and has the same weight and
         // value as the current candidate, we skip the current candidate
-        if pos > 0 {
+        if !selection.is_empty() {
             let prev_candidate = selection.candidate(pool[pos - 1]);
             if !selection.is_selected(pool[pos - 1])
                 && candidate.value == prev_candidate.value
@@ -675,18 +681,18 @@ mod test {
         let secp = Secp256k1::default();
         let test_desc = TestDescriptors::new(&secp);
 
-        (0..5).for_each(|_| {
+        (0..1).for_each(|_| {
             println!("-----");
-            let mut candidates = test_desc.generate_candidates(200, 1000, 10_000);
+            let mut candidates = test_desc.generate_candidates(2100, 10_000, 100_000);
             let (_, mut recipient_txo) = candidates.pop().unwrap();
-            recipient_txo.value = 123_123;
+            recipient_txo.value = 213_123;
             let (drain_plan, drain_txo) = candidates.pop().unwrap();
 
             let cs_opts = CoinSelectorOpt {
-                target_feerate: 0.75,
-                long_term_feerate: Some(0.25),
-                // min_absolute_fee: 2000,
-                // max_extra_target: 1000,
+                target_feerate: 0.25,
+                long_term_feerate: Some(0.75),
+                // min_absolute_fee: 600,
+                // max_extra_target: 1_000,
                 ..CoinSelectorOpt::fund_outputs(
                     &[recipient_txo.clone()],
                     &drain_txo,
