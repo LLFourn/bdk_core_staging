@@ -282,7 +282,6 @@ impl CoinSelector {
         let mut excess_strategies = HashMap::new();
 
         // no drain, excess to fee
-        // excess_strategies.
         excess_strategies.insert(
             ExcessStrategyKind::ToFee,
             ExcessStrategy {
@@ -296,15 +295,19 @@ impl CoinSelector {
 
         // no drain, excess to recipient
         // if `excess == 0`, this result will be the same as the previous, so we don't consider it
-        if excess_without_drain > 0 && excess_without_drain <= self.opts.max_extra_target {
+        // if `max_extra_target == 0`, there is no leeway for this strategy
+        if excess_without_drain > 0 && self.opts.max_extra_target > 0 {
+            let extra_recipient_value =
+                core::cmp::min(self.opts.max_extra_target, excess_without_drain);
+            let extra_fee = excess_without_drain - extra_recipient_value;
             excess_strategies.insert(
                 ExcessStrategyKind::ToRecipient,
                 ExcessStrategy {
-                    recipient_value: self.opts.target_value + excess_without_drain,
+                    recipient_value: self.opts.target_value + extra_recipient_value,
                     drain_value: None,
-                    fee: fee_without_drain,
+                    fee: fee_without_drain + extra_fee,
                     weight: weight_without_drain,
-                    waste: input_waste,
+                    waste: input_waste + extra_fee as i64,
                 },
             );
         }
@@ -449,9 +452,17 @@ fn varint_size(v: usize) -> u32 {
     return 9;
 }
 
-/// TODO: If we first find a solution that minimises excess, could we use that intial solution
-/// to further minimize waste (or some other constraints)? This way, we could "decouple the
-/// constraints" needed for each "section" of coin selection.
+/// This is a variation of the Branch and Bound Coin Selection algorithm designed by Murch (as seen
+/// in Bitcoin Core).
+///
+/// The differences are as follows:
+/// * In additional to working with effective values, we also work with absolute values.
+///   This way, we can use bounds of absolute values to enforce `min_absolute_fee` (which is used by
+///   RBF), and `max_extra_target` (which can be used to increase the possible solution set, given
+///   that the sender is okay with sending extra to the receiver).
+///
+/// Murch's Master Thesis: https://murch.one/wp-content/uploads/2016/11/erhardt2016coinselection.pdf
+/// Bitcoin Core Implementation: https://github.com/bitcoin/bitcoin/blob/23.x/src/wallet/coinselection.cpp#L65
 pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
     let opts = selection.opts();
 
@@ -499,67 +510,71 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         return false;
     }
 
-    let absolute_target_value = opts.target_value + opts.min_absolute_fee;
-    let mut absolute_remaining_value = pool
+    let abs_target_value = opts.target_value + opts.min_absolute_fee;
+    let mut abs_remaining_value = pool
         .iter()
         .map(|&i| selection.candidate(i).value)
         .sum::<u64>();
 
-    if absolute_remaining_value < absolute_target_value {
+    if abs_remaining_value < abs_target_value {
         return false;
     }
 
     let feerate_decreasing = opts.target_feerate > opts.long_term_feerate();
 
     let upper_bound = target_value + opts.drain_waste();
-    let absolute_upper_bound = absolute_target_value
-        + core::cmp::max(
-            opts.max_extra_target,
-            (opts.drain_weight as f32 * opts.target_feerate) as u64,
-        );
+    let abs_upper_bound =
+        abs_target_value + (opts.drain_weight as f32 * opts.target_feerate) as u64;
 
+    // the solution (if any) with the least `waste` is stored here
     let mut best_selection = Option::<CoinSelector>::None;
 
     for try_index in 0..max_tries {
-        pos += (try_index > 0) as usize; // do not increment `pos` on first round
+        // increment `pos`, but only after the first round
+        pos += (try_index > 0) as usize;
 
-        let backtrack = {
-            let current_value = selection.selected_effective_value();
-            let absolute_current_value = selection.selected().map(|(_, c)| c.value).sum::<u64>();
-            let current_input_waste = selection.selected_waste();
+        let current_value = selection.selected_effective_value();
+        let abs_current_value = selection.selected().map(|(_, c)| c.value).sum::<u64>();
+        let current_input_waste = selection.selected_waste();
 
-            let best_waste = best_selection
-                .as_ref()
-                .map(|b| b.selected_waste() + b.current_excess())
-                .unwrap_or(i64::MAX);
+        let best_waste = best_selection
+            .as_ref()
+            .map(|b| b.selected_waste() + b.current_excess())
+            .unwrap_or(i64::MAX);
 
-            if current_value + remaining_value < target_value
-                || absolute_current_value + absolute_remaining_value < absolute_target_value
-            {
-                // remaining value is not enough to reach target
-                true
-            } else if current_value > upper_bound && absolute_current_value > absolute_upper_bound {
-                // absolute value AND current value both surpasses upper bounds
-                true
-            } else if feerate_decreasing && current_input_waste > best_waste {
-                // when feerate_decreasing, waste is guaranteed to increase with each selection,
-                // so backtrack when we have already surpassed best waste
-                true
-            } else if current_value >= target_value
-                && absolute_current_value >= absolute_target_value
-            {
-                // we have found a solution, is the current waste better than our best?
-                let current_waste = current_input_waste + current_value - target_value;
-                if current_waste <= best_waste {
-                    #[cfg(feature = "std")]
-                    println!("solution @ try {} with waste {}", try_index, current_waste);
-                    best_selection.replace(selection.clone());
-                }
+        // `max_extra_target` is only used as a back-up
+        // we only use it for the absolute upper bound when we have no solution
+        // but if `max_extra_target` does not surpass `drain_fee`, it can be ignored
+        let abs_upper_bound = if best_selection.is_none() {
+            core::cmp::max(abs_target_value + opts.max_extra_target, abs_upper_bound)
+        } else {
+            abs_upper_bound
+        };
 
-                true
-            } else {
-                false
+        // determine if a backtrack is needed for this round...
+        let backtrack = if current_value + remaining_value < target_value
+            || abs_current_value + abs_remaining_value < abs_target_value
+        {
+            // remaining value is not enough to reach target
+            true
+        } else if current_value > upper_bound && abs_current_value > abs_upper_bound {
+            // absolute value AND current value both surpasses upper bounds
+            true
+        } else if feerate_decreasing && current_input_waste > best_waste {
+            // when feerate decreases, waste is guaranteed to increase with each new selection,
+            // so we should backtrack when we have already surpassed best waste
+            true
+        } else if current_value >= target_value && abs_current_value >= abs_target_value {
+            // we have found a solution, but is it better than our best?
+            let current_waste = current_input_waste + current_value - target_value;
+            if current_waste <= best_waste {
+                #[cfg(feature = "std")]
+                println!("solution @ try {} with waste {}", try_index, current_waste);
+                best_selection.replace(selection.clone());
             }
+            true
+        } else {
+            false
         };
 
         if backtrack {
@@ -569,7 +584,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
                 if !is_selected {
                     let candidate = &selection.candidate(pool[pos]);
                     remaining_value += candidate.effective_value(&opts);
-                    absolute_remaining_value += candidate.value;
+                    abs_remaining_value += candidate.value;
                 }
                 is_selected
             });
@@ -586,7 +601,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
 
         let candidate = selection.candidate(pool[pos]);
         remaining_value -= candidate.effective_value(&opts);
-        absolute_remaining_value -= candidate.value;
+        abs_remaining_value -= candidate.value;
 
         // if the candidate at the previous position is NOT selected and has the same weight and
         // value as the current candidate, we skip the current candidate
@@ -689,10 +704,10 @@ mod test {
             let (drain_plan, drain_txo) = candidates.pop().unwrap();
 
             let cs_opts = CoinSelectorOpt {
-                target_feerate: 0.25,
-                long_term_feerate: Some(0.75),
-                // min_absolute_fee: 600,
-                // max_extra_target: 1_000,
+                target_feerate: 1.0,
+                long_term_feerate: Some(0.25),
+                // min_absolute_fee: 1200,
+                // max_extra_target: 1000,
                 ..CoinSelectorOpt::fund_outputs(
                     &[recipient_txo.clone()],
                     &drain_txo,
