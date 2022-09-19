@@ -7,7 +7,7 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue, TXIN_BASE_WEIGHT},
+    coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
 };
@@ -258,17 +258,18 @@ fn main() -> anyhow::Result<()> {
                             .unwrap_or(u32::MAX),
                     )
                 }),
-                CoinSelectionAlgo::BranchAndBound => todo!(),
+                CoinSelectionAlgo::BranchAndBound => {}
             }
 
             // turn the txos we chose into a weight and value
             let wv_candidates = candidates
                 .iter()
-                .map(|(plan, utxo)| WeightedValue {
-                    value: utxo.value,
-                    weight: TXIN_BASE_WEIGHT + plan.expected_weight() as u32,
-                    input_count: 1,
-                    is_segwit: plan.witness_version().is_some(),
+                .map(|(plan, utxo)| {
+                    WeightedValue::new(
+                        utxo.value,
+                        plan.expected_weight() as _,
+                        plan.witness_version().is_some(),
+                    )
                 })
                 .collect();
 
@@ -300,14 +301,24 @@ fn main() -> anyhow::Result<()> {
                     ..CoinSelectorOpt::fund_outputs(
                         &outputs,
                         &change_output,
-                        TXIN_BASE_WEIGHT + change_plan.expected_weight() as u32,
+                        change_plan.expected_weight() as u32,
                     )
                 },
             );
 
             // just select coins in the order provided until we have enough
             // only use first result (least waste)
-            let selection = coin_selector.select_until_finished()?;
+            let selection = match coin_select {
+                CoinSelectionAlgo::BranchAndBound => {
+                    if coin_select_bnb(10_000, &mut coin_selector) {
+                        coin_selector.finish()?
+                    } else {
+                        // if Bnb does not find a solution, we try select until finish
+                        coin_selector.select_until_finished()?
+                    }
+                }
+                _ => coin_selector.select_until_finished()?,
+            };
             let (_, selection_meta) = selection.best_strategy();
 
             // get the selected utxos
