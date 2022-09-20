@@ -7,7 +7,7 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue},
+    coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     miniscript::{Descriptor, DescriptorPublicKey},
     ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
 };
@@ -258,16 +258,18 @@ fn main() -> anyhow::Result<()> {
                             .unwrap_or(u32::MAX),
                     )
                 }),
-                CoinSelectionAlgo::BranchAndBound => todo!(),
+                CoinSelectionAlgo::BranchAndBound => {}
             }
 
             // turn the txos we chose into a weight and value
             let wv_candidates = candidates
                 .iter()
-                .map(|(plan, utxo)| WeightedValue {
-                    value: utxo.value,
-                    weight: plan.expected_weight() as u32,
-                    is_segwit: plan.witness_version().is_some(),
+                .map(|(plan, utxo)| {
+                    WeightedValue::new(
+                        utxo.value,
+                        plan.expected_weight() as _,
+                        plan.witness_version().is_some(),
+                    )
                 })
                 .collect();
 
@@ -276,9 +278,17 @@ fn main() -> anyhow::Result<()> {
                 script_pubkey: address.script_pubkey(),
             }];
 
+            let (change_derivation_index, change_script) =
+                tracker.derive_next_unused(change_keychain);
+            let change_script = change_script.clone();
+            let change_plan = tracker
+                .descriptor(change_keychain)
+                .at_derivation_index(change_derivation_index)
+                .plan_satisfaction(&assets)
+                .expect("failed to obtain change plan");
             let mut change_output = TxOut {
                 value: 0,
-                script_pubkey: tracker.derive_next_unused(change_keychain).1.clone(),
+                script_pubkey: change_script,
             };
 
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
@@ -287,20 +297,35 @@ fn main() -> anyhow::Result<()> {
                 wv_candidates,
                 CoinSelectorOpt {
                     target_feerate: 0.5,
-                    ..CoinSelectorOpt::fund_outputs(&outputs, &change_output)
+                    min_drain_value: tracker.descriptor(change_keychain).dust_value(),
+                    ..CoinSelectorOpt::fund_outputs(
+                        &outputs,
+                        &change_output,
+                        change_plan.expected_weight() as u32,
+                    )
                 },
             );
 
             // just select coins in the order provided until we have enough
-            let selection = coin_selector.select_until_finished()?;
+            // only use first result (least waste)
+            let selection = match coin_select {
+                CoinSelectionAlgo::BranchAndBound => {
+                    if coin_select_bnb(10_000, &mut coin_selector) {
+                        coin_selector.finish()?
+                    } else {
+                        // if Bnb does not find a solution, we try select until finish
+                        coin_selector.select_until_finished()?
+                    }
+                }
+                _ => coin_selector.select_until_finished()?,
+            };
+            let (_, selection_meta) = selection.best_strategy();
 
             // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
 
-            if selection.use_drain
-                && selection.excess >= tracker.descriptor(change_keychain).dust_value()
-            {
-                change_output.value = selection.excess;
+            if let Some(drain_value) = selection_meta.drain_value {
+                change_output.value = drain_value;
                 // if the selection tells us to use change and the change value is sufficient we add it as an output
                 outputs.push(change_output)
             }

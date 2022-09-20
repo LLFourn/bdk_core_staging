@@ -13,6 +13,9 @@ serde_crate = { package = "serde", version = "1", optional = true, features = ["
 # Use hashbrown as a feature flag to have HashSet and HashMap from it.
 hashbrown = { version = "0.12.1" , optional = true }
 
+[dev-dependencies]
+rand = "0.8.5"
+
 [features]
 default = ["std"]
 std = []
