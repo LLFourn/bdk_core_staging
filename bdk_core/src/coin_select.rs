@@ -12,8 +12,8 @@ pub const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
 #[derive(Debug, Clone)]
 pub struct CoinSelector<'a> {
     opts: &'a CoinSelectorOpt,
-    candidates: &'a Vec<WeightedValue>,
-    selected: BTreeSet<usize>,
+    candidates: Vec<(usize, &'a WeightedValue)>,
+    selected_pos: BTreeSet<usize>,
 }
 
 /// A [`WeightedValue`] represents an input candidate for [`CoinSelector`]. This can either be a
@@ -140,18 +140,18 @@ impl CoinSelectorOpt {
 }
 
 impl<'a> CoinSelector<'a> {
-    pub fn candidates(&self) -> &[WeightedValue] {
-        &self.candidates
+    pub fn iter_candidates(&self) -> impl Iterator<Item = &WeightedValue> + '_ {
+        self.candidates.iter().map(|(_, c)| *c)
     }
 
-    pub fn candidate(&self, index: usize) -> &WeightedValue {
-        &self.candidates[index]
+    pub fn candidate_at(&self, pos: usize) -> &WeightedValue {
+        self.candidates[pos].1
     }
 
     pub fn new(candidates: &'a Vec<WeightedValue>, opts: &'a CoinSelectorOpt) -> Self {
         Self {
-            candidates,
-            selected: Default::default(),
+            candidates: candidates.iter().enumerate().collect(),
+            selected_pos: Default::default(),
             opts,
         }
     }
@@ -160,44 +160,44 @@ impl<'a> CoinSelector<'a> {
         &self.opts
     }
 
-    pub fn select(&mut self, index: usize) {
-        assert!(index < self.candidates.len());
-        self.selected.insert(index);
+    pub fn select(&mut self, pos: usize) {
+        assert!(pos < self.candidates.len());
+        self.selected_pos.insert(pos);
     }
 
-    pub fn deselect(&mut self, index: usize) {
-        self.selected.remove(&index);
+    pub fn deselect(&mut self, pos: usize) {
+        self.selected_pos.remove(&pos);
     }
 
-    pub fn is_selected(&self, index: usize) -> bool {
-        self.selected.contains(&index)
+    pub fn is_selected(&self, pos: usize) -> bool {
+        self.selected_pos.contains(&pos)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.selected.is_empty()
+        self.selected_pos.is_empty()
     }
 
     /// Weight sum of all selected inputs.
     pub fn selected_weight(&self) -> u32 {
-        self.selected
+        self.selected_pos
             .iter()
-            .map(|&index| self.candidates[index].weight)
+            .map(|&pos| self.candidates[pos].1.weight)
             .sum()
     }
 
     /// Effective value sum of all selected inputs.
     pub fn selected_effective_value(&self) -> i64 {
-        self.selected
+        self.selected_pos
             .iter()
-            .map(|&index| self.candidates[index].effective_value(&self.opts))
+            .map(|&pos| self.candidates[pos].1.effective_value(&self.opts))
             .sum()
     }
 
     /// Absolute value sum of all selected inputs.
     pub fn selected_absolute_value(&self) -> u64 {
-        self.selected
+        self.selected_pos
             .iter()
-            .map(|&index| self.candidates[index].value)
+            .map(|&pos| self.candidates[pos].1.value)
             .sum()
     }
 
@@ -211,11 +211,11 @@ impl<'a> CoinSelector<'a> {
     pub fn current_weight(&self) -> u32 {
         let witness_header_extra_weight = self
             .selected()
-            .find(|(_, wv)| wv.is_segwit)
+            .find(|wv| wv.is_segwit)
             .map(|_| 2)
             .unwrap_or(0);
         let vin_count_varint_extra_weight = {
-            let input_count = self.selected().map(|(_, wv)| wv.input_count).sum::<usize>();
+            let input_count = self.selected().map(|wv| wv.input_count).sum::<usize>();
             (varint_size(input_count) - 1) * 4
         };
         self.opts.base_weight
@@ -231,19 +231,20 @@ impl<'a> CoinSelector<'a> {
         self.selected_effective_value() - effective_target
     }
 
-    pub fn selected(&self) -> impl Iterator<Item = (usize, WeightedValue)> + '_ {
-        self.selected
-            .iter()
-            .map(|index| (*index, self.candidates.get(*index).unwrap().clone()))
+    pub fn selected(&self) -> impl Iterator<Item = &WeightedValue> + '_ {
+        self.selected_pos.iter().map(|&pos| self.candidates[pos].1)
     }
 
     pub fn unselected(&self) -> Vec<usize> {
         let all_indexes = (0..self.candidates.len()).collect::<BTreeSet<_>>();
-        all_indexes.difference(&self.selected).cloned().collect()
+        all_indexes
+            .difference(&self.selected_pos)
+            .cloned()
+            .collect()
     }
 
     pub fn all_selected(&self) -> bool {
-        self.selected.len() == self.candidates.len()
+        self.selected_pos.len() == self.candidates.len()
     }
 
     pub fn select_all(&mut self) {
@@ -272,7 +273,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     pub fn selected_value(&self) -> u64 {
-        self.selected().map(|(_, wv)| wv.value).sum::<u64>()
+        self.selected().map(|wv| wv.value).sum::<u64>()
     }
 
     pub fn finish(&self) -> Result<Selection, SelectionFailure> {
@@ -371,7 +372,7 @@ impl<'a> CoinSelector<'a> {
         }
 
         Ok(Selection {
-            selected: self.selected.clone(),
+            selected: self.selected_pos.clone(),
             excess: excess_without_drain,
             excess_strategies,
         })
@@ -512,8 +513,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
 
     let base_weight = {
         let (has_segwit, max_input_count) = selection
-            .candidates()
-            .iter()
+            .iter_candidates()
             .fold((false, 0_usize), |(is_segwit, input_count), c| {
                 (is_segwit || c.is_segwit, input_count + c.input_count)
             });
@@ -529,12 +529,12 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         let mut pool = selection
             .unselected()
             .into_iter()
-            .filter(|&index| selection.candidate(index).effective_value(&opts) > 0)
+            .filter(|&index| selection.candidate_at(index).effective_value(&opts) > 0)
             .collect::<Vec<_>>();
         // sort by descending effective value
         pool.sort_unstable_by(|&a, &b| {
-            let a = selection.candidate(a).effective_value(&opts);
-            let b = selection.candidate(b).effective_value(&opts);
+            let a = selection.candidate_at(a).effective_value(&opts);
+            let b = selection.candidate_at(b).effective_value(&opts);
             b.cmp(&a)
         });
         pool
@@ -546,7 +546,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         opts.target_value as i64 + (base_weight as f32 * opts.target_feerate).ceil() as i64;
     let mut remaining_value = pool
         .iter()
-        .map(|&index| selection.candidate(index).effective_value(&opts))
+        .map(|&index| selection.candidate_at(index).effective_value(&opts))
         .sum::<i64>();
 
     if selection.selected_effective_value() + remaining_value < target_value {
@@ -556,7 +556,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
     let abs_target_value = opts.target_value + opts.min_absolute_fee;
     let mut abs_remaining_value = pool
         .iter()
-        .map(|&i| selection.candidate(i).value)
+        .map(|&i| selection.candidate_at(i).value)
         .sum::<u64>();
 
     if selection.selected_absolute_value() + abs_remaining_value < abs_target_value {
@@ -626,7 +626,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
             let last_selected_pos = (0..pos).rev().find(|&pos| {
                 let is_selected = selection.is_selected(pool[pos]);
                 if !is_selected {
-                    let candidate = &selection.candidate(pool[pos]);
+                    let candidate = &selection.candidate_at(pool[pos]);
                     remaining_value += candidate.effective_value(&opts);
                     abs_remaining_value += candidate.value;
                 }
@@ -643,7 +643,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
             }
         }
 
-        let candidate = selection.candidate(pool[pos]);
+        let candidate = selection.candidate_at(pool[pos]);
         remaining_value -= candidate.effective_value(&opts);
         abs_remaining_value -= candidate.value;
 
@@ -651,7 +651,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         // if the candidate at the previous position is NOT selected and has the same weight and
         // value as the current candidate, we skip the current candidate
         if pos > 0 && !selection.is_empty() {
-            let prev_candidate = selection.candidate(pool[pos - 1]);
+            let prev_candidate = selection.candidate_at(pool[pos - 1]);
             if !selection.is_selected(pool[pos - 1])
                 && candidate.value == prev_candidate.value
                 && candidate.weight == prev_candidate.weight
@@ -757,7 +757,7 @@ pub mod evaluate_cs {
             writeln!(
                 f,
                 "\t* Initial selection: {}",
-                self.initial_selector.selected.len()
+                self.initial_selector.selected_pos.len()
             )?;
             writeln!(f, "\t* Final selection: {}", self.solution.selected.len())?;
             writeln!(f, "\t* Elapsed: {:?}", self.elapsed)?;

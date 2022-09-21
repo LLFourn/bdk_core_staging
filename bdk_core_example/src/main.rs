@@ -271,7 +271,7 @@ fn main() -> anyhow::Result<()> {
                         plan.witness_version().is_some(),
                     )
                 })
-                .collect();
+                .collect::<Vec<_>>();
 
             let mut outputs = vec![TxOut {
                 value,
