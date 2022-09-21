@@ -156,6 +156,13 @@ impl<'a> CoinSelector<'a> {
         self.candidates[pos].1
     }
 
+    pub fn sort_candidates<F>(&mut self, compare: F)
+    where
+        F: FnMut(&(usize, &WeightedValue), &(usize, &WeightedValue)) -> core::cmp::Ordering,
+    {
+        self.candidates.sort_unstable_by(compare)
+    }
+
     pub fn iter_candidates(&self) -> impl Iterator<Item = &WeightedValue> + '_ {
         self.candidates.iter().map(|(_, c)| *c)
     }
@@ -373,7 +380,11 @@ impl<'a> CoinSelector<'a> {
         }
 
         Ok(Selection {
-            selected: self.selected_pos.clone(),
+            selected: self
+                .selected_pos
+                .iter()
+                .map(|&pos| self.candidates[pos].0)
+                .collect(),
             excess: excess_without_drain,
             excess_strategies,
         })
