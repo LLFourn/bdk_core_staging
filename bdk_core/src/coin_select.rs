@@ -231,6 +231,23 @@ impl<'a> CoinSelector<'a> {
         self.selected_effective_value() - effective_target
     }
 
+    /// This is the effective target value.
+    pub fn effective_target(&self) -> i64 {
+        let (has_segwit, max_input_count) = self
+            .candidates()
+            .iter()
+            .fold((false, 0_usize), |(is_segwit, input_count), c| {
+                (is_segwit || c.is_segwit, input_count + c.input_count)
+            });
+
+        let effective_base_weight = self.opts.base_weight
+            + if has_segwit { 2_u32 } else { 0_u32 }
+            + (varint_size(max_input_count) - 1) * 4;
+
+        self.opts.target_value as i64
+            + (effective_base_weight as f32 * self.opts.target_feerate).ceil() as i64
+    }
+
     pub fn selected(&self) -> impl Iterator<Item = (usize, &'a WeightedValue)> + '_ {
         self.selected
             .iter()
@@ -514,23 +531,10 @@ fn varint_size(v: usize) -> u32 {
 /// Murch's Master Thesis: https://murch.one/wp-content/uploads/2016/11/erhardt2016coinselection.pdf
 /// Bitcoin Core Implementation: https://github.com/bitcoin/bitcoin/blob/23.x/src/wallet/coinselection.cpp#L65
 ///
-/// TODO: Another optimisation we could do is figure out candidate with smallest waste, and
+/// TODO: Another optimization we could do is figure out candidate with smallest waste, and
 /// if we find a result with waste equal to this, we can just break.
 pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
     let opts = selection.opts();
-
-    let base_weight = {
-        let (has_segwit, max_input_count) = selection
-            .candidates()
-            .iter()
-            .fold((false, 0_usize), |(is_segwit, input_count), c| {
-                (is_segwit || c.is_segwit, input_count + c.input_count)
-            });
-
-        opts.base_weight
-            + if has_segwit { 2_u32 } else { 0_u32 }
-            + (varint_size(max_input_count) - 1) * 4
-    };
 
     let pool = {
         // filter out candidates with negative/zero effective value
@@ -549,8 +553,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
 
     let mut pos = 0_usize;
 
-    let target_value =
-        opts.target_value as i64 + (base_weight as f32 * opts.target_feerate).ceil() as i64;
+    let target_value = selection.effective_target();
     let mut remaining_value = pool
         .iter()
         .map(|(_, c)| c.effective_value(&opts))
