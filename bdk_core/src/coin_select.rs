@@ -140,14 +140,6 @@ impl CoinSelectorOpt {
 }
 
 impl<'a> CoinSelector<'a> {
-    pub fn iter_candidates(&self) -> impl Iterator<Item = &WeightedValue> + '_ {
-        self.candidates.iter().map(|(_, c)| *c)
-    }
-
-    pub fn candidate_at(&self, pos: usize) -> &WeightedValue {
-        self.candidates[pos].1
-    }
-
     pub fn new(candidates: &'a Vec<WeightedValue>, opts: &'a CoinSelectorOpt) -> Self {
         Self {
             candidates: candidates.iter().enumerate().collect(),
@@ -160,21 +152,41 @@ impl<'a> CoinSelector<'a> {
         &self.opts
     }
 
-    pub fn select(&mut self, pos: usize) {
-        assert!(pos < self.candidates.len());
-        self.selected_pos.insert(pos);
+    pub fn candidate_at(&self, pos: usize) -> &WeightedValue {
+        self.candidates[pos].1
     }
 
-    pub fn deselect(&mut self, pos: usize) {
-        self.selected_pos.remove(&pos);
+    pub fn iter_candidates(&self) -> impl Iterator<Item = &WeightedValue> + '_ {
+        self.candidates.iter().map(|(_, c)| *c)
+    }
+
+    pub fn iter_selected_positions(&self) -> impl Iterator<Item = usize> + '_ {
+        self.selected_pos.iter().cloned()
+    }
+
+    pub fn iter_selected(&self) -> impl Iterator<Item = &WeightedValue> + '_ {
+        self.selected_pos.iter().map(|&pos| self.candidates[pos].1)
+    }
+
+    pub fn iter_unselected_positions(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.candidates.len()).filter(|pos| !self.selected_pos.contains(pos))
+    }
+
+    pub fn iter_unselected(&self) -> impl Iterator<Item = &WeightedValue> + '_ {
+        self.iter_unselected_positions()
+            .map(|pos| self.candidates[pos].1)
     }
 
     pub fn is_selected(&self, pos: usize) -> bool {
         self.selected_pos.contains(&pos)
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub fn is_none_selected(&self) -> bool {
         self.selected_pos.is_empty()
+    }
+
+    pub fn is_all_selected(&self) -> bool {
+        self.selected_pos.len() == self.candidates.len()
     }
 
     /// Weight sum of all selected inputs.
@@ -210,12 +222,12 @@ impl<'a> CoinSelector<'a> {
     /// Current weight of template tx + selected inputs.
     pub fn current_weight(&self) -> u32 {
         let witness_header_extra_weight = self
-            .selected()
+            .iter_selected()
             .find(|wv| wv.is_segwit)
             .map(|_| 2)
             .unwrap_or(0);
         let vin_count_varint_extra_weight = {
-            let input_count = self.selected().map(|wv| wv.input_count).sum::<usize>();
+            let input_count = self.iter_selected().map(|wv| wv.input_count).sum::<usize>();
             (varint_size(input_count) - 1) * 4
         };
         self.opts.base_weight
@@ -231,26 +243,17 @@ impl<'a> CoinSelector<'a> {
         self.selected_effective_value() - effective_target
     }
 
-    pub fn selected(&self) -> impl Iterator<Item = &WeightedValue> + '_ {
-        self.selected_pos.iter().map(|&pos| self.candidates[pos].1)
+    pub fn select(&mut self, pos: usize) {
+        assert!(pos < self.candidates.len());
+        self.selected_pos.insert(pos);
     }
 
-    pub fn unselected(&self) -> Vec<usize> {
-        let all_indexes = (0..self.candidates.len()).collect::<BTreeSet<_>>();
-        all_indexes
-            .difference(&self.selected_pos)
-            .cloned()
-            .collect()
-    }
-
-    pub fn all_selected(&self) -> bool {
-        self.selected_pos.len() == self.candidates.len()
+    pub fn deselect(&mut self, pos: usize) {
+        self.selected_pos.remove(&pos);
     }
 
     pub fn select_all(&mut self) {
-        for next_unselected in self.unselected() {
-            self.select(next_unselected)
-        }
+        self.selected_pos = (0..self.candidates.len()).collect();
     }
 
     pub fn select_until_finished(&mut self) -> Result<Selection, SelectionFailure> {
@@ -260,8 +263,10 @@ impl<'a> CoinSelector<'a> {
             return selection;
         }
 
-        for next_unselected in self.unselected() {
-            self.select(next_unselected);
+        let unselected_pos = self.iter_unselected_positions().collect::<Vec<_>>();
+
+        for pos in unselected_pos {
+            self.select(pos);
             selection = self.finish();
 
             if selection.is_ok() {
@@ -270,10 +275,6 @@ impl<'a> CoinSelector<'a> {
         }
 
         selection
-    }
-
-    pub fn selected_value(&self) -> u64 {
-        self.selected().map(|wv| wv.value).sum::<u64>()
     }
 
     pub fn finish(&self) -> Result<Selection, SelectionFailure> {
@@ -286,7 +287,7 @@ impl<'a> CoinSelector<'a> {
 
         let inputs_minus_outputs = {
             let target_value = self.opts.target_value;
-            let selected = self.selected_value();
+            let selected = self.selected_absolute_value();
 
             // find the largest unsatisfied constraint (if any), and return error of that constraint
             [
@@ -527,8 +528,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         // TODO: Another optimisation we could do is figure out candidate with smallest waste, and
         // if we find a result with waste equal to this, we can just break.
         let mut pool = selection
-            .unselected()
-            .into_iter()
+            .iter_unselected_positions()
             .filter(|&index| selection.candidate_at(index).effective_value(&opts) > 0)
             .collect::<Vec<_>>();
         // sort by descending effective value
@@ -650,7 +650,7 @@ pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
         // early bailout optimisation:
         // if the candidate at the previous position is NOT selected and has the same weight and
         // value as the current candidate, we skip the current candidate
-        if pos > 0 && !selection.is_empty() {
+        if pos > 0 && !selection.is_none_selected() {
             let prev_candidate = selection.candidate_at(pool[pos - 1]);
             if !selection.is_selected(pool[pos - 1])
                 && candidate.value == prev_candidate.value
