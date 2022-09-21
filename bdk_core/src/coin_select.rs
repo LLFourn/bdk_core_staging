@@ -10,8 +10,8 @@ pub const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
 /// [`CoinSelector`] is responsible for selecting and deselecting from a set of canididates.
 #[derive(Debug, Clone)]
-pub struct CoinSelector {
-    candidates: Vec<WeightedValue>,
+pub struct CoinSelector<'a> {
+    candidates: &'a Vec<WeightedValue>,
     selected: BTreeSet<usize>,
     opts: CoinSelectorOpt,
 }
@@ -139,7 +139,7 @@ impl CoinSelectorOpt {
     }
 }
 
-impl CoinSelector {
+impl<'a> CoinSelector<'a> {
     pub fn candidates(&self) -> &[WeightedValue] {
         &self.candidates
     }
@@ -148,7 +148,7 @@ impl CoinSelector {
         &self.candidates[index]
     }
 
-    pub fn new(candidates: Vec<WeightedValue>, opts: CoinSelectorOpt) -> Self {
+    pub fn new(candidates: &'a Vec<WeightedValue>, opts: CoinSelectorOpt) -> Self {
         Self {
             candidates,
             selected: Default::default(),
@@ -723,8 +723,8 @@ pub mod evaluate_cs {
     }
 
     #[derive(Debug, Clone)]
-    pub struct Evaluation {
-        pub initial_selector: CoinSelector,
+    pub struct Evaluation<'a> {
+        pub initial_selector: CoinSelector<'a>,
         pub solution: Selection,
 
         pub elapsed: std::time::Duration,
@@ -734,7 +734,7 @@ pub mod evaluate_cs {
         pub waste_mean: f32,
     }
 
-    impl Evaluation {
+    impl<'a> Evaluation<'a> {
         pub fn waste(&self, strategy_kind: ExcessStrategyKind) -> i64 {
             self.solution.excess_strategies[&strategy_kind].waste
         }
@@ -746,7 +746,7 @@ pub mod evaluate_cs {
         }
     }
 
-    impl core::fmt::Display for Evaluation {
+    impl<'a> core::fmt::Display for Evaluation<'a> {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             writeln!(f, "Evaluation:")?;
             writeln!(
@@ -771,12 +771,12 @@ pub mod evaluate_cs {
     }
 
     #[derive(Debug, Clone)]
-    pub struct EvaluationFailure {
-        initial: CoinSelector,
+    pub struct EvaluationFailure<'a> {
+        initial: CoinSelector<'a>,
         elapsed: std::time::Duration,
     }
 
-    impl core::fmt::Display for EvaluationFailure {
+    impl<'a> core::fmt::Display for EvaluationFailure<'a> {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             write!(
                 f,
@@ -787,7 +787,7 @@ pub mod evaluate_cs {
         }
     }
 
-    impl std::error::Error for EvaluationFailure {}
+    impl<'a> std::error::Error for EvaluationFailure<'a> {}
 }
 
 #[cfg(test)]
@@ -891,7 +891,7 @@ mod test_bnb {
             t.gen_candidate(1, 100_000).into(),
         ];
         let opts = t.gen_opts(200_000);
-        let mut selector = CoinSelector::new(candidates, opts);
+        let mut selector = CoinSelector::new(&candidates, opts);
         assert!(!coin_select_bnb(10_000, &mut selector));
     }
 
@@ -908,7 +908,7 @@ mod test_bnb {
             ..t.gen_opts(200_000)
         };
         let selector = {
-            let mut selector = CoinSelector::new(candidates, opts);
+            let mut selector = CoinSelector::new(&candidates, opts);
             selector.select(0); // preselect
             selector.select(1); // preselect
             selector
@@ -963,7 +963,7 @@ mod test_bnb {
         };
 
         // test lowest possible target we are able to select
-        let lowest_eval = evaluate(CoinSelector::new(candidates.clone(), lowest_opts), |cs| {
+        let lowest_eval = evaluate(CoinSelector::new(&candidates, lowest_opts), |cs| {
             coin_select_bnb(10_000, cs)
         });
         assert!(lowest_eval.is_ok());
@@ -979,7 +979,7 @@ mod test_bnb {
         );
 
         // test highest possible target we are able to select
-        let highest_eval = evaluate(CoinSelector::new(candidates.clone(), highest_opts), |cs| {
+        let highest_eval = evaluate(CoinSelector::new(&candidates, highest_opts), |cs| {
             coin_select_bnb(10_000, cs)
         });
         assert!(highest_eval.is_ok());
@@ -999,7 +999,7 @@ mod test_bnb {
             target_value: lowest_opts.target_value - 1,
             ..lowest_opts
         };
-        let loob_eval = evaluate(CoinSelector::new(candidates.clone(), loob_opts), |cs| {
+        let loob_eval = evaluate(CoinSelector::new(&candidates, loob_opts), |cs| {
             coin_select_bnb(10_000, cs)
         });
         assert!(loob_eval.is_err());
@@ -1010,7 +1010,7 @@ mod test_bnb {
             target_value: highest_opts.target_value + 1,
             ..highest_opts
         };
-        let uoob_eval = evaluate(CoinSelector::new(candidates.clone(), uoob_opts), |cs| {
+        let uoob_eval = evaluate(CoinSelector::new(&candidates, uoob_opts), |cs| {
             coin_select_bnb(10_000, cs)
         });
         assert!(uoob_eval.is_err());
@@ -1046,7 +1046,7 @@ mod test_bnb {
         ];
 
         for (opts, expect_solution, expect_selected) in test_cases {
-            let res = evaluate(CoinSelector::new(candidates.clone(), opts), |s| {
+            let res = evaluate(CoinSelector::new(&candidates, opts), |s| {
                 coin_select_bnb(10_000, s)
             });
             assert_eq!(res.is_ok(), expect_solution);
@@ -1085,7 +1085,7 @@ mod test_bnb {
             ..t.gen_opts(300_000)
         };
 
-        let result = evaluate(CoinSelector::new(candidates, opts), |cs| {
+        let result = evaluate(CoinSelector::new(&candidates, opts), |cs| {
             coin_select_bnb(1100, cs)
         });
         assert!(result.is_ok());
@@ -1103,7 +1103,7 @@ mod test_bnb {
             .map(|index| t.gen_candidate(index as _, 10_000).into())
             .collect::<Vec<WeightedValue>>();
         let opts = t.gen_opts(10_001 * MAX_TRIES as u64);
-        let result = evaluate(CoinSelector::new(candidates, opts), |cs| {
+        let result = evaluate(CoinSelector::new(&candidates, opts), |cs| {
             coin_select_bnb(MAX_TRIES, cs)
         });
         assert!(result.is_err());
@@ -1136,7 +1136,7 @@ mod test_bnb {
         (1..=120_u64).for_each(|fee_factor| {
             opts.min_absolute_fee = fee_factor * 31;
 
-            let result = evaluate(CoinSelector::new(candidates.clone(), opts), |cs| {
+            let result = evaluate(CoinSelector::new(&candidates, opts), |cs| {
                 coin_select_bnb(21_000, cs)
             });
 

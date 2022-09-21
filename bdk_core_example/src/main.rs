@@ -278,14 +278,16 @@ fn main() -> anyhow::Result<()> {
                 script_pubkey: address.script_pubkey(),
             }];
 
-            let (change_derivation_index, change_script) =
-                tracker.derive_next_unused(change_keychain);
-            let change_script = change_script.clone();
+            let (change_index, change_script) = {
+                let (index, script) = tracker.derive_next_unused(change_keychain);
+                (index, script.clone())
+            };
             let change_plan = tracker
                 .descriptor(change_keychain)
-                .at_derivation_index(change_derivation_index)
+                .at_derivation_index(change_index)
                 .plan_satisfaction(&assets)
                 .expect("failed to obtain change plan");
+
             let mut change_output = TxOut {
                 value: 0,
                 script_pubkey: change_script,
@@ -294,7 +296,7 @@ fn main() -> anyhow::Result<()> {
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs
             let mut coin_selector = CoinSelector::new(
-                wv_candidates,
+                &wv_candidates,
                 CoinSelectorOpt {
                     target_feerate: 0.5,
                     min_drain_value: tracker.descriptor(change_keychain).dust_value(),
