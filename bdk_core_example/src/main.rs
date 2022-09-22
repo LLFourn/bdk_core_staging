@@ -293,20 +293,19 @@ fn main() -> anyhow::Result<()> {
                 script_pubkey: change_script,
             };
 
+            let cs_opts = CoinSelectorOpt {
+                target_feerate: 0.5,
+                min_drain_value: tracker.descriptor(change_keychain).dust_value(),
+                ..CoinSelectorOpt::fund_outputs(
+                    &outputs,
+                    &change_output,
+                    change_plan.expected_weight() as u32,
+                )
+            };
+
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs
-            let mut coin_selector = CoinSelector::new(
-                &wv_candidates,
-                CoinSelectorOpt {
-                    target_feerate: 0.5,
-                    min_drain_value: tracker.descriptor(change_keychain).dust_value(),
-                    ..CoinSelectorOpt::fund_outputs(
-                        &outputs,
-                        &change_output,
-                        change_plan.expected_weight() as u32,
-                    )
-                },
-            );
+            let mut coin_selector = CoinSelector::new(&wv_candidates, &cs_opts);
 
             // just select coins in the order provided until we have enough
             // only use first result (least waste)
