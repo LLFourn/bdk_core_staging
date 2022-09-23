@@ -462,23 +462,6 @@ pub struct ExcessStrategy {
     pub waste: i64,
 }
 
-impl core::fmt::Display for ExcessStrategyKind {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            ExcessStrategyKind::ToFee => core::write!(f, "to_fee"),
-            ExcessStrategyKind::ToRecipient => core::write!(f, "to_recipient"),
-            ExcessStrategyKind::ToDrain => core::write!(f, "to_drain"),
-        }
-    }
-}
-
-impl ExcessStrategy {
-    /// Returns feerate in sats/wu.
-    pub fn feerate(&self) -> f32 {
-        self.fee as f32 / self.weight as f32
-    }
-}
-
 impl Selection {
     pub fn apply_selection<'a, T>(
         &'a self,
@@ -493,5 +476,22 @@ impl Selection {
             .iter()
             .min_by_key(|&(_, a)| a.waste)
             .expect("selection has no excess strategy")
+    }
+}
+
+impl core::fmt::Display for ExcessStrategyKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ExcessStrategyKind::ToFee => core::write!(f, "to_fee"),
+            ExcessStrategyKind::ToRecipient => core::write!(f, "to_recipient"),
+            ExcessStrategyKind::ToDrain => core::write!(f, "to_drain"),
+        }
+    }
+}
+
+impl ExcessStrategy {
+    /// Returns feerate in sats/wu.
+    pub fn feerate(&self) -> f32 {
+        self.fee as f32 / self.weight as f32
     }
 }
