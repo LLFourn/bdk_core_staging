@@ -1,8 +1,8 @@
 use core::{
     cmp::Ordering,
-    fmt::Display,
+    fmt::{Debug, Display},
     iter::Sum,
-    ops::{Add, Sub},
+    ops::{Add, AddAssign, Sub, SubAssign},
 };
 
 use crate::{
@@ -67,14 +67,13 @@ pub struct CoinSelectorOpt {
     /// The value we need to select.
     pub target_value: u64,
     /// Additional leeway for the target value.
-    /// TODO: This is only used in finish?
-    pub max_extra_target: u64,
+    pub max_extra_target: u64, // TODO: Maybe out of scope here?
 
     /// The feerate we should try and achieve in sats per weight unit.
     pub target_feerate: f32,
     /// The feerate
-    pub long_term_feerate: Option<f32>,
-    /// The minimum absolute fee.
+    pub long_term_feerate: Option<f32>, // TODO: Maybe out of scope? (waste)
+    /// The minimum absolute fee. I.e. needed for RBF.
     pub min_absolute_fee: u64,
 
     /// The weight of the template transaction including fixed inputs and outputs.
@@ -82,7 +81,7 @@ pub struct CoinSelectorOpt {
     /// Additional weight if we include the drain (change) output.
     pub drain_weight: u32,
     /// Weight of spending the drain (change) output in the future.
-    pub spend_drain_weight: u32,
+    pub spend_drain_weight: u32, // TODO: Maybe out of scope? (waste)
 
     /// Minimum value allowed for a drain (change) output.
     pub min_drain_value: u64,
@@ -527,14 +526,30 @@ fn varint_size(v: usize) -> u32 {
     return 9;
 }
 
-pub trait BnbValue:
-    Display + Copy + PartialOrd + Add<Output = Self> + Sub<Output = Self> + Sum
+pub trait BnbNum:
+    Display
+    + Debug
+    + Copy
+    + PartialOrd
+    + Sum
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + AddAssign
+    + SubAssign
 {
+    const ZERO: Self;
+    const MAX: Self;
 }
 
-impl BnbValue for i64 {}
+impl BnbNum for i64 {
+    const ZERO: Self = 0;
+    const MAX: Self = i64::MAX;
+}
 
-impl BnbValue for u64 {}
+impl BnbNum for u64 {
+    const ZERO: Self = 0;
+    const MAX: Self = u64::MAX;
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CombinedValue {
@@ -575,6 +590,12 @@ impl PartialOrd for CombinedValue {
     }
 }
 
+impl Sum for CombinedValue {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), |a, b| a + b)
+    }
+}
+
 impl Add for CombinedValue {
     type Output = Self;
 
@@ -597,96 +618,100 @@ impl Sub for CombinedValue {
     }
 }
 
-impl Sum for CombinedValue {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Self::default(), |a, b| a + b)
+impl AddAssign for CombinedValue {
+    fn add_assign(&mut self, rhs: Self) {
+        self.eff_value += rhs.eff_value;
+        self.abs_value += rhs.abs_value;
     }
 }
 
-impl BnbValue for CombinedValue {}
-
-pub struct BnbParams<'c, V, M> {
-    /// Selection pool of candidates
-    pub pool: Vec<(usize, &'c WeightedValue)>,
-    /// Target value (lower bound)
-    pub target_value: V,
-    /// Upper bound
-    pub upper_bound: V,
-    /// Maximum value of the metric
-    pub metric_max: M,
-    /// Does metric increase with each selection?
-    /// For example, the waste metric increases with each selection when long term feerate is lower
-    /// than effective feerate
-    pub metric_increases: bool,
+impl SubAssign for CombinedValue {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.eff_value -= rhs.eff_value;
+        self.abs_value -= rhs.abs_value;
+    }
 }
 
-impl<'c, M> BnbParams<'c, CombinedValue, M> {
-    pub fn new(
-        selector: &CoinSelector<'c>,
-        pool: Vec<(usize, &'c WeightedValue)>,
-        metric_max: M,
-        metric_increases: bool,
-    ) -> Self {
-        let opts = selector.opts();
+impl BnbNum for CombinedValue {
+    const ZERO: Self = Self {
+        eff_value: 0,
+        abs_value: 0,
+    };
+    const MAX: Self = Self {
+        eff_value: i64::MAX,
+        abs_value: u64::MAX,
+    };
+}
 
-        let target_value = CombinedValue {
+impl CombinedValue {
+    /// Returns the "bounds" for Branch and Bound: `(target_value, upper_bound)`.
+    pub fn bounds(selector: &CoinSelector) -> (Self, Self) {
+        let opts = selector.opts();
+        let target_value = Self {
             eff_value: selector.effective_target(),
             abs_value: opts.target_value + opts.min_absolute_fee,
         };
-
-        let upper_bound = CombinedValue {
+        let upper_bound = Self {
             eff_value: target_value.eff_value + opts.drain_waste(),
             abs_value: target_value.abs_value
                 + (opts.drain_weight as f32 * opts.target_feerate) as u64,
         };
-
-        Self {
-            pool,
-            target_value,
-            upper_bound,
-            metric_max,
-            metric_increases,
-        }
+        (target_value, upper_bound)
     }
+}
+
+pub struct BnbParams<'c, 'f, V, M> {
+    /// Selection pool of candidates
+    pub pool: Vec<(usize, &'c WeightedValue)>,
+
+    /// Target value (lower bound)
+    pub target_value: V,
+    /// Upper bound
+    pub upper_bound: V,
+
+    /// Does metric increase with each selection?
+    /// For example, the waste metric increases with each selection when long term feerate is lower
+    /// than effective feerate
+    pub metric_increases: bool,
+
+    /// Calculates the value (`V`) that a single candidate introduces.
+    pub value_fn: &'f dyn Fn(&CoinSelector, &WeightedValue) -> V,
+    /// Calculates the metric (`M`) that a single candidate introduces.
+    pub metric_fn: &'f dyn Fn(&CoinSelector, &WeightedValue) -> M,
+    /// Calculates additional metric (`M`) when value sum (`V`) is in range.
+    /// I.e. if `M` is the waste metric, this would return the excess.
+    pub additional_metric_fn: &'f dyn Fn(&CoinSelector) -> M,
 }
 
 pub struct BnbState<'c, 'f, V, M> {
     /// Bnb parameters
-    params: &'f BnbParams<'c, V, M>,
+    params: &'f BnbParams<'c, 'f, V, M>,
     /// Current selection
     selection: CoinSelector<'c>,
-    /// Records the best selection, and the metric value of the best selection
-    /// `M` is the metric to minimize
-    best: Option<(CoinSelector<'c>, M)>,
+    /// Records the metric value of the best selection, `M` is the metric to minimize
+    best: Option<M>,
 
     /// Position within the selection pool
     pos: usize,
     /// Whether we have exhausted all rounds
-    exhausted: bool,
+    done: bool,
     /// Remaining effective value of the current branch
     remaining_value: V,
-
-    /// Calculates metric
-    calc_metric: &'f dyn Fn(&CoinSelector<'c>, bool) -> M,
-    /// Calculates value of single candidate
-    calc_value: &'f dyn Fn(&CoinSelector<'c>, &WeightedValue) -> V,
 }
 
-impl<'c, 'f, V: BnbValue, M: Copy + Ord> BnbState<'c, 'f, V, M> {
+impl<'c, 'f, V: BnbNum, M: BnbNum> BnbState<'c, 'f, V, M> {
     pub fn new(
-        params: &'f BnbParams<'c, V, M>,
+        params: &'f BnbParams<'c, 'f, V, M>,
         selector: CoinSelector<'c>,
-        calc_metric: &'f dyn Fn(&CoinSelector<'c>, bool) -> M,
-        calc_value: &'f dyn Fn(&CoinSelector<'c>, &WeightedValue) -> V,
     ) -> Result<Self, &'static str> {
         let remaining_value = params
             .pool
             .iter()
-            .map(|(_, c)| (calc_value)(&selector, c))
+            .map(|(_, c)| (params.value_fn)(&selector, c))
             .sum::<V>();
         let selected_value = selector
             .selected()
-            .map(|(_, c)| (calc_value)(&selector, c))
+            .map(|(_, c)| (params.value_fn)(&selector, c))
             .sum::<V>();
 
         if selected_value + remaining_value < params.target_value {
@@ -696,76 +721,63 @@ impl<'c, 'f, V: BnbValue, M: Copy + Ord> BnbState<'c, 'f, V, M> {
         Ok(Self {
             params,
             pos: 0,
-            exhausted: false,
+            done: false,
             remaining_value,
             selection: selector,
             best: None,
-            calc_metric,
-            calc_value,
         })
-    }
-
-    /// Returns the best solution
-    pub fn best(&self) -> Option<&(CoinSelector, M)> {
-        self.best.as_ref()
     }
 
     pub fn current_value(&self) -> V {
         self.selection
             .selected()
-            .map(|(_, c)| (self.calc_value)(&self.selection, c))
-            .sum::<V>()
+            .map(|(_, c)| (self.params.value_fn)(&self.selection, c))
+            .sum()
     }
 
-    pub fn backtrack(&self) -> (bool, Option<M>) {
+    pub fn current_metric(&self) -> M {
+        self.selection
+            .selected()
+            .map(|(_, c)| (self.params.metric_fn)(&self.selection, c))
+            .sum()
+    }
+
+    pub fn best_metric(&self) -> M {
+        self.best.unwrap_or(M::MAX)
+    }
+
+    /// Checks current selection, returns `(is_solution, backtrack)`.
+    pub fn check(&self) -> (bool, bool) {
         let current_value = self.current_value();
 
-        let best_metric = self
-            .best
-            .as_ref()
-            .map(|(_, m)| *m)
-            .unwrap_or(self.params.metric_max);
-
-        // backtrack: remaining value is not enough to reach target
+        // is remaining value enough?
         if current_value + self.remaining_value < self.params.target_value {
-            return (true, None);
+            return (false, true);
         }
 
-        // backtrack: value surpasses upper bound
+        // is current value above range?
         if current_value > self.params.upper_bound {
-            return (true, None);
+            return (false, true);
         }
 
-        // backtrack: if metric increases with each selection, we should backtrack when we already
-        // surpassed the metric of best selection
-        if self.params.metric_increases && (self.calc_metric)(&self.selection, false) > best_metric
-        {
-            return (true, None);
-        }
-
-        // we have found a solution
+        // is current value within range?
         if current_value >= self.params.target_value {
-            let current_metric = (self.calc_metric)(&self.selection, true);
-
-            // is solution better than our best?
-            // we want to minimize the "metric"
-            if current_metric <= best_metric {
-                return (true, Some(current_metric));
-            }
-
-            // backtrack: even though it is possible that we could find better solutions by
-            // selecting more inputs, we backtrack anyway, as we might end up buring money
-            return (true, None);
+            return (true, true);
         }
 
-        // backtrack: this shouldn't happen and represents a faulty implementation
-        if self.pos >= self.params.pool.len() {
-            // TODO: Add warning? error?
-            return (true, None);
+        // current value is most definitely below range
+
+        // if metric increases with each selection, and current metric already is greater than
+        // best metric, selecting more candidates will just result in a worse metric
+        if self.params.metric_increases && self.current_metric() > self.best_metric() {
+            return (false, true);
         }
 
-        // no backtrack
-        return (false, None);
+        // this should not happen and represents a faulty implementation
+        debug_assert!(self.pos < self.params.pool.len());
+
+        // select more
+        return (false, false);
     }
 
     /// Determines whether we can perform the early bailout optimisation.
@@ -789,83 +801,86 @@ impl<'c, 'f, V: BnbValue, M: Copy + Ord> BnbState<'c, 'f, V, M> {
     }
 }
 
-impl<'c, 'f, V: BnbValue, M: Ord + Copy> Iterator for BnbState<'c, 'f, V, M> {
-    type Item = BnbRound<'c, M>;
+impl<'c, 'f, V: BnbNum, M: BnbNum> Iterator for BnbState<'c, 'f, V, M> {
+    type Item = Option<CoinSelector<'c>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.exhausted {
+        if self.done {
             return None;
         }
 
-        let (backtrack, updated_metric) = self.backtrack();
+        let (is_solution, backtrack) = self.check();
 
-        if let Some(best_metric) = updated_metric {
-            self.best.replace((self.selection.clone(), best_metric));
-        }
+        // if solution has a better (lower) metric value than the current best, replace the current
+        // best and return the new best selection
+        let best_selection = {
+            let mut best_selection = None;
+            if is_solution {
+                let current_metric =
+                    self.current_metric() + (self.params.additional_metric_fn)(&self.selection);
+
+                if current_metric <= self.best_metric() {
+                    self.best.replace(current_metric);
+                    best_selection = Some(self.selection.clone());
+                }
+            }
+            best_selection
+        };
 
         if backtrack {
             // find the last `pos` with a selected candidate
             let last = (0..self.pos).rev().find_map(|pos| {
                 let (index, candidate) = self.params.pool[pos];
+
                 if self.selection.is_selected(index) {
-                    Some((pos, index))
-                } else {
-                    self.remaining_value =
-                        self.remaining_value + (self.calc_value)(&self.selection, candidate);
-                    None
+                    return Some((pos, index));
                 }
+
+                self.remaining_value += (self.params.value_fn)(&self.selection, candidate);
+                return None;
             });
 
             match last {
                 Some((last_selected_pos, last_selected_index)) => {
+                    // deselect last `pos`, next round will check omission branch
                     self.pos = last_selected_pos;
                     self.selection.deselect(last_selected_index);
                 }
                 None => {
                     // nothing is selected, all solutions searched
-                    self.exhausted = true;
+                    self.done = true;
                 }
             }
         } else {
             let (index, candidate) = self.params.pool[self.pos];
-            self.remaining_value =
-                self.remaining_value - (self.calc_value)(&self.selection, candidate);
+            self.remaining_value -= (self.params.value_fn)(&self.selection, candidate);
 
             if !self.early_bailout() {
                 self.selection.select(index);
             }
         }
 
-        let res = if updated_metric.is_some() || !self.exhausted {
-            Some(BnbRound {
-                best_updated: updated_metric.is_some(),
-                best: self.best.clone(),
-            })
+        self.pos += 1;
+
+        if best_selection.is_some() || !self.done {
+            Some(best_selection)
         } else {
             None
-        };
-
-        self.pos += 1;
-        return res;
+        }
     }
-}
-
-pub struct BnbRound<'c, M> {
-    /// Whether this round found a better solution
-    pub best_updated: bool,
-    pub best: Option<(CoinSelector<'c>, M)>,
 }
 
 pub fn coin_select_bnb2(max_tries: usize, selector: CoinSelector) -> Option<CoinSelector> {
     let opts = selector.opts();
 
+    // prepare pool of candidates to select from:
+    // * filter out candidates with negative/zero effective values
+    // * sort candidates by descending effective value
     let pool = {
-        // filter out candidates with negative/zero effective value
         let mut pool = selector
             .unselected()
             .filter(|(_, c)| c.effective_value(&opts) > 0)
             .collect::<Vec<_>>();
-        // sort by descending effective value
         pool.sort_unstable_by(|(_, a), (_, b)| {
             let a = a.effective_value(&opts);
             let b = b.effective_value(&opts);
@@ -874,42 +889,42 @@ pub fn coin_select_bnb2(max_tries: usize, selector: CoinSelector) -> Option<Coin
         pool
     };
 
-    let bnb_params = BnbParams::new(
-        &selector,
-        pool,
-        i64::MAX,
-        opts.target_feerate > opts.long_term_feerate(),
-    );
+    // prepare lower and upper bounds for "value"
+    let (target_value, upper_bound) = CombinedValue::bounds(&selector);
 
-    let target_effective_value = bnb_params.target_value.eff_value;
-    let calc_metric = move |selector: &CoinSelector, within_target: bool| -> i64 {
-        let input_waste = selector.selected_waste();
-        if !within_target {
-            return input_waste;
-        }
-        let excess = selector.selected_effective_value() - target_effective_value;
-        input_waste + excess
-    };
-
-    let calc_value = |selector: &CoinSelector, candidate: &WeightedValue| -> CombinedValue {
+    // this calculates "value" for a single candidate
+    let value_fn = |selector: &CoinSelector, candidate: &WeightedValue| -> CombinedValue {
         CombinedValue {
             eff_value: candidate.effective_value(&selector.opts),
             abs_value: candidate.value,
         }
     };
 
-    let mut bnb_state = match BnbState::new(&bnb_params, selector, &calc_metric, &calc_value) {
-        Ok(state) => state,
-        Err(err) => {
-            #[cfg(feature = "std")]
-            println!("failed to create bnb state: {}", err);
-            return None;
-        }
+    // this calculates "metric" for a single candidate
+    let metric_fn = |selector: &CoinSelector, candidate: &WeightedValue| -> i64 {
+        let opts = selector.opts();
+        (candidate.weight as f32 * (opts.target_feerate - opts.long_term_feerate())) as i64
     };
 
-    let _is_exhausted = bnb_state.nth(max_tries).is_some();
+    // this calculates additional "metric", when "value" sum is within lower and upper bounds
+    let additional_metric_fn = |selector: &CoinSelector| -> i64 {
+        selector.selected_effective_value() - target_value.eff_value
+    };
 
-    bnb_state.best.map(|(b, _)| b)
+    let params = BnbParams {
+        pool,
+        target_value,
+        upper_bound,
+        metric_increases: opts.target_feerate > opts.long_term_feerate(),
+        value_fn: &value_fn,
+        metric_fn: &metric_fn,
+        additional_metric_fn: &additional_metric_fn,
+    };
+
+    let state = BnbState::new(&params, selector).ok()?;
+    state
+        .take(max_tries)
+        .reduce(|b, c| if c.is_some() { c } else { b })?
 }
 
 /// This is a variation of the Branch and Bound Coin Selection algorithm designed by Murch (as seen
@@ -1367,11 +1382,10 @@ mod test_bnb {
                 ((opts.base_weight + 2) as f32 * opts.target_feerate).ceil() as u64;
 
             let lowest_opts = CoinSelectorOpt {
-                target_value: 400_000
+                target_value: 400_000 + 1
                     - fee_from_inputs
                     - fee_from_template
-                    - opts.drain_waste() as u64
-                    + 1,
+                    - opts.drain_waste() as u64,
                 ..opts
             };
 
