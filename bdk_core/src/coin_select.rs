@@ -870,7 +870,21 @@ impl<'c, 'f, V: BnbNum, M: BnbNum> Iterator for BnbState<'c, 'f, V, M> {
     }
 }
 
-pub fn coin_select_bnb2(max_tries: usize, selector: CoinSelector) -> Option<CoinSelector> {
+/// This is a variation of the Branch and Bound Coin Selection algorithm designed by Murch (as seen
+/// in Bitcoin Core).
+///
+/// The differences are as follows:
+/// * In additional to working with effective values, we also work with absolute values.
+///   This way, we can use bounds of absolute values to enforce `min_absolute_fee` (which is used by
+///   RBF), and `max_extra_target` (which can be used to increase the possible solution set, given
+///   that the sender is okay with sending extra to the receiver).
+///
+/// Murch's Master Thesis: https://murch.one/wp-content/uploads/2016/11/erhardt2016coinselection.pdf
+/// Bitcoin Core Implementation: https://github.com/bitcoin/bitcoin/blob/23.x/src/wallet/coinselection.cpp#L65
+///
+/// TODO: Another optimization we could do is figure out candidate with smallest waste, and
+/// if we find a result with waste equal to this, we can just break.
+pub fn coin_select_bnb(max_tries: usize, selector: CoinSelector) -> Option<CoinSelector> {
     let opts = selector.opts();
 
     // prepare pool of candidates to select from:
@@ -925,166 +939,6 @@ pub fn coin_select_bnb2(max_tries: usize, selector: CoinSelector) -> Option<Coin
     state
         .take(max_tries)
         .reduce(|b, c| if c.is_some() { c } else { b })?
-}
-
-/// This is a variation of the Branch and Bound Coin Selection algorithm designed by Murch (as seen
-/// in Bitcoin Core).
-///
-/// The differences are as follows:
-/// * In additional to working with effective values, we also work with absolute values.
-///   This way, we can use bounds of absolute values to enforce `min_absolute_fee` (which is used by
-///   RBF), and `max_extra_target` (which can be used to increase the possible solution set, given
-///   that the sender is okay with sending extra to the receiver).
-///
-/// Murch's Master Thesis: https://murch.one/wp-content/uploads/2016/11/erhardt2016coinselection.pdf
-/// Bitcoin Core Implementation: https://github.com/bitcoin/bitcoin/blob/23.x/src/wallet/coinselection.cpp#L65
-///
-/// TODO: Another optimization we could do is figure out candidate with smallest waste, and
-/// if we find a result with waste equal to this, we can just break.
-pub fn coin_select_bnb(max_tries: usize, selection: &mut CoinSelector) -> bool {
-    let opts = selection.opts().clone();
-
-    let pool = {
-        // filter out candidates with negative/zero effective value
-        let mut pool = selection
-            .unselected()
-            .filter(|(_, c)| c.effective_value(&opts) > 0)
-            .collect::<Vec<_>>();
-        // sort by descending effective value
-        pool.sort_unstable_by(|(_, a), (_, b)| {
-            let a = a.effective_value(&opts);
-            let b = b.effective_value(&opts);
-            b.cmp(&a)
-        });
-        pool
-    };
-
-    let mut pos = 0_usize;
-
-    let target_value = selection.effective_target();
-    let mut remaining_value = pool
-        .iter()
-        .map(|(_, c)| c.effective_value(&opts))
-        .sum::<i64>();
-
-    if selection.selected_effective_value() + remaining_value < target_value {
-        return false;
-    }
-
-    let abs_target_value = opts.target_value + opts.min_absolute_fee;
-    let mut abs_remaining_value = pool.iter().map(|(_, c)| c.value).sum::<u64>();
-
-    if selection.selected_absolute_value() + abs_remaining_value < abs_target_value {
-        return false;
-    }
-
-    let feerate_decreasing = opts.target_feerate > opts.long_term_feerate();
-
-    let upper_bound = target_value + opts.drain_waste();
-    let abs_upper_bound =
-        abs_target_value + (opts.drain_weight as f32 * opts.target_feerate) as u64;
-
-    // the solution (if any) with the least `waste` is stored here
-    let mut best_selection = Option::<CoinSelector>::None;
-
-    for try_index in 0..max_tries {
-        // increment `pos`, but only after the first round
-        pos += (try_index > 0) as usize;
-
-        let current_value = selection.selected_effective_value();
-        let abs_current_value = selection.selected_absolute_value();
-        let current_input_waste = selection.selected_waste();
-
-        let best_waste = best_selection
-            .as_ref()
-            .map(|b| b.selected_waste() + b.current_excess())
-            .unwrap_or(i64::MAX);
-
-        // `max_extra_target` is only used as a back-up
-        // we only use it for the absolute upper bound when we have no solution
-        // but if `max_extra_target` does not surpass `drain_fee`, it can be ignored
-        let abs_upper_bound = if best_selection.is_none() {
-            core::cmp::max(abs_target_value + opts.max_extra_target, abs_upper_bound)
-        } else {
-            abs_upper_bound
-        };
-
-        // determine if a backtrack is needed for this round...
-        let backtrack = if current_value + remaining_value < target_value
-            || abs_current_value + abs_remaining_value < abs_target_value
-        {
-            // remaining value is not enough to reach target
-            true
-        } else if current_value > upper_bound && abs_current_value > abs_upper_bound {
-            // absolute value AND current value both surpasses upper bounds
-            true
-        } else if feerate_decreasing && current_input_waste > best_waste {
-            // when feerate decreases, waste is guaranteed to increase with each new selection,
-            // so we should backtrack when we have already surpassed best waste
-            true
-        } else if current_value >= target_value && abs_current_value >= abs_target_value {
-            // we have found a solution, but is it better than our best?
-            let current_waste = current_input_waste + current_value - target_value;
-            if current_waste <= best_waste {
-                best_selection.replace(selection.clone());
-            }
-            true
-        } else {
-            // no backtrack
-            false
-        };
-
-        if backtrack {
-            // find the last `pos` with a selected candidate
-            let last = (0..pos).rev().find_map(|pos| {
-                let (index, candidate) = pool[pos];
-                // let is_selected = selection.is_selected(index);
-                if selection.is_selected(index) {
-                    Some((pos, index))
-                } else {
-                    remaining_value += candidate.effective_value(&opts);
-                    abs_remaining_value += candidate.value;
-                    None
-                }
-            });
-
-            match last {
-                Some((last_selected_pos, last_selected_index)) => {
-                    pos = last_selected_pos;
-                    selection.deselect(last_selected_index);
-                    continue;
-                }
-                None => break, // nothing is selected, all solutions searched
-            }
-        }
-
-        let (index, candidate) = pool[pos];
-        remaining_value -= candidate.effective_value(&opts);
-        abs_remaining_value -= candidate.value;
-
-        // early bailout optimisation:
-        // if the candidate at the previous position is NOT selected and has the same weight and
-        // value as the current candidate, we skip the current candidate
-        if pos > 0 && !selection.is_empty() {
-            let (prev_index, prev_candidate) = pool[pos - 1];
-            if !selection.is_selected(prev_index)
-                && candidate.value == prev_candidate.value
-                && candidate.weight == prev_candidate.weight
-            {
-                continue;
-            }
-        }
-
-        selection.select(index);
-    }
-
-    match best_selection {
-        Some(best_selection) => {
-            *selection = best_selection;
-            true
-        }
-        None => false,
-    }
 }
 
 #[cfg(feature = "std")]
@@ -1290,7 +1144,7 @@ mod test_bnb {
     use crate::coin_select::{evaluate_cs::evaluate, ExcessStrategyKind};
 
     use super::{
-        coin_select_bnb2,
+        coin_select_bnb,
         evaluate_cs::{Evaluation, EvaluationFailure},
         tester::Tester,
         CoinSelector, CoinSelectorOpt, Vec, WeightedValue,
@@ -1301,18 +1155,15 @@ mod test_bnb {
         Tester::new(&Secp256k1::default(), DESC_STR)
     }
 
-    fn evaluate_bnb2(
+    fn evaluate_bnb(
         initial_selector: CoinSelector,
         max_tries: usize,
     ) -> Result<Evaluation, EvaluationFailure> {
         evaluate(initial_selector, |cs| {
-            match coin_select_bnb2(max_tries, cs.clone()) {
-                Some(new_cs) => {
-                    *cs = new_cs;
-                    true
-                }
-                None => false,
-            }
+            coin_select_bnb(max_tries, cs.clone()).map_or(false, |new_cs| {
+                *cs = new_cs;
+                true
+            })
         })
     }
 
@@ -1326,7 +1177,7 @@ mod test_bnb {
         let opts = t.gen_opts(200_000);
         let selector = CoinSelector::new(&candidates, &opts);
         // assert!(!coin_select_bnb(10_000, &mut selector));
-        assert!(!coin_select_bnb2(10_000, selector).is_some());
+        assert!(!coin_select_bnb(10_000, selector).is_some());
     }
 
     #[test]
@@ -1348,9 +1199,7 @@ mod test_bnb {
             selector
         };
 
-        // let evaluation =
-        //     evaluate(selector, |cs| coin_select_bnb(10_000, cs)).expect("evaluation failed");
-        let evaluation = evaluate_bnb2(selector, 10_000).expect("eval failed");
+        let evaluation = evaluate_bnb(selector, 10_000).expect("eval failed");
         println!("{}", evaluation);
         assert_eq!(evaluation.solution.selected, (0..=1).collect());
         assert_eq!(evaluation.solution.excess_strategies.len(), 1);
@@ -1398,10 +1247,7 @@ mod test_bnb {
         };
 
         // test lowest possible target we are able to select
-        // let lowest_eval = evaluate(CoinSelector::new(&candidates, &lowest_opts), |cs| {
-        //     coin_select_bnb(10_000, cs)
-        // });
-        let lowest_eval = evaluate_bnb2(CoinSelector::new(&candidates, &lowest_opts), 10_000);
+        let lowest_eval = evaluate_bnb(CoinSelector::new(&candidates, &lowest_opts), 10_000);
         assert!(lowest_eval.is_ok());
         let lowest_eval = lowest_eval.unwrap();
         println!("LB {}", lowest_eval);
@@ -1415,10 +1261,7 @@ mod test_bnb {
         );
 
         // test highest possible target we are able to select
-        // let highest_eval = evaluate(CoinSelector::new(&candidates, &highest_opts), |cs| {
-        //     coin_select_bnb(10_000, cs)
-        // });
-        let highest_eval = evaluate_bnb2(CoinSelector::new(&candidates, &highest_opts), 10_000);
+        let highest_eval = evaluate_bnb(CoinSelector::new(&candidates, &highest_opts), 10_000);
         assert!(highest_eval.is_ok());
         let highest_eval = highest_eval.unwrap();
         println!("UB {}", highest_eval);
@@ -1436,10 +1279,7 @@ mod test_bnb {
             target_value: lowest_opts.target_value - 1,
             ..lowest_opts
         };
-        // let loob_eval = evaluate(CoinSelector::new(&candidates, &loob_opts), |cs| {
-        //     coin_select_bnb(10_000, cs)
-        // });
-        let loob_eval = evaluate_bnb2(CoinSelector::new(&candidates, &loob_opts), 10_000);
+        let loob_eval = evaluate_bnb(CoinSelector::new(&candidates, &loob_opts), 10_000);
         assert!(loob_eval.is_err());
         println!("Lower OOB: {}", loob_eval.unwrap_err());
 
@@ -1448,10 +1288,7 @@ mod test_bnb {
             target_value: highest_opts.target_value + 1,
             ..highest_opts
         };
-        // let uoob_eval = evaluate(CoinSelector::new(&candidates, &uoob_opts), |cs| {
-        //     coin_select_bnb(10_000, cs)
-        // });
-        let uoob_eval = evaluate_bnb2(CoinSelector::new(&candidates, &uoob_opts), 10_000);
+        let uoob_eval = evaluate_bnb(CoinSelector::new(&candidates, &uoob_opts), 10_000);
         assert!(uoob_eval.is_err());
         println!("Upper OOB: {}", uoob_eval.unwrap_err());
     }
@@ -1485,19 +1322,7 @@ mod test_bnb {
         ];
 
         for (opts, expect_solution, expect_selected) in test_cases {
-            // let res = evaluate(CoinSelector::new(&candidates, &opts), |s| {
-            //     coin_select_bnb(10_000, s)
-            // });
-            let res = evaluate(
-                CoinSelector::new(&candidates, &opts),
-                |cs| match coin_select_bnb2(10_000, cs.clone()) {
-                    Some(new_cs) => {
-                        *cs = new_cs;
-                        true
-                    }
-                    None => false,
-                },
-            );
+            let res = evaluate_bnb(CoinSelector::new(&candidates, &opts), 10_000);
             assert_eq!(res.is_ok(), expect_solution);
 
             match res {
@@ -1534,20 +1359,7 @@ mod test_bnb {
             ..t.gen_opts(300_000)
         };
 
-        // let result = evaluate(CoinSelector::new(&candidates, &opts), |cs| {
-        //     coin_select_bnb(1100, cs)
-        // });
-        let result = evaluate(
-            CoinSelector::new(&candidates, &opts),
-            |cs| match coin_select_bnb2(1100, cs.clone()) {
-                Some(new_cs) => {
-                    *cs = new_cs;
-                    true
-                }
-                None => false,
-            },
-        );
-        // println!("err: {:?}", result.as_ref().err());
+        let result = evaluate_bnb(CoinSelector::new(&candidates, &opts), 1100);
         assert!(result.is_ok());
 
         let eval = result.unwrap();
@@ -1563,19 +1375,7 @@ mod test_bnb {
             .map(|index| t.gen_candidate(index as _, 10_000).into())
             .collect::<Vec<WeightedValue>>();
         let opts = t.gen_opts(10_001 * MAX_TRIES as u64);
-        // let result = evaluate(CoinSelector::new(&candidates, &opts), |cs| {
-        //     coin_select_bnb(MAX_TRIES, cs)
-        // });
-        let result = evaluate(
-            CoinSelector::new(&candidates, &opts),
-            |cs| match coin_select_bnb2(MAX_TRIES, cs.clone()) {
-                Some(new_cs) => {
-                    *cs = new_cs;
-                    true
-                }
-                None => false,
-            },
-        );
+        let result = evaluate_bnb(CoinSelector::new(&candidates, &opts), MAX_TRIES);
         assert!(result.is_err());
         println!("error as expected: {}", result.unwrap_err());
     }
@@ -1606,21 +1406,7 @@ mod test_bnb {
         (1..=120_u64).for_each(|fee_factor| {
             opts.min_absolute_fee = fee_factor * 31;
 
-            // let result = evaluate(CoinSelector::new(&candidates, opts), |cs| {
-            //     coin_select_bnb(21_000, cs)
-            // });
-
-            let result = evaluate(
-                CoinSelector::new(&candidates, &opts),
-                |cs| match coin_select_bnb2(21_000, cs.clone()) {
-                    Some(new_cs) => {
-                        *cs = new_cs;
-                        true
-                    }
-                    None => false,
-                },
-            );
-
+            let result = evaluate_bnb(CoinSelector::new(&candidates, &opts), 21_000);
             match result {
                 Ok(result) => {
                     println!("Solution {}", result);

@@ -310,14 +310,8 @@ fn main() -> anyhow::Result<()> {
             // just select coins in the order provided until we have enough
             // only use first result (least waste)
             let selection = match coin_select {
-                CoinSelectionAlgo::BranchAndBound => {
-                    if coin_select_bnb(10_000, &mut coin_selector) {
-                        coin_selector.finish()?
-                    } else {
-                        // if Bnb does not find a solution, we try select until finish
-                        coin_selector.select_until_finished()?
-                    }
-                }
+                CoinSelectionAlgo::BranchAndBound => coin_select_bnb(10_000, coin_selector.clone())
+                    .map_or_else(|| coin_selector.select_until_finished(), |cs| cs.finish())?,
                 _ => coin_selector.select_until_finished()?,
             };
             let (_, selection_meta) = selection.best_strategy();
