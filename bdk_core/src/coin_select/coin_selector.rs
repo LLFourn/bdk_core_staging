@@ -53,7 +53,7 @@ pub struct CoinSelectorOpt {
     /// The minimum absolute fee. I.e. needed for RBF.
     pub min_absolute_fee: u64,
 
-    /// The weight of the template transaction including fixed inputs and outputs.
+    /// The weight of the template transaction including fixed fields and outputs.
     pub base_weight: u32,
     /// Additional weight if we include the drain (change) output.
     pub drain_weight: u32,
@@ -144,13 +144,13 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
-    pub fn select(&mut self, index: usize) {
+    pub fn select(&mut self, index: usize) -> bool {
         assert!(index < self.candidates.len());
-        self.selected.insert(index);
+        self.selected.insert(index)
     }
 
-    pub fn deselect(&mut self, index: usize) {
-        self.selected.remove(&index);
+    pub fn deselect(&mut self, index: usize) -> bool {
+        self.selected.remove(&index)
     }
 
     pub fn is_selected(&self, index: usize) -> bool {
