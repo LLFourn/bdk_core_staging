@@ -210,9 +210,7 @@ impl<'a> CoinSelector<'a> {
 
     /// Current excess.
     pub fn current_excess(&self) -> i64 {
-        let effective_target = self.opts.target_value as i64
-            + (self.opts.base_weight as f32 * self.opts.target_feerate) as i64;
-        self.selected_effective_value() - effective_target
+        self.selected_effective_value() - self.effective_target()
     }
 
     /// This is the effective target value.
