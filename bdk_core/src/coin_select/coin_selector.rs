@@ -315,7 +315,7 @@ impl<'a> CoinSelector<'a> {
             .filter(|&(_, v)| v > 0)
             .max_by_key(|&(_, v)| v)
             .map_or(Ok(()), |(constraint, missing)| {
-                Err(SelectionFailure::InsufficientFunds {
+                Err(SelectionFailure {
                     selected,
                     missing,
                     constraint,
@@ -390,18 +390,16 @@ impl<'a> CoinSelector<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub enum SelectionFailure {
-    InsufficientFunds {
-        selected: u64,
-        missing: u64,
-        constraint: SelectionConstraint,
-    },
+pub struct SelectionFailure {
+    selected: u64,
+    missing: u64,
+    constraint: SelectionConstraint,
 }
 
 impl core::fmt::Display for SelectionFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            SelectionFailure::InsufficientFunds {
+            SelectionFailure {
                 selected,
                 missing,
                 constraint,
@@ -492,4 +490,60 @@ impl ExcessStrategy {
     pub fn feerate(&self) -> f32 {
         self.fee as f32 / self.weight as f32
     }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::coin_select::SelectionConstraint;
+
+    use super::{CoinSelector, CoinSelectorOpt, WeightedValue};
+
+    /// Ensure `target_value` is respected. Can't have no disrespect.
+    #[test]
+    fn target_value_respected() {
+        let target_value = 1000_u64;
+
+        let candidates = (500..1500_u64)
+            .map(|value| WeightedValue {
+                value,
+                weight: 100,
+                input_count: 1,
+                is_segwit: false,
+            })
+            .collect::<super::Vec<_>>();
+
+        let opts = CoinSelectorOpt {
+            target_value,
+            max_extra_target: 0,
+            target_feerate: 0.00,
+            long_term_feerate: None,
+            min_absolute_fee: 0,
+            base_weight: 10,
+            drain_weight: 10,
+            spend_drain_weight: 10,
+            min_drain_value: 10,
+        };
+
+        for (index, v) in candidates.iter().enumerate() {
+            let mut selector = CoinSelector::new(&candidates, &opts);
+            assert!(selector.select(index));
+
+            let res = selector.finish();
+            if v.value < opts.target_value {
+                let err = res.expect_err("should have failed");
+                assert_eq!(err.selected, v.value);
+                assert_eq!(err.missing, target_value - v.value);
+                assert_eq!(err.constraint, SelectionConstraint::MinAbsoluteFee);
+            } else {
+                let sel = res.expect("should have succeeded");
+                assert_eq!(sel.excess, v.value - opts.target_value);
+            }
+        }
+    }
+
+    /// TODO: Tests to add:
+    /// * `finish` should ensure at least `target_value` is selected.
+    /// * actual feerate should be equal or higher than `target_feerate`.
+    /// * actual drain value should be equal or higher than `min_drain_value` (or else no drain).
+    fn _todo() {}
 }
