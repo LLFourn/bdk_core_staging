@@ -1,20 +1,16 @@
 use super::*;
 
 /// Strategy in which we should branch.
-pub enum BranchStrategy<S> {
+pub enum BranchStrategy {
     /// We continue exploring subtrees of this node, starting with the inclusion branch.
     Continue,
     /// We continue exploring ONY the omission branch of this node, skipping the inclusion branch.
     SkipInclusion,
     /// We skip both the inclusion and omission branches of this node.
     SkipBoth,
-    /// We found a candidate solution. The provided score will be compared with our current best (
-    /// the smaller result will be the new best). We then skip all subtrees of the current node (as
-    /// we will no longer find a better solution).
-    Solution(S),
 }
 
-impl<S> BranchStrategy<S> {
+impl BranchStrategy {
     pub fn will_continue(&self) -> bool {
         match self {
             Self::Continue | Self::SkipInclusion => true,
@@ -56,7 +52,7 @@ impl<'c, S: Ord> Bnb<'c, S> {
 
     pub fn into_iter<'f>(
         self,
-        strategy: &'f dyn Fn(&Self) -> BranchStrategy<S>,
+        strategy: &'f dyn Fn(&Self) -> (BranchStrategy, Option<S>),
     ) -> BnbIter<'c, 'f, S> {
         BnbIter {
             state: self,
@@ -114,7 +110,7 @@ pub struct BnbIter<'c, 'f, S> {
     done: bool,
 
     /// Check our current selection (node), and return the branching strategy.
-    strategy: &'f dyn Fn(&Bnb<'c, S>) -> BranchStrategy<S>,
+    strategy: &'f dyn Fn(&Bnb<'c, S>) -> (BranchStrategy, Option<S>),
 }
 
 impl<'c, 'f, S: Ord + Copy + Display> Iterator for BnbIter<'c, 'f, S> {
@@ -125,9 +121,15 @@ impl<'c, 'f, S: Ord + Copy + Display> Iterator for BnbIter<'c, 'f, S> {
             return None;
         }
 
+        let (strategy, score) = (self.strategy)(&self.state);
+
         let mut found_best = Option::<CoinSelector>::None;
 
-        let strategy = (self.strategy)(&self.state);
+        if let Some(score) = score {
+            if self.state.advertise_new_score(score) {
+                found_best = Some(self.state.selection.clone());
+            }
+        }
 
         debug_assert!(
             !strategy.will_continue() || self.state.pool_pos < self.state.pool.len(),
@@ -143,14 +145,6 @@ impl<'c, 'f, S: Ord + Copy + Display> Iterator for BnbIter<'c, 'f, S> {
                 self.state.forward(true);
             }
             BranchStrategy::SkipBoth => {
-                if !self.state.backtrack() {
-                    self.done = true;
-                }
-            }
-            BranchStrategy::Solution(score) => {
-                if self.state.advertise_new_score(score) {
-                    found_best = Some(self.state.selection.clone());
-                }
                 if !self.state.backtrack() {
                     self.done = true;
                 }
@@ -210,18 +204,18 @@ pub fn coin_select_bnb(max_tries: usize, selector: CoinSelector) -> Option<CoinS
     let upper_bound_abs = target_abs + (opts.drain_weight as f32 * opts.target_feerate) as u64;
     let upper_bound_eff = target_eff + opts.drain_waste();
 
-    let strategy = |bnb: &Bnb<i64>| -> BranchStrategy<i64> {
+    let strategy = |bnb: &Bnb<i64>| -> (BranchStrategy, Option<i64>) {
         let selected_abs = bnb.selection.selected_absolute_value();
         let selected_eff = bnb.selection.selected_effective_value();
 
         // backtrack if remaining value is not enough to reach target
         if selected_abs + bnb.rem_abs < target_abs || selected_eff + bnb.rem_eff < target_eff {
-            return BranchStrategy::SkipBoth;
+            return (BranchStrategy::SkipBoth, None);
         }
 
         // backtrack if selected value already surpassed upper bounds
         if selected_abs > upper_bound_abs && selected_eff > upper_bound_eff {
-            return BranchStrategy::SkipBoth;
+            return (BranchStrategy::SkipBoth, None);
         }
 
         let selected_waste = bnb.selection.selected_waste();
@@ -229,13 +223,13 @@ pub fn coin_select_bnb(max_tries: usize, selector: CoinSelector) -> Option<CoinS
         // when feerate decreases, waste without excess is guaranteed to increase with each
         // selection. So if we have already surpassed best score, we can backtrack.
         if feerate_decreases && selected_waste > bnb.best_score {
-            return BranchStrategy::SkipBoth;
+            return (BranchStrategy::SkipBoth, None);
         }
 
         // solution?
         if selected_abs >= target_abs && selected_eff >= target_eff {
             let waste = selected_waste + bnb.selection.current_excess();
-            return BranchStrategy::Solution(waste);
+            return (BranchStrategy::SkipBoth, Some(waste));
         }
 
         // early bailout optimization:
@@ -249,12 +243,12 @@ pub fn coin_select_bnb(max_tries: usize, selector: CoinSelector) -> Option<CoinS
                 && candidate.value == prev_candidate.value
                 && candidate.weight == prev_candidate.weight
             {
-                return BranchStrategy::SkipInclusion;
+                return (BranchStrategy::SkipInclusion, None);
             }
         }
 
         // check out inclusion branch first
-        return BranchStrategy::Continue;
+        return (BranchStrategy::Continue, None);
     };
 
     // determine sum of absolute and effective values for current selection
