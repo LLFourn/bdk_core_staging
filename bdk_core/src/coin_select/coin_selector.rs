@@ -31,11 +31,12 @@ impl WeightedValue {
         }
     }
 
-    /// Effective feerate of this input candidate.
-    /// `actual_value - input_weight * feerate`
-    pub fn effective_value(&self, opts: &CoinSelectorOpt) -> i64 {
-        // we prefer undershooting the candidate's effective value
-        self.value as i64 - (self.weight as f32 * opts.target_feerate).ceil() as i64
+    /// Effective value of this input candidate: `actual_value - input_weight * feerate (sats/wu)`.
+    pub fn effective_value(&self, effective_feerate: f32) -> i64 {
+        // We prefer undershooting the candidate's effective value (so we over estimate the fee of a
+        // candidate). If we overshoot the candidate's effective value, it may be possible to find a
+        // solution which does not meet the target feerate.
+        self.value as i64 - (self.weight as f32 * effective_feerate).ceil() as i64
     }
 }
 
@@ -173,7 +174,7 @@ impl<'a> CoinSelector<'a> {
     pub fn selected_effective_value(&self) -> i64 {
         self.selected
             .iter()
-            .map(|&index| self.candidates[index].effective_value(&self.opts))
+            .map(|&index| self.candidates[index].effective_value(self.opts.target_feerate))
             .sum()
     }
 

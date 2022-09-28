@@ -38,7 +38,10 @@ impl<'c, S: Ord> Bnb<'c, S> {
     /// Creates a new [`Bnb`].
     pub fn new(selector: CoinSelector<'c>, pool: Vec<(usize, &'c WeightedValue)>, max: S) -> Self {
         let (rem_abs, rem_eff) = pool.iter().fold((0, 0), |(abs, eff), (_, c)| {
-            (abs + c.value, eff + c.effective_value(selector.opts))
+            (
+                abs + c.value,
+                eff + c.effective_value(selector.opts.target_feerate),
+            )
         });
 
         Self {
@@ -77,7 +80,7 @@ impl<'c, S: Ord> Bnb<'c, S> {
                     return true;
                 } else {
                     self.rem_abs += candidate.value;
-                    self.rem_eff += candidate.effective_value(self.selection.opts);
+                    self.rem_eff += candidate.effective_value(self.selection.opts.target_feerate);
                     return false;
                 }
             })
@@ -88,7 +91,7 @@ impl<'c, S: Ord> Bnb<'c, S> {
     pub fn forward(&mut self, skip: bool) {
         let (index, candidate) = self.pool[self.pool_pos];
         self.rem_abs -= candidate.value;
-        self.rem_eff -= candidate.effective_value(self.selection.opts);
+        self.rem_eff -= candidate.effective_value(self.selection.opts.target_feerate);
 
         if !skip {
             self.selection.select(index);
@@ -123,15 +126,14 @@ impl<'c, 'f, S: Ord + Copy + Display> Iterator for BnbIter<'c, 'f, S> {
         }
 
         let mut found_best = Option::<CoinSelector>::None;
-        let mut strategy = (self.strategy)(&self.state);
 
-        if strategy.will_continue() && self.state.pool_pos >= self.state.pool.len() {
-            #[cfg(feature = "std")]
-            eprintln!("Faulty strategy implementation! Strategy suggests that we continue traversing, even though we have reached the end of the candidates.");
+        let strategy = (self.strategy)(&self.state);
 
-            // force a backtrack
-            strategy = BranchStrategy::SkipBoth;
-        }
+        debug_assert!(
+            !strategy.will_continue() || self.state.pool_pos < self.state.pool.len(),
+            "Faulty strategy implementation! Strategy suggested that we continue traversing, however we have already reached the end of the candidates pool! pool_len={}, pool_pos={}",
+            self.state.pool.len(), self.state.pool_pos,
+        );
 
         match strategy {
             BranchStrategy::Continue => {
@@ -190,11 +192,11 @@ pub fn coin_select_bnb(max_tries: usize, selector: CoinSelector) -> Option<CoinS
     let pool = {
         let mut pool = selector
             .unselected()
-            .filter(|(_, c)| c.effective_value(&opts) > 0)
+            .filter(|(_, c)| c.effective_value(opts.target_feerate) > 0)
             .collect::<Vec<_>>();
         pool.sort_unstable_by(|(_, a), (_, b)| {
-            let a = a.effective_value(&opts);
-            let b = b.effective_value(&opts);
+            let a = a.effective_value(opts.target_feerate);
+            let b = b.effective_value(opts.target_feerate);
             b.cmp(&a)
         });
         pool
@@ -257,7 +259,10 @@ pub fn coin_select_bnb(max_tries: usize, selector: CoinSelector) -> Option<CoinS
 
     // determine sum of absolute and effective values for current selection
     let (selected_abs, selected_eff) = selector.selected().fold((0, 0), |(abs, eff), (_, c)| {
-        (abs + c.value, eff + c.effective_value(selector.opts))
+        (
+            abs + c.value,
+            eff + c.effective_value(selector.opts.target_feerate),
+        )
     });
 
     let bnb = Bnb::new(selector, pool, i64::MAX);
