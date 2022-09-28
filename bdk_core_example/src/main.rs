@@ -13,7 +13,7 @@ use bdk_core::{
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
-use std::cmp::Reverse;
+use std::{cmp::Reverse, time::Duration};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -310,8 +310,10 @@ fn main() -> anyhow::Result<()> {
             // just select coins in the order provided until we have enough
             // only use first result (least waste)
             let selection = match coin_select {
-                CoinSelectionAlgo::BranchAndBound => coin_select_bnb(10_000, coin_selector.clone())
-                    .map_or_else(|| coin_selector.select_until_finished(), |cs| cs.finish())?,
+                CoinSelectionAlgo::BranchAndBound => {
+                    coin_select_bnb(Duration::from_secs(10), coin_selector.clone())
+                        .map_or_else(|| coin_selector.select_until_finished(), |cs| cs.finish())?
+                }
                 _ => coin_selector.select_until_finished()?,
             };
             let (_, selection_meta) = selection.best_strategy();

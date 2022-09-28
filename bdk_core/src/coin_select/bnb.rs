@@ -50,6 +50,10 @@ impl<'c, S: Ord> Bnb<'c, S> {
         }
     }
 
+    /// Turns our [`Bnb`] state into an iterator.
+    ///
+    /// `strategy` should assess our current selection/node and determine the branching strategy and
+    /// whether this selection is a candidate solution (if so, return the score of the selection).
     pub fn into_iter<'f>(
         self,
         strategy: &'f dyn Fn(&Self) -> (BranchStrategy, Option<S>),
@@ -109,7 +113,8 @@ pub struct BnbIter<'c, 'f, S> {
     state: Bnb<'c, S>,
     done: bool,
 
-    /// Check our current selection (node), and return the branching strategy.
+    /// Check our current selection (node), and returns the branching strategy, alongside a score
+    /// (if the current selection is a candidate solution).
     strategy: &'f dyn Fn(&Bnb<'c, S>) -> (BranchStrategy, Option<S>),
 }
 
@@ -163,6 +168,26 @@ impl<'c, 'f, S: Ord + Copy + Display> Iterator for BnbIter<'c, 'f, S> {
     }
 }
 
+/// Determines how we should limit rounds of branch and bound.
+pub enum BnbLimit {
+    Rounds(usize),
+    #[cfg(feature = "std")]
+    Duration(core::time::Duration),
+}
+
+impl From<usize> for BnbLimit {
+    fn from(v: usize) -> Self {
+        Self::Rounds(v)
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<core::time::Duration> for BnbLimit {
+    fn from(v: core::time::Duration) -> Self {
+        Self::Duration(v)
+    }
+}
+
 /// This is a variation of the Branch and Bound Coin Selection algorithm designed by Murch (as seen
 /// in Bitcoin Core).
 ///
@@ -177,7 +202,10 @@ impl<'c, 'f, S: Ord + Copy + Display> Iterator for BnbIter<'c, 'f, S> {
 ///
 /// TODO: Another optimization we could do is figure out candidate with smallest waste, and
 /// if we find a result with waste equal to this, we can just break.
-pub fn coin_select_bnb(max_tries: usize, selector: CoinSelector) -> Option<CoinSelector> {
+pub fn coin_select_bnb<L>(limit: L, selector: CoinSelector) -> Option<CoinSelector>
+where
+    L: Into<BnbLimit>,
+{
     let opts = selector.opts;
 
     // prepare pool of candidates to select from:
@@ -266,9 +294,20 @@ pub fn coin_select_bnb(max_tries: usize, selector: CoinSelector) -> Option<CoinS
         return None;
     }
 
-    bnb.into_iter(&strategy)
-        .take(max_tries)
-        .reduce(|b, c| if c.is_some() { c } else { b })?
+    match limit.into() {
+        BnbLimit::Rounds(rounds) => {
+            bnb.into_iter(&strategy)
+                .take(rounds)
+                .reduce(|b, c| if c.is_some() { c } else { b })
+        }
+        #[cfg(feature = "std")]
+        BnbLimit::Duration(duration) => {
+            let start = std::time::SystemTime::now();
+            bnb.into_iter(&strategy)
+                .take_while(|_| start.elapsed().expect("failed to get system time") <= duration)
+                .reduce(|b, c| if c.is_some() { c } else { b })
+        }
+    }?
 }
 
 #[cfg(test)]
@@ -310,7 +349,6 @@ mod test {
         ];
         let opts = t.gen_opts(200_000);
         let selector = CoinSelector::new(&candidates, &opts);
-        // assert!(!coin_select_bnb(10_000, &mut selector));
         assert!(!coin_select_bnb(10_000, selector).is_some());
     }
 
