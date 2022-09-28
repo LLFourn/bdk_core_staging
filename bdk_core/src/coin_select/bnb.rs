@@ -515,7 +515,7 @@ mod test {
         println!("error as expected: {}", result.unwrap_err());
     }
 
-    /// Solution should have fee >= min_absolute_fee
+    /// Solution should have fee >= min_absolute_fee (or no solution at all)
     #[test]
     fn min_absolute_fee() {
         let t = tester();
@@ -556,8 +556,52 @@ mod test {
         });
     }
 
+    /// For a decreasing feerate (longterm feerate is lower than effective feerate), we should
+    /// select less. For increasing feerate (longterm feerate is higher than effective feerate), we
+    /// should select more.
+    #[test]
+    fn feerate_difference() {
+        let t = tester();
+        let candidates = {
+            let mut candidates = Vec::new();
+            t.gen_weighted_values(&mut candidates, 10, 2_000);
+            t.gen_weighted_values(&mut candidates, 10, 5_000);
+            t.gen_weighted_values(&mut candidates, 10, 20_000);
+            candidates
+        };
+
+        let decreasing_feerate_opts = CoinSelectorOpt {
+            target_feerate: 1.25,
+            long_term_feerate: Some(0.25),
+            ..t.gen_opts(100_000)
+        };
+
+        let increasing_feerate_opts = CoinSelectorOpt {
+            target_feerate: 0.25,
+            long_term_feerate: Some(1.25),
+            ..t.gen_opts(100_000)
+        };
+
+        let decreasing_res = evaluate_bnb(
+            CoinSelector::new(&candidates, &decreasing_feerate_opts),
+            21_000,
+        )
+        .expect("no result");
+        let decreasing_len = decreasing_res.solution.selected.len();
+
+        let increasing_res = evaluate_bnb(
+            CoinSelector::new(&candidates, &increasing_feerate_opts),
+            21_000,
+        )
+        .expect("no result");
+        let increasing_len = increasing_res.solution.selected.len();
+
+        println!("decreasing_len: {}", decreasing_len);
+        println!("increasing_len: {}", increasing_len);
+        assert!(decreasing_len < increasing_len);
+    }
+
     /// TODO: UNIMPLEMENTED TESTS:
-    /// * Decreasing feerate -> select less, increasing feerate -> select more
     /// * Excess strategies:
     ///     * We should always have `ExcessStrategy::ToFee`.
     ///     * We should only have `ExcessStrategy::ToRecipient` when `max_extra_target > 0`.
