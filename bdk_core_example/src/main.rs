@@ -13,7 +13,7 @@ use bdk_core::{
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
-use std::cmp::Reverse;
+use std::{cmp::Reverse, time::Duration};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -278,44 +278,41 @@ fn main() -> anyhow::Result<()> {
                 script_pubkey: address.script_pubkey(),
             }];
 
-            let (change_derivation_index, change_script) =
-                tracker.derive_next_unused(change_keychain);
-            let change_script = change_script.clone();
+            let (change_index, change_script) = {
+                let (index, script) = tracker.derive_next_unused(change_keychain);
+                (index, script.clone())
+            };
             let change_plan = tracker
                 .descriptor(change_keychain)
-                .at_derivation_index(change_derivation_index)
+                .at_derivation_index(change_index)
                 .plan_satisfaction(&assets)
                 .expect("failed to obtain change plan");
+
             let mut change_output = TxOut {
                 value: 0,
                 script_pubkey: change_script,
             };
 
+            let cs_opts = CoinSelectorOpt {
+                target_feerate: 0.5,
+                min_drain_value: tracker.descriptor(change_keychain).dust_value(),
+                ..CoinSelectorOpt::fund_outputs(
+                    &outputs,
+                    &change_output,
+                    change_plan.expected_weight() as u32,
+                )
+            };
+
             // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
             // apply coin selection by saying we need to fund these outputs
-            let mut coin_selector = CoinSelector::new(
-                wv_candidates,
-                CoinSelectorOpt {
-                    target_feerate: 0.5,
-                    min_drain_value: tracker.descriptor(change_keychain).dust_value(),
-                    ..CoinSelectorOpt::fund_outputs(
-                        &outputs,
-                        &change_output,
-                        change_plan.expected_weight() as u32,
-                    )
-                },
-            );
+            let mut coin_selector = CoinSelector::new(&wv_candidates, &cs_opts);
 
             // just select coins in the order provided until we have enough
             // only use first result (least waste)
             let selection = match coin_select {
                 CoinSelectionAlgo::BranchAndBound => {
-                    if coin_select_bnb(10_000, &mut coin_selector) {
-                        coin_selector.finish()?
-                    } else {
-                        // if Bnb does not find a solution, we try select until finish
-                        coin_selector.select_until_finished()?
-                    }
+                    coin_select_bnb(Duration::from_secs(10), coin_selector.clone())
+                        .map_or_else(|| coin_selector.select_until_finished(), |cs| cs.finish())?
                 }
                 _ => coin_selector.select_until_finished()?,
             };
