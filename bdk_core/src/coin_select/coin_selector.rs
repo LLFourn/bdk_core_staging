@@ -43,7 +43,8 @@ impl WeightedValue {
 #[derive(Debug, Clone, Copy)]
 pub struct CoinSelectorOpt {
     /// The value we need to select.
-    pub target_value: u64,
+    /// If the value is `None`, we drain everything.
+    pub target_value: Option<u64>,
     /// Additional leeway for the target value.
     pub max_extra_target: u64, // TODO: Maybe out of scope here?
 
@@ -75,7 +76,7 @@ impl CoinSelectorOpt {
             3 * ((drain_weight + spend_drain_weight) as f32 * target_feerate) as u64;
 
         Self {
-            target_value: 0,
+            target_value: None,
             max_extra_target: 0,
             target_feerate,
             long_term_feerate: None,
@@ -105,7 +106,11 @@ impl CoinSelectorOpt {
             tx.weight() - base_weight
         };
         Self {
-            target_value: txouts.iter().map(|txout| txout.value).sum(),
+            target_value: if txouts.is_empty() {
+                None
+            } else {
+                Some(txouts.iter().map(|txout| txout.value).sum())
+            },
             ..Self::from_weights(
                 base_weight as u32,
                 drain_weight as u32,
@@ -227,7 +232,7 @@ impl<'a> CoinSelector<'a> {
             + if has_segwit { 2_u32 } else { 0_u32 }
             + (varint_size(max_input_count) - 1) * 4;
 
-        self.opts.target_value as i64
+        self.opts.target_value.unwrap_or(0) as i64
             + (effective_base_weight as f32 * self.opts.target_feerate).ceil() as i64
     }
 
@@ -294,10 +299,11 @@ impl<'a> CoinSelector<'a> {
         let fee_with_drain = (weight_with_drain as f32 * self.opts.target_feerate).ceil() as u64;
 
         let inputs_minus_outputs = {
-            let target_value = self.opts.target_value;
+            let target_value = self.opts.target_value.unwrap_or(0);
             let selected = self.selected_absolute_value();
 
             // find the largest unsatisfied constraint (if any), and return error of that constraint
+            // "selected" should always be greater than or equal to these selected values
             [
                 (
                     SelectionConstraint::TargetValue,
@@ -357,7 +363,7 @@ impl<'a> CoinSelector<'a> {
             excess_strategies.insert(
                 ExcessStrategyKind::ToRecipient,
                 ExcessStrategy {
-                    recipient_value: self.opts.target_value + extra_recipient_value,
+                    recipient_value: self.opts.target_value.map(|v| v + extra_recipient_value),
                     drain_value: None,
                     fee: fee_without_drain + extra_fee,
                     weight: weight_without_drain,
@@ -452,7 +458,7 @@ pub enum ExcessStrategyKind {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExcessStrategy {
-    pub recipient_value: u64,
+    pub recipient_value: Option<u64>,
     pub drain_value: Option<u64>,
     pub fee: u64,
     pub weight: u32,
@@ -514,7 +520,7 @@ mod test {
             .collect::<super::Vec<_>>();
 
         let opts = CoinSelectorOpt {
-            target_value,
+            target_value: Some(target_value),
             max_extra_target: 0,
             target_feerate: 0.00,
             long_term_feerate: None,
@@ -530,14 +536,14 @@ mod test {
             assert!(selector.select(index));
 
             let res = selector.finish();
-            if v.value < opts.target_value {
+            if v.value < opts.target_value.unwrap_or(0) {
                 let err = res.expect_err("should have failed");
                 assert_eq!(err.selected, v.value);
                 assert_eq!(err.missing, target_value - v.value);
                 assert_eq!(err.constraint, SelectionConstraint::MinAbsoluteFee);
             } else {
                 let sel = res.expect("should have succeeded");
-                assert_eq!(sel.excess, v.value - opts.target_value);
+                assert_eq!(sel.excess, v.value - opts.target_value.unwrap_or(0));
             }
         }
     }

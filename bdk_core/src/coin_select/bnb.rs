@@ -226,7 +226,7 @@ where
 
     let feerate_decreases = opts.target_feerate > opts.long_term_feerate();
 
-    let target_abs = opts.target_value + opts.min_absolute_fee;
+    let target_abs = opts.target_value.unwrap_or(0) + opts.min_absolute_fee;
     let target_eff = selector.effective_target();
 
     let upper_bound_abs = target_abs + (opts.drain_weight as f32 * opts.target_feerate) as u64;
@@ -403,15 +403,14 @@ mod test {
                 ((opts.base_weight + 2) as f32 * opts.target_feerate).ceil() as u64;
 
             let lowest_opts = CoinSelectorOpt {
-                target_value: 400_000
-                    - fee_from_inputs
-                    - fee_from_template
-                    - opts.drain_waste() as u64,
+                target_value: Some(
+                    400_000 - fee_from_inputs - fee_from_template - opts.drain_waste() as u64,
+                ),
                 ..opts
             };
 
             let highest_opts = CoinSelectorOpt {
-                target_value: 400_000 - fee_from_inputs - fee_from_template,
+                target_value: Some(400_000 - fee_from_inputs - fee_from_template),
                 ..opts
             };
 
@@ -448,7 +447,7 @@ mod test {
 
         // test lower out of bounds
         let loob_opts = CoinSelectorOpt {
-            target_value: lowest_opts.target_value - 1,
+            target_value: lowest_opts.target_value.map(|v| v - 1),
             ..lowest_opts
         };
         let loob_eval = evaluate_bnb(CoinSelector::new(&candidates, &loob_opts), 10_000);
@@ -457,7 +456,7 @@ mod test {
 
         // test upper out of bounds
         let uoob_opts = CoinSelectorOpt {
-            target_value: highest_opts.target_value + 1,
+            target_value: highest_opts.target_value.map(|v| v + 1),
             ..highest_opts
         };
         let uoob_eval = evaluate_bnb(CoinSelector::new(&candidates, &uoob_opts), 10_000);
