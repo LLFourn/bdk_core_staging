@@ -43,7 +43,8 @@ impl WeightedValue {
 #[derive(Debug, Clone, Copy)]
 pub struct CoinSelectorOpt {
     /// The value we need to select.
-    /// If the value is `None`, we drain everything.
+    /// If the value is `None` then the selection will be complete if it can pay for the drain
+    /// output and satisfy the other constraints (e.g. minimum fees).
     pub target_value: Option<u64>,
     /// Additional leeway for the target value.
     pub max_extra_target: u64, // TODO: Maybe out of scope here?
@@ -595,7 +596,6 @@ mod test {
             min_drain_value: 1000,
         };
 
-        // let mut selector = CoinSelector::new(&candidates, &opts);
         let selection = CoinSelector::new(&candidates, &opts)
             .select_until_finished()
             .expect("should succeed");
