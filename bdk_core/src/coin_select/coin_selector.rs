@@ -317,6 +317,17 @@ impl<'a> CoinSelector<'a> {
                     SelectionConstraint::MinAbsoluteFee,
                     (target_value + self.opts.min_absolute_fee).saturating_sub(selected),
                 ),
+                (
+                    SelectionConstraint::MinDrainValue,
+                    // when we have no target value (hence no recipient txouts), we need to ensure
+                    // the selected amount can satisfy requirements for a drain output (so we at
+                    // least have one txout)
+                    if self.opts.target_value.is_none() {
+                        (fee_with_drain + self.opts.min_drain_value).saturating_sub(selected)
+                    } else {
+                        0
+                    },
+                ),
             ]
             .into_iter()
             .filter(|&(_, v)| v > 0)
@@ -341,35 +352,40 @@ impl<'a> CoinSelector<'a> {
         // begin preparing excess strategies for final selection
         let mut excess_strategies = HashMap::new();
 
-        // no drain, excess to fee
-        excess_strategies.insert(
-            ExcessStrategyKind::ToFee,
-            ExcessStrategy {
-                recipient_value: self.opts.target_value,
-                drain_value: None,
-                fee: fee_without_drain + excess_without_drain,
-                weight: weight_without_drain,
-                waste: input_waste + excess_without_drain as i64,
-            },
-        );
-
-        // no drain, excess to recipient
-        // if `excess == 0`, this result will be the same as the previous, so we don't consider it
-        // if `max_extra_target == 0`, there is no leeway for this strategy
-        if excess_without_drain > 0 && self.opts.max_extra_target > 0 {
-            let extra_recipient_value =
-                core::cmp::min(self.opts.max_extra_target, excess_without_drain);
-            let extra_fee = excess_without_drain - extra_recipient_value;
+        // only allow `ToFee` and `ToRecipient` excess strategies when we have a `target_value`,
+        // otherwise we will result in a result with no txouts, or attempt to add value to an output
+        // that does not exist
+        if self.opts.target_value.is_some() {
+            // no drain, excess to fee
             excess_strategies.insert(
-                ExcessStrategyKind::ToRecipient,
+                ExcessStrategyKind::ToFee,
                 ExcessStrategy {
-                    recipient_value: self.opts.target_value.map(|v| v + extra_recipient_value),
+                    recipient_value: self.opts.target_value,
                     drain_value: None,
-                    fee: fee_without_drain + extra_fee,
+                    fee: fee_without_drain + excess_without_drain,
                     weight: weight_without_drain,
-                    waste: input_waste + extra_fee as i64,
+                    waste: input_waste + excess_without_drain as i64,
                 },
             );
+
+            // no drain, excess to recipient
+            // if `excess == 0`, this result will be the same as the previous, so don't consider it
+            // if `max_extra_target == 0`, there is no leeway for this strategy
+            if excess_without_drain > 0 && self.opts.max_extra_target > 0 {
+                let extra_recipient_value =
+                    core::cmp::min(self.opts.max_extra_target, excess_without_drain);
+                let extra_fee = excess_without_drain - extra_recipient_value;
+                excess_strategies.insert(
+                    ExcessStrategyKind::ToRecipient,
+                    ExcessStrategy {
+                        recipient_value: self.opts.target_value.map(|v| v + extra_recipient_value),
+                        drain_value: None,
+                        fee: fee_without_drain + extra_fee,
+                        weight: weight_without_drain,
+                        waste: input_waste + extra_fee as i64,
+                    },
+                );
+            }
         }
 
         // with drain
@@ -387,6 +403,11 @@ impl<'a> CoinSelector<'a> {
                 },
             );
         }
+
+        debug_assert!(
+            !excess_strategies.is_empty(),
+            "should have at least one excess strategy"
+        );
 
         Ok(Selection {
             selected: self.selected.clone(),
@@ -428,8 +449,10 @@ pub enum SelectionConstraint {
     TargetValue,
     /// The target fee (given the feerate) is not met
     TargetFee,
-    /// Min absolute fee in not met
+    /// Min absolute fee is not met
     MinAbsoluteFee,
+    /// Min drain value is not met
+    MinDrainValue,
 }
 
 impl core::fmt::Display for SelectionConstraint {
@@ -438,6 +461,7 @@ impl core::fmt::Display for SelectionConstraint {
             SelectionConstraint::TargetValue => core::write!(f, "target_value"),
             SelectionConstraint::TargetFee => core::write!(f, "target_fee"),
             SelectionConstraint::MinAbsoluteFee => core::write!(f, "min_absolute_fee"),
+            SelectionConstraint::MinDrainValue => core::write!(f, "min_drain_value"),
         }
     }
 }
@@ -501,7 +525,7 @@ impl ExcessStrategy {
 
 #[cfg(test)]
 mod test {
-    use crate::coin_select::SelectionConstraint;
+    use crate::coin_select::{ExcessStrategyKind, SelectionConstraint};
 
     use super::{CoinSelector, CoinSelectorOpt, WeightedValue};
 
@@ -546,6 +570,43 @@ mod test {
                 assert_eq!(sel.excess, v.value - opts.target_value.unwrap_or(0));
             }
         }
+    }
+
+    #[test]
+    fn drain_all() {
+        let candidates = (0..100)
+            .map(|_| WeightedValue {
+                value: 666,
+                weight: 166,
+                input_count: 1,
+                is_segwit: false,
+            })
+            .collect::<super::Vec<_>>();
+
+        let opts = CoinSelectorOpt {
+            target_value: None,
+            max_extra_target: 0,
+            target_feerate: 0.25,
+            long_term_feerate: None,
+            min_absolute_fee: 0,
+            base_weight: 10,
+            drain_weight: 100,
+            spend_drain_weight: 66,
+            min_drain_value: 1000,
+        };
+
+        // let mut selector = CoinSelector::new(&candidates, &opts);
+        let selection = CoinSelector::new(&candidates, &opts)
+            .select_until_finished()
+            .expect("should succeed");
+
+        assert!(selection.selected.len() > 1);
+        assert_eq!(selection.excess_strategies.len(), 1);
+
+        let (kind, strategy) = selection.best_strategy();
+        assert_eq!(*kind, ExcessStrategyKind::ToDrain);
+        assert!(strategy.recipient_value.is_none());
+        assert!(strategy.drain_value.is_some());
     }
 
     /// TODO: Tests to add:
