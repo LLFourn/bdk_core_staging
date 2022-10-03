@@ -43,7 +43,9 @@ impl WeightedValue {
 #[derive(Debug, Clone, Copy)]
 pub struct CoinSelectorOpt {
     /// The value we need to select.
-    pub target_value: u64,
+    /// If the value is `None` then the selection will be complete if it can pay for the drain
+    /// output and satisfy the other constraints (e.g. minimum fees).
+    pub target_value: Option<u64>,
     /// Additional leeway for the target value.
     pub max_extra_target: u64, // TODO: Maybe out of scope here?
 
@@ -75,7 +77,7 @@ impl CoinSelectorOpt {
             3 * ((drain_weight + spend_drain_weight) as f32 * target_feerate) as u64;
 
         Self {
-            target_value: 0,
+            target_value: None,
             max_extra_target: 0,
             target_feerate,
             long_term_feerate: None,
@@ -105,7 +107,11 @@ impl CoinSelectorOpt {
             tx.weight() - base_weight
         };
         Self {
-            target_value: txouts.iter().map(|txout| txout.value).sum(),
+            target_value: if txouts.is_empty() {
+                None
+            } else {
+                Some(txouts.iter().map(|txout| txout.value).sum())
+            },
             ..Self::from_weights(
                 base_weight as u32,
                 drain_weight as u32,
@@ -227,7 +233,7 @@ impl<'a> CoinSelector<'a> {
             + if has_segwit { 2_u32 } else { 0_u32 }
             + (varint_size(max_input_count) - 1) * 4;
 
-        self.opts.target_value as i64
+        self.opts.target_value.unwrap_or(0) as i64
             + (effective_base_weight as f32 * self.opts.target_feerate).ceil() as i64
     }
 
@@ -294,10 +300,11 @@ impl<'a> CoinSelector<'a> {
         let fee_with_drain = (weight_with_drain as f32 * self.opts.target_feerate).ceil() as u64;
 
         let inputs_minus_outputs = {
-            let target_value = self.opts.target_value;
+            let target_value = self.opts.target_value.unwrap_or(0);
             let selected = self.selected_absolute_value();
 
             // find the largest unsatisfied constraint (if any), and return error of that constraint
+            // "selected" should always be greater than or equal to these selected values
             [
                 (
                     SelectionConstraint::TargetValue,
@@ -310,6 +317,17 @@ impl<'a> CoinSelector<'a> {
                 (
                     SelectionConstraint::MinAbsoluteFee,
                     (target_value + self.opts.min_absolute_fee).saturating_sub(selected),
+                ),
+                (
+                    SelectionConstraint::MinDrainValue,
+                    // when we have no target value (hence no recipient txouts), we need to ensure
+                    // the selected amount can satisfy requirements for a drain output (so we at
+                    // least have one txout)
+                    if self.opts.target_value.is_none() {
+                        (fee_with_drain + self.opts.min_drain_value).saturating_sub(selected)
+                    } else {
+                        0
+                    },
                 ),
             ]
             .into_iter()
@@ -335,35 +353,40 @@ impl<'a> CoinSelector<'a> {
         // begin preparing excess strategies for final selection
         let mut excess_strategies = HashMap::new();
 
-        // no drain, excess to fee
-        excess_strategies.insert(
-            ExcessStrategyKind::ToFee,
-            ExcessStrategy {
-                recipient_value: self.opts.target_value,
-                drain_value: None,
-                fee: fee_without_drain + excess_without_drain,
-                weight: weight_without_drain,
-                waste: input_waste + excess_without_drain as i64,
-            },
-        );
-
-        // no drain, excess to recipient
-        // if `excess == 0`, this result will be the same as the previous, so we don't consider it
-        // if `max_extra_target == 0`, there is no leeway for this strategy
-        if excess_without_drain > 0 && self.opts.max_extra_target > 0 {
-            let extra_recipient_value =
-                core::cmp::min(self.opts.max_extra_target, excess_without_drain);
-            let extra_fee = excess_without_drain - extra_recipient_value;
+        // only allow `ToFee` and `ToRecipient` excess strategies when we have a `target_value`,
+        // otherwise we will result in a result with no txouts, or attempt to add value to an output
+        // that does not exist
+        if self.opts.target_value.is_some() {
+            // no drain, excess to fee
             excess_strategies.insert(
-                ExcessStrategyKind::ToRecipient,
+                ExcessStrategyKind::ToFee,
                 ExcessStrategy {
-                    recipient_value: self.opts.target_value + extra_recipient_value,
+                    recipient_value: self.opts.target_value,
                     drain_value: None,
-                    fee: fee_without_drain + extra_fee,
+                    fee: fee_without_drain + excess_without_drain,
                     weight: weight_without_drain,
-                    waste: input_waste + extra_fee as i64,
+                    waste: input_waste + excess_without_drain as i64,
                 },
             );
+
+            // no drain, excess to recipient
+            // if `excess == 0`, this result will be the same as the previous, so don't consider it
+            // if `max_extra_target == 0`, there is no leeway for this strategy
+            if excess_without_drain > 0 && self.opts.max_extra_target > 0 {
+                let extra_recipient_value =
+                    core::cmp::min(self.opts.max_extra_target, excess_without_drain);
+                let extra_fee = excess_without_drain - extra_recipient_value;
+                excess_strategies.insert(
+                    ExcessStrategyKind::ToRecipient,
+                    ExcessStrategy {
+                        recipient_value: self.opts.target_value.map(|v| v + extra_recipient_value),
+                        drain_value: None,
+                        fee: fee_without_drain + extra_fee,
+                        weight: weight_without_drain,
+                        waste: input_waste + extra_fee as i64,
+                    },
+                );
+            }
         }
 
         // with drain
@@ -381,6 +404,11 @@ impl<'a> CoinSelector<'a> {
                 },
             );
         }
+
+        debug_assert!(
+            !excess_strategies.is_empty(),
+            "should have at least one excess strategy"
+        );
 
         Ok(Selection {
             selected: self.selected.clone(),
@@ -422,8 +450,10 @@ pub enum SelectionConstraint {
     TargetValue,
     /// The target fee (given the feerate) is not met
     TargetFee,
-    /// Min absolute fee in not met
+    /// Min absolute fee is not met
     MinAbsoluteFee,
+    /// Min drain value is not met
+    MinDrainValue,
 }
 
 impl core::fmt::Display for SelectionConstraint {
@@ -432,6 +462,7 @@ impl core::fmt::Display for SelectionConstraint {
             SelectionConstraint::TargetValue => core::write!(f, "target_value"),
             SelectionConstraint::TargetFee => core::write!(f, "target_fee"),
             SelectionConstraint::MinAbsoluteFee => core::write!(f, "min_absolute_fee"),
+            SelectionConstraint::MinDrainValue => core::write!(f, "min_drain_value"),
         }
     }
 }
@@ -452,7 +483,7 @@ pub enum ExcessStrategyKind {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExcessStrategy {
-    pub recipient_value: u64,
+    pub recipient_value: Option<u64>,
     pub drain_value: Option<u64>,
     pub fee: u64,
     pub weight: u32,
@@ -495,7 +526,7 @@ impl ExcessStrategy {
 
 #[cfg(test)]
 mod test {
-    use crate::coin_select::SelectionConstraint;
+    use crate::coin_select::{ExcessStrategyKind, SelectionConstraint};
 
     use super::{CoinSelector, CoinSelectorOpt, WeightedValue};
 
@@ -514,7 +545,7 @@ mod test {
             .collect::<super::Vec<_>>();
 
         let opts = CoinSelectorOpt {
-            target_value,
+            target_value: Some(target_value),
             max_extra_target: 0,
             target_feerate: 0.00,
             long_term_feerate: None,
@@ -530,16 +561,52 @@ mod test {
             assert!(selector.select(index));
 
             let res = selector.finish();
-            if v.value < opts.target_value {
+            if v.value < opts.target_value.unwrap_or(0) {
                 let err = res.expect_err("should have failed");
                 assert_eq!(err.selected, v.value);
                 assert_eq!(err.missing, target_value - v.value);
                 assert_eq!(err.constraint, SelectionConstraint::MinAbsoluteFee);
             } else {
                 let sel = res.expect("should have succeeded");
-                assert_eq!(sel.excess, v.value - opts.target_value);
+                assert_eq!(sel.excess, v.value - opts.target_value.unwrap_or(0));
             }
         }
+    }
+
+    #[test]
+    fn drain_all() {
+        let candidates = (0..100)
+            .map(|_| WeightedValue {
+                value: 666,
+                weight: 166,
+                input_count: 1,
+                is_segwit: false,
+            })
+            .collect::<super::Vec<_>>();
+
+        let opts = CoinSelectorOpt {
+            target_value: None,
+            max_extra_target: 0,
+            target_feerate: 0.25,
+            long_term_feerate: None,
+            min_absolute_fee: 0,
+            base_weight: 10,
+            drain_weight: 100,
+            spend_drain_weight: 66,
+            min_drain_value: 1000,
+        };
+
+        let selection = CoinSelector::new(&candidates, &opts)
+            .select_until_finished()
+            .expect("should succeed");
+
+        assert!(selection.selected.len() > 1);
+        assert_eq!(selection.excess_strategies.len(), 1);
+
+        let (kind, strategy) = selection.best_strategy();
+        assert_eq!(*kind, ExcessStrategyKind::ToDrain);
+        assert!(strategy.recipient_value.is_none());
+        assert!(strategy.drain_value.is_some());
     }
 
     /// TODO: Tests to add:
