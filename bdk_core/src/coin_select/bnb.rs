@@ -263,7 +263,7 @@ where
         // early bailout optimization:
         // If the candidate at the previous position is NOT selected and has the same weight and
         // value as the current candidate, we can skip selecting the current candidate.
-        if !bnb.selection.is_empty() {
+        if bnb.pool_pos > 0 && !bnb.selection.is_empty() {
             let (_, candidate) = bnb.pool[bnb.pool_pos];
             let (prev_index, prev_candidate) = bnb.pool[bnb.pool_pos - 1];
 
