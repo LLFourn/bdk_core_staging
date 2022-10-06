@@ -19,6 +19,10 @@ impl BranchStrategy {
     }
 }
 
+/// Closure to decide the branching strategy, alongside a score (if the current selection is a
+/// candidate solution).
+pub type DecideStrategy<'c, S> = dyn Fn(&Bnb<'c, S>) -> (BranchStrategy, Option<S>);
+
 /// [`Bnb`] represents the current state of the BnB algorithm.
 pub struct Bnb<'c, S> {
     pub pool: Vec<(usize, &'c WeightedValue)>,
@@ -54,10 +58,7 @@ impl<'c, S: Ord> Bnb<'c, S> {
     ///
     /// `strategy` should assess our current selection/node and determine the branching strategy and
     /// whether this selection is a candidate solution (if so, return the score of the selection).
-    pub fn into_iter<'f>(
-        self,
-        strategy: &'f dyn Fn(&Self) -> (BranchStrategy, Option<S>),
-    ) -> BnbIter<'c, 'f, S> {
+    pub fn into_iter<'f>(self, strategy: &'f DecideStrategy<'c, S>) -> BnbIter<'c, 'f, S> {
         BnbIter {
             state: self,
             done: false,
@@ -115,7 +116,7 @@ pub struct BnbIter<'c, 'f, S> {
 
     /// Check our current selection (node), and returns the branching strategy, alongside a score
     /// (if the current selection is a candidate solution).
-    strategy: &'f dyn Fn(&Bnb<'c, S>) -> (BranchStrategy, Option<S>),
+    strategy: &'f DecideStrategy<'c, S>,
 }
 
 impl<'c, 'f, S: Ord + Copy + Display> Iterator for BnbIter<'c, 'f, S> {
@@ -232,7 +233,7 @@ where
     let upper_bound_abs = target_abs + (opts.drain_weight as f32 * opts.target_feerate) as u64;
     let upper_bound_eff = target_eff + opts.drain_waste();
 
-    let strategy = |bnb: &Bnb<i64>| -> (BranchStrategy, Option<i64>) {
+    let strategy = move |bnb: &Bnb<i64>| -> (BranchStrategy, Option<i64>) {
         let selected_abs = bnb.selection.selected_absolute_value();
         let selected_eff = bnb.selection.selected_effective_value();
 
