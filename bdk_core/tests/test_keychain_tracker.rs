@@ -7,11 +7,13 @@ use checkpoint_gen::{CheckpointGen, ISpec, OSpec, TxSpec};
 fn add_single_unconfirmed_tx_and_then_confirm_it() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
+    let mut graph = TxGraph::default();
     let mut tracker = KeychainTracker::default();
     tracker.add_keychain((), checkpoint_gen.descriptor.clone());
     tracker.derive_spks((), 0);
 
     let mut checkpoint = checkpoint_gen.create_update(
+        &mut graph,
         vec![TxSpec {
             inputs: vec![ISpec::Other],
             outputs: vec![OSpec::Mine(1_000, 0), OSpec::Other(500)],
@@ -31,37 +33,39 @@ fn add_single_unconfirmed_tx_and_then_confirm_it() {
         "the checkpoint should be empty because tx is not confirmed"
     );
 
-    assert_eq!(chain.iter_tx().count(), 1);
-    tracker.sync(&chain);
+    assert_eq!(chain.iter_txids().count(), 1);
+    tracker.sync(&chain, &graph);
 
     {
-        let txouts = tracker.iter_txout_full(&chain).collect::<Vec<_>>();
-        let unspent = tracker.iter_unspent_full(&chain).collect::<Vec<_>>();
+        let txouts = tracker.iter_txout_full(&chain, &graph).collect::<Vec<_>>();
+        let unspent = tracker
+            .iter_unspent_full(&chain, &graph)
+            .collect::<Vec<_>>();
         assert_eq!(txouts.len(), 1);
         let (spk_index, txout) = txouts[0].clone();
         assert_eq!(spk_index, ((), 0));
-        assert_eq!(txout.value, 1_000);
-        assert_eq!(txout.confirmed_at, None);
+        assert_eq!(txout.txout.value, 1_000);
+        assert_eq!(txout.height, None);
         assert_eq!(unspent, txouts);
     }
 
-    checkpoint.transactions[0].confirmation_time = Some(BlockTime { height: 1, time: 1 });
+    checkpoint.txids[0].1 = Some(1);
     checkpoint.new_tip.height += 1;
 
     assert_eq!(chain.apply_checkpoint(checkpoint), ApplyResult::Ok);
 
     {
-        assert_eq!(
-            chain.iter_checkpoints(..).count(), 1,
-            "should only be one since the previous empty one should have been removed in favor of this one");
+        assert_eq!(chain.iter_checkpoints(..).count(), 2);
         assert_eq!(chain.latest_checkpoint().unwrap().height, 1);
-        let txouts = tracker.iter_txout_full(&chain).collect::<Vec<_>>();
-        let unspent = tracker.iter_unspent_full(&chain).collect::<Vec<_>>();
+        let txouts = tracker.iter_txout_full(&chain, &graph).collect::<Vec<_>>();
+        let unspent = tracker
+            .iter_unspent_full(&chain, &graph)
+            .collect::<Vec<_>>();
         assert_eq!(txouts.len(), 1);
         let (spk_index, txout) = txouts[0].clone();
         assert_eq!(spk_index, ((), 0));
-        assert_eq!(txout.value, 1_000);
-        assert_eq!(txout.confirmed_at, Some(BlockTime { height: 1, time: 1 }));
+        assert_eq!(txout.txout.value, 1_000);
+        assert_eq!(txout.height, Some(1));
         assert_eq!(unspent, txouts);
     }
 }
@@ -70,11 +74,13 @@ fn add_single_unconfirmed_tx_and_then_confirm_it() {
 fn orphaned_txout_no_longer_appears() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
+    let mut graph = TxGraph::default();
     let mut tracker = KeychainTracker::default();
     tracker.add_keychain((), checkpoint_gen.descriptor.clone());
     tracker.derive_spks((), 2);
 
     let checkpoint1 = checkpoint_gen.create_update(
+        &mut graph,
         vec![TxSpec {
             inputs: vec![ISpec::Other],
             outputs: vec![OSpec::Mine(1_000, 0), OSpec::Other(500)],
@@ -84,9 +90,10 @@ fn orphaned_txout_no_longer_appears() {
     );
 
     assert_eq!(chain.apply_checkpoint(checkpoint1.clone()), ApplyResult::Ok);
-    tracker.sync(&chain);
+    tracker.sync(&chain, &graph);
 
     let mut checkpoint2 = checkpoint_gen.create_update(
+        &mut graph,
         vec![TxSpec {
             inputs: vec![ISpec::Other],
             outputs: vec![OSpec::Mine(1_001, 1), OSpec::Other(1_800)],
@@ -97,17 +104,19 @@ fn orphaned_txout_no_longer_appears() {
 
     checkpoint2.invalidate = Some(checkpoint1.new_tip);
     assert_eq!(chain.apply_checkpoint(checkpoint2.clone()), ApplyResult::Ok);
-    tracker.sync(&chain);
+    tracker.sync(&chain, &graph);
 
     assert_eq!(chain.apply_checkpoint(checkpoint2), ApplyResult::Ok);
     {
-        let txouts = tracker.iter_txout_full(&chain).collect::<Vec<_>>();
-        let unspent = tracker.iter_unspent_full(&chain).collect::<Vec<_>>();
+        let txouts = tracker.iter_txout_full(&chain, &graph).collect::<Vec<_>>();
+        let unspent = tracker
+            .iter_unspent_full(&chain, &graph)
+            .collect::<Vec<_>>();
         assert_eq!(txouts.len(), 1);
         let (spk_index, txout) = txouts[0].clone();
         assert_eq!(spk_index, ((), 0));
-        assert_eq!(txout.value, 1_001);
-        assert_eq!(txout.confirmed_at, Some(BlockTime { height: 0, time: 0 }));
+        assert_eq!(txout.txout.value, 1_001);
+        assert_eq!(txout.height, Some(0));
         assert_eq!(unspent, txouts);
     }
 }
@@ -116,11 +125,13 @@ fn orphaned_txout_no_longer_appears() {
 fn output_spend_and_created_in_same_checkpoint() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
+    let mut graph = TxGraph::default();
     let mut tracker = KeychainTracker::default();
     tracker.add_keychain((), checkpoint_gen.descriptor.clone());
     tracker.derive_spks((), 2);
 
     let checkpoint1 = checkpoint_gen.create_update(
+        &mut graph,
         vec![
             TxSpec {
                 inputs: vec![ISpec::Other],
@@ -137,23 +148,25 @@ fn output_spend_and_created_in_same_checkpoint() {
     );
 
     assert_eq!(chain.apply_checkpoint(checkpoint1.clone()), ApplyResult::Ok);
-    tracker.sync(&chain);
+    tracker.sync(&chain, &graph);
 
     {
-        let txouts = tracker.iter_txout_full(&chain).collect::<Vec<_>>();
-        let unspent = tracker.iter_unspent_full(&chain).collect::<Vec<_>>();
+        let txouts = tracker.iter_txout_full(&chain, &graph).collect::<Vec<_>>();
+        let unspent = tracker
+            .iter_unspent_full(&chain, &graph)
+            .collect::<Vec<_>>();
         assert_eq!(txouts.len(), 2);
         assert_eq!(unspent.len(), 1);
 
         assert!(txouts
             .iter()
-            .find(|(_, txout)| txout.value == 1_000)
+            .find(|(_, txout)| txout.txout.value == 1_000)
             .is_some());
         assert!(txouts
             .iter()
-            .find(|(_, txout)| txout.value == 3_000)
+            .find(|(_, txout)| txout.txout.value == 3_000)
             .is_some());
-        assert_eq!(unspent[0].1.value, 3_000);
+        assert_eq!(unspent[0].1.txout.value, 3_000);
     }
 }
 
@@ -161,20 +174,27 @@ fn output_spend_and_created_in_same_checkpoint() {
 fn spend_unspent_in_reorg() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
+    let mut graph = TxGraph::default();
     let mut tracker = KeychainTracker::default();
     tracker.add_keychain((), checkpoint_gen.descriptor.clone());
     tracker.derive_spks((), 2);
 
     let first = checkpoint_gen.create_update(
+        &mut graph,
         vec![TxSpec {
             inputs: vec![ISpec::Other],
             outputs: vec![OSpec::Mine(1_000, 0), OSpec::Other(500)],
-            confirmed_at: Some(0),
+            confirmed_at: None,
         }],
         0,
     );
+    assert_eq!(chain.apply_checkpoint(first.clone()), ApplyResult::Ok);
+    tracker.sync(&chain, &graph);
+    assert_eq!(tracker.iter_unspent(&chain, &graph).count(), 1); // TODO: fails here
+    assert_eq!(tracker.iter_txout(&graph).count(), 1);
 
     let second = checkpoint_gen.create_update(
+        &mut graph,
         vec![TxSpec {
             inputs: vec![ISpec::Other],
             outputs: vec![OSpec::Mine(1_000, 1), OSpec::Other(500)],
@@ -182,34 +202,29 @@ fn spend_unspent_in_reorg() {
         }],
         1,
     );
+    assert_eq!(chain.apply_checkpoint(second.clone()), ApplyResult::Ok);
+    tracker.sync(&chain, &graph);
+    assert_eq!(tracker.iter_unspent(&chain, &graph).count(), 2);
+    assert_eq!(tracker.iter_txout(&graph).count(), 2);
 
-    let mut third = checkpoint_gen.create_update(
-        vec![TxSpec {
-            inputs: vec![ISpec::Explicit(OutPoint {
-                txid: first.transactions[0].tx.txid(),
-                vout: 0,
-            })],
-            outputs: vec![OSpec::Other(500)],
-            confirmed_at: Some(1),
-        }],
-        2,
-    );
-
-    third.invalidate = Some(second.new_tip);
-    third.base_tip = Some(first.new_tip);
-
-    assert_eq!(chain.apply_checkpoint(first), ApplyResult::Ok);
-    tracker.sync(&chain);
-    assert_eq!(tracker.iter_unspent(&chain).count(), 1);
-    assert_eq!(tracker.iter_txout(&chain).count(), 1);
-
-    assert_eq!(chain.apply_checkpoint(second), ApplyResult::Ok);
-    tracker.sync(&chain);
-    assert_eq!(tracker.iter_unspent(&chain).count(), 2);
-    assert_eq!(tracker.iter_txout(&chain).count(), 2);
-
+    let third = CheckpointCandidate {
+        base_tip: Some(second.new_tip),
+        invalidate: Some(second.new_tip),
+        ..checkpoint_gen.create_update(
+            &mut graph,
+            vec![TxSpec {
+                inputs: vec![ISpec::Explicit(OutPoint {
+                    txid: first.txids[0].0,
+                    vout: 0,
+                })],
+                outputs: vec![OSpec::Other(500)],
+                confirmed_at: Some(1),
+            }],
+            2,
+        )
+    };
     assert_eq!(chain.apply_checkpoint(third), ApplyResult::Ok);
-    tracker.sync(&chain);
-    assert_eq!(tracker.iter_unspent(&chain).count(), 0);
-    assert_eq!(tracker.iter_txout(&chain).count(), 1);
+    tracker.sync(&chain, &graph);
+    assert_eq!(tracker.iter_unspent(&chain, &graph).count(), 0);
+    assert_eq!(tracker.iter_txout(&graph).count(), 2);
 }

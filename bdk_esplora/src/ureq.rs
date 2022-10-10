@@ -248,7 +248,10 @@ impl Client {
         }
 
         let update = CheckpointCandidate {
-            transactions,
+            txids: transactions
+                .iter()
+                .map(|b_tx| (b_tx.tx.txid(), b_tx.confirmation_time.map(|t| t.height)))
+                .collect(),
             base_tip,
             invalidate,
             new_tip,

@@ -1,8 +1,8 @@
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    FullTxOut, SparseChain, Vec,
+    FullTxOut, SparseChain, TxGraph,
 };
-use bitcoin::{self, OutPoint, Script, Transaction, Txid};
+use bitcoin::{self, OutPoint, Script, Transaction};
 
 /// A *script pubkey* tracker.
 ///
@@ -42,40 +42,27 @@ impl<I> Default for SpkTracker<I> {
 }
 
 impl<I: Clone + Ord> SpkTracker<I> {
-    pub fn sync(&mut self, chain: &SparseChain) {
-        // by reverse iterating the checkpoints and collecting the transactions until we find a
-        // checkpoint with a txid digest we've seen we avoid having to apply *all* the transactions
-        // in the sparse chain every time.
-        let txids_to_add = chain
-            .iter_checkpoints(..)
-            .rev()
-            // .take_while(|checkpoint_id| {
-            //     !self
-            //         .txid_digests_seen
-            //         .contains(&chain.txid_digest_at(*checkpoint_id))
-            // })
-            .flat_map(|checkpoint_id| chain.checkpoint_txids(checkpoint_id))
-            .chain(chain.unconfirmed().iter())
-            .collect::<Vec<_>>();
-
-        for txid_to_add in txids_to_add {
-            self.add_tx(txid_to_add, chain);
-        }
+    pub fn sync(&mut self, chain: &SparseChain, graph: &TxGraph) {
+        chain
+            .iter_txids()
+            .map(|(_, txid)| graph.tx(&txid).expect("tx must exist"))
+            .for_each(|tx| self.add_tx(tx));
     }
 
-    fn add_tx(&mut self, txid: &Txid, chain: &SparseChain) {
-        let tx = &chain.get_tx(*txid).expect("must exist").tx;
+    fn add_tx(&mut self, tx: &Transaction) {
         for (i, out) in tx.output.iter().enumerate() {
             if let Some(index) = self.index_of_spk(&out.script_pubkey) {
                 let outpoint = OutPoint {
-                    txid: *txid,
+                    txid: tx.txid(),
                     vout: i as u32,
                 };
 
                 self.txouts.insert(outpoint, index.clone());
+                self.spk_txouts
+                    .entry(index.clone())
+                    .or_default()
+                    .insert(outpoint);
 
-                let txos_for_script = self.spk_txouts.entry(index.clone()).or_default();
-                txos_for_script.insert(outpoint);
                 self.unused.remove(&index);
             }
         }
@@ -85,10 +72,12 @@ impl<I: Clone + Ord> SpkTracker<I> {
     pub fn iter_unspent<'a>(
         &'a self,
         chain: &'a SparseChain,
+        graph: &'a TxGraph,
     ) -> impl Iterator<Item = (I, OutPoint)> + '_ {
         // TODO: index unspent txouts somewhow
-        self.iter_txout(chain)
-            .filter(|(_, outpoint)| chain.outspend(*outpoint).is_none())
+        self.iter_txout(graph)
+            .filter(|(_, outpoint)| chain.transaction_at(&outpoint.txid).is_some())
+            .filter(|(_, outpoint)| graph.is_unspent(outpoint).expect("should exist"))
     }
 
     /// Convience method for retreiving  the same txouts [`iter_unspent`] gives and turning each outpoint into a `FullTxOut`
@@ -98,8 +87,9 @@ impl<I: Clone + Ord> SpkTracker<I> {
     pub fn iter_unspent_full<'a>(
         &'a self,
         chain: &'a SparseChain,
+        graph: &'a TxGraph,
     ) -> impl Iterator<Item = (I, FullTxOut)> + 'a {
-        self.iter_txout_full(chain)
+        self.iter_txout_full(chain, graph)
             .filter(|(_, txout)| txout.spent_by.is_none())
     }
 
@@ -108,19 +98,20 @@ impl<I: Clone + Ord> SpkTracker<I> {
     pub fn iter_txout_full<'a>(
         &'a self,
         chain: &'a SparseChain,
+        graph: &'a TxGraph,
     ) -> impl DoubleEndedIterator<Item = (I, FullTxOut)> + 'a {
         self.txouts.iter().filter_map(|(outpoint, spk_index)| {
-            Some((spk_index.clone(), chain.full_txout(*outpoint)?))
+            Some((spk_index.clone(), chain.full_txout(graph, *outpoint)?))
         })
     }
 
     pub fn iter_txout<'a>(
         &'a self,
-        chain: &'a SparseChain,
+        graph: &'a TxGraph,
     ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + 'a {
         self.txouts
             .iter()
-            .filter(|(outpoint, _)| chain.get_tx(outpoint.txid).is_some())
+            .filter(|(outpoint, _)| graph.tx(&outpoint.txid).is_some())
             .map(|(op, index)| (index.clone(), *op))
     }
 

@@ -1,41 +1,24 @@
 use core::ops::RangeBounds;
 
-use crate::{collections::*, BlockId, BlockTime, Vec};
-use bitcoin::{BlockHash, OutPoint, Script, Transaction, TxOut, Txid};
+use crate::{collections::*, BlockId, BlockTime, TxGraph, Vec};
+use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {
-    /// Checkpoint data indexed by height
-    checkpoints: BTreeMap<u32, CheckpointData>,
-    /// List of all known spends. Including our's and other's outpoints. Both confirmed and unconfirmed.
-    /// This is useful to track all inputs we might ever care about.
-    spends: BTreeMap<OutPoint, Txid>,
-    /// A transaction store of all potentially interesting transactions. Including ones in mempool.
-    txs: HashMap<Txid, TxAtBlock>,
-    /// A list of mempool txids
+    /// Block height to checkpoint data.
+    /// TODO: `<u32, C>` where C is checkpoint
+    checkpoints: BTreeMap<u32, BlockHash>,
+    /// Txids prepended by confirmation height.
+    /// TODO: `(I, Txid)` where I is tx_index
+    txid_by_height: BTreeSet<(u32, Txid)>,
+    /// Confirmation heights of txids.
+    /// TODO: `<Txid, I>` where I is tx_index
+    txid_to_index: HashMap<Txid, u32>,
+    /// A list of mempool txids (TODO: Could we move this into txids?).
     mempool: HashSet<Txid>,
-}
-
-/// We keep this for two reasons:
-///
-/// 1. If we have two different checkpoints we can tell quickly if they disagree and if so at which
-/// height do they disagree (set reconciliation).
-/// 2. We want to be able to delete old checkpoints by merging their Txids
-/// into a newer one. With this digest we can do that without changing the identity of the
-/// checkpoint that has the new Txids merged into it.
-#[derive(Clone)]
-struct CheckpointData {
-    block_hash: BlockHash,
-    ordered_txids: BTreeSet<Txid>,
-}
-
-impl core::fmt::Debug for CheckpointData {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("CheckpointData")
-            .field("block_hash", &self.block_hash)
-            .field("txids", &self.ordered_txids)
-            .finish()
-    }
+    /// Limit number of checkpoints
+    /// 0 means no limit
+    checkpoint_limit: usize,
 }
 
 /// The result of attempting to apply a checkpoint
@@ -57,8 +40,8 @@ pub enum ApplyResult {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StaleReason {
     InvalidationHashNotMatching {
-        invalidates: BlockId,
-        expected: Option<BlockHash>,
+        got: Option<BlockHash>,
+        expected: BlockId,
     },
     BaseTipNotMatching {
         got: Option<BlockId>,
@@ -67,24 +50,6 @@ pub enum StaleReason {
 }
 
 impl SparseChain {
-    pub fn outspend(&self, outpoint: OutPoint) -> Option<Txid> {
-        self.spends.get(&outpoint).cloned()
-    }
-
-    /// The outputs from the transaction with id `txid` that have been spent.
-    ///
-    /// Each item contains the output index and the txid that spent that output.
-    pub fn outspends(&self, txid: Txid) -> impl DoubleEndedIterator<Item = (u32, Txid)> + '_ {
-        let start = OutPoint { txid, vout: 0 };
-        let end = OutPoint {
-            txid,
-            vout: u32::MAX,
-        };
-        self.spends
-            .range(start..=end)
-            .map(|(outpoint, txid)| (outpoint.vout, *txid))
-    }
-
     /// Get the transaction ids in a particular checkpoint.
     ///
     /// The `Txid`s are ordered first by their confirmation height (ascending) and then lexically by their `Txid`.
@@ -94,18 +59,21 @@ impl SparseChain {
     /// This will panic if a checkpoint doesn't exist with `checkpoint_id`
     pub fn checkpoint_txids(
         &self,
-        checkpoint_id: BlockId,
-    ) -> impl DoubleEndedIterator<Item = &Txid> + '_ {
-        let data = self
+        block_id: BlockId,
+    ) -> impl DoubleEndedIterator<Item = &(u32, Txid)> + '_ {
+        let block_hash = self
             .checkpoints
-            .get(&checkpoint_id.height)
+            .get(&block_id.height)
             .expect("the tracker did not have a checkpoint at that height");
         assert_eq!(
-            data.block_hash, checkpoint_id.hash,
+            block_hash, &block_id.hash,
             "tracker had a different block hash for checkpoint at that height"
         );
 
-        data.ordered_txids.iter()
+        let h = block_id.height;
+
+        self.txid_by_height
+            .range((h, Txid::all_zeros())..(h + 1, Txid::all_zeros()))
     }
 
     /// Get the BlockId for the last known tip.
@@ -113,19 +81,24 @@ impl SparseChain {
         self.checkpoints
             .iter()
             .last()
-            .map(|(height, data)| BlockId {
-                height: *height,
-                hash: data.block_hash,
-            })
+            .map(|(&height, &hash)| BlockId { height, hash })
     }
 
     /// Get the checkpoint id at the given height if it exists
     pub fn checkpoint_at(&self, height: u32) -> Option<BlockId> {
-        let data = self.checkpoints.get(&height)?;
-        Some(BlockId {
-            height,
-            hash: data.block_hash,
-        })
+        self.checkpoints
+            .get(&height)
+            .map(|&hash| BlockId { height, hash })
+    }
+
+    /// Return height of tx (if any).
+    pub fn transaction_at(&self, txid: &Txid) -> Option<Option<u32>> {
+        if self.mempool.contains(txid) {
+            return Some(None);
+        }
+
+        let height = self.txid_to_index.get(txid)?;
+        Some(Some(*height))
     }
 
     /// Return an iterator over the checkpoint locations in a height range.
@@ -133,45 +106,30 @@ impl SparseChain {
         &self,
         range: impl RangeBounds<u32>,
     ) -> impl DoubleEndedIterator<Item = BlockId> + '_ {
-        self.checkpoints.range(range).map(|(height, data)| BlockId {
-            height: *height,
-            hash: data.block_hash,
-        })
+        self.checkpoints
+            .range(range)
+            .map(|(&height, &hash)| BlockId { height, hash })
     }
 
     /// Apply transactions that are all confirmed in a given block
     pub fn apply_block_txs(
         &mut self,
         block_id: BlockId,
-        block_timestamp: u64,
-        transactions: impl IntoIterator<Item = Transaction>,
+        transactions: impl IntoIterator<Item = Txid>,
     ) -> ApplyResult {
         let mut checkpoint = CheckpointCandidate {
-            transactions: transactions
+            txids: transactions
                 .into_iter()
-                .map(|tx| TxAtBlock {
-                    tx,
-                    confirmation_time: Some(BlockTime {
-                        height: block_id.height,
-                        time: block_timestamp,
-                    }),
-                })
+                .map(|txid| (txid, Some(block_id.height)))
                 .collect(),
             base_tip: self.latest_checkpoint(),
             invalidate: None,
             new_tip: block_id,
         };
+
         if let Some(matching_checkpoint) = self.checkpoint_at(block_id.height) {
             if matching_checkpoint.hash != block_id.hash {
                 checkpoint.invalidate = Some(matching_checkpoint);
-                checkpoint.base_tip =
-                    self.checkpoints
-                        .range(..block_id.height)
-                        .last()
-                        .map(|(height, data)| BlockId {
-                            height: *height,
-                            hash: data.block_hash,
-                        })
             }
         }
 
@@ -180,353 +138,180 @@ impl SparseChain {
 
     /// Applies a new candidate checkpoint to the tracker.
     #[must_use]
-    pub fn apply_checkpoint(&mut self, mut new_checkpoint: CheckpointCandidate) -> ApplyResult {
-        new_checkpoint.transactions.retain(|tx| {
-            if let Some(confirmation_time) = tx.confirmation_time {
-                confirmation_time.height <= new_checkpoint.new_tip.height
-            } else {
-                true
-            }
-        });
-
-        // we set to u32::MAX in case of None since it means no tx will be excluded from conflict checks
-        let invalidation_height = new_checkpoint
-            .invalidate
-            .map(|bt| bt.height)
-            .unwrap_or(u32::MAX);
-
-        // Do consistency checks first so we don't mutate anything until we're sure the update is
-        // valid. We check for two things
-        // 1. There's no "known" transaction in the new checkpoint with same txid but different conf_time
-        // 2. No transaction double spends one of our existing confirmed transactions.
-
-        // We simply ignore transactions in the checkpoint that have a confirmation time greater
-        // than the checkpoint height. I felt this was better for the caller than creating an error
-        // type.
-
-        for tx in &new_checkpoint.transactions {
-            if let Some((txid, conflicts_with)) = self.check_consistency(tx, invalidation_height) {
-                return ApplyResult::Inconsistent {
-                    txid,
-                    conflicts_with,
-                };
-            }
-        }
-
-        let base_tip_cmp = match new_checkpoint.invalidate {
-            Some(checkpoint_reset) => self
-                .checkpoints
-                .range(..checkpoint_reset.height)
-                .last()
-                .map(|(height, data)| BlockId {
-                    height: *height,
-                    hash: data.block_hash,
-                }),
-            None => self.latest_checkpoint(),
-        };
-
-        if let Some(base_tip) = base_tip_cmp {
-            if new_checkpoint.base_tip != Some(base_tip) {
+    pub fn apply_checkpoint(&mut self, new_checkpoint: CheckpointCandidate) -> ApplyResult {
+        // Enforce base-tip rule (if any)
+        if let Some(exp_tip) = new_checkpoint.base_tip {
+            let current_tip = self.latest_checkpoint();
+            if !matches!(current_tip, Some(tip) if tip == exp_tip) {
                 return ApplyResult::Stale(StaleReason::BaseTipNotMatching {
-                    got: new_checkpoint.base_tip,
-                    expected: base_tip,
+                    got: current_tip,
+                    expected: exp_tip,
                 });
             }
         }
 
-        if let Some(checkpoint_reset) = new_checkpoint.invalidate {
-            match self.checkpoints.get(&checkpoint_reset.height) {
-                Some(existing_checkpoint) => {
-                    if existing_checkpoint.block_hash == checkpoint_reset.hash {
-                        self.invalidate_checkpoint(checkpoint_reset.height);
-                    } else {
-                        return ApplyResult::Stale(StaleReason::InvalidationHashNotMatching {
-                            invalidates: checkpoint_reset,
-                            expected: Some(existing_checkpoint.block_hash),
-                        });
-                    }
+        // ensure all confirmed txs are still at the same height
+        for (txid, new_height) in &new_checkpoint.txids {
+            let new_height = new_height.unwrap_or(u32::MAX);
+
+            if let Some(&height) = self.txid_to_index.get(txid) {
+                // No need to check consistency if height will be invalidated
+                if matches!(new_checkpoint.invalidate, Some(invalid) if height >= invalid.height) {
+                    continue;
                 }
-                None => {
-                    return ApplyResult::Stale(StaleReason::InvalidationHashNotMatching {
-                        invalidates: checkpoint_reset,
-                        expected: None,
-                    })
+
+                if new_height != height {
+                    // inconsistent
+                    return ApplyResult::Inconsistent {
+                        txid: *txid,
+                        conflicts_with: *txid,
+                    };
                 }
             }
         }
 
-        // If the current tip is empty (i.e. just tracking lastest height) we can just remove it.
-        if let Some(latest_checkpoint) = self.latest_checkpoint() {
-            if self.checkpoint_txids(latest_checkpoint).next().is_none() {
-                self.checkpoints.remove(&latest_checkpoint.height);
+        if let Some(invalid) = &new_checkpoint.invalidate {
+            let block_hash = self.checkpoints.get(&invalid.height);
+            if !matches!(block_hash, Some(h) if h == &invalid.hash) {
+                return ApplyResult::Stale(StaleReason::InvalidationHashNotMatching {
+                    got: block_hash.cloned(),
+                    expected: invalid.clone(),
+                });
             }
+
+            self.invalidate_checkpoints(invalid.height);
         }
 
         self.checkpoints
             .entry(new_checkpoint.new_tip.height)
-            .or_insert_with(|| CheckpointData {
-                block_hash: new_checkpoint.new_tip.hash,
-                ordered_txids: Default::default(),
-            });
+            .or_insert_with(|| new_checkpoint.new_tip.hash);
 
-        let mut deepest_change = None;
-        for tx in new_checkpoint.transactions {
-            if let Some(change) = self.add_tx(tx) {
-                deepest_change = Some(deepest_change.unwrap_or(u32::MAX).min(change));
-            }
-        }
-
-        ApplyResult::Ok
-    }
-
-    fn check_consistency(
-        &self,
-        TxAtBlock {
-            tx,
-            confirmation_time,
-        }: &TxAtBlock,
-        invalidation_height: u32,
-    ) -> Option<(Txid, Txid)> {
-        let txid = tx.txid();
-        if let Some(existing) = self.txs.get(&tx.txid()) {
-            if let Some(existing_time) = existing.confirmation_time {
-                if existing_time.height >= invalidation_height {
-                    // no need to consider conflicts for txs that are about to be invalidated
-                    return None;
-                }
-                if confirmation_time != &Some(existing_time) {
-                    if existing_time.height < invalidation_height {
-                        return Some((txid, existing.tx.txid()));
+        for (txid, conf) in new_checkpoint.txids {
+            match conf {
+                Some(height) => {
+                    if self.txid_by_height.insert((height, txid)) {
+                        self.txid_to_index.insert(txid, height);
+                        self.mempool.remove(&txid);
                     }
                 }
-            }
-        }
-
-        for input in &tx.input {
-            let prevout = &input.previous_output;
-            if let Some(spent_from) = self.txs.get(&prevout.txid) {
-                if spent_from.tx.output.len() as u32 <= prevout.vout {
-                    // an input is spending from a tx we know about but doesn't have that output
-                    return Some((tx.txid(), prevout.txid));
+                None => {
+                    // TODO: Use u32::MAX for mempool?
+                    self.mempool.insert(txid);
                 }
             }
         }
 
-        let conflicts = tx
-            .input
-            .iter()
-            .filter_map(|input| self.spends.get(&input.previous_output))
-            .filter(|conflict_txid| **conflict_txid != tx.txid());
-
-        for conflicting_txid in conflicts {
-            if let Some(conflicting_conftime) = self
-                .txs
-                .get(conflicting_txid)
-                .expect("must exist")
-                .confirmation_time
-            {
-                // no need to consider conflicts for txs that are about to be invalidated
-                if conflicting_conftime.height >= invalidation_height {
-                    continue;
-                }
-
-                return Some((txid, *conflicting_txid));
-            }
-        }
-        None
+        self.prune_checkpoints();
+        ApplyResult::Ok
     }
 
     /// Clear the mempool list. Use with caution.
     pub fn clear_mempool(&mut self) {
-        let mempool = core::mem::replace(&mut self.mempool, Default::default());
-        for txid in mempool {
-            self.remove_tx(txid);
-        }
-        debug_assert!(self.mempool.is_empty())
+        self.mempool.clear()
     }
 
     /// Reverse everything of the Block with given hash and height.
     pub fn disconnect_block(&mut self, block_id: BlockId) {
-        if let Some(checkpoint_data) = self.checkpoints.get(&block_id.height) {
-            if checkpoint_data.block_hash == block_id.hash {
+        if let Some(checkpoint_hash) = self.checkpoints.get(&block_id.height) {
+            if checkpoint_hash == &block_id.hash {
                 // Can't guarantee that mempool is consistent with chain after we disconnect a block so we
                 // clear it.
+                self.invalidate_checkpoints(block_id.height);
                 self.clear_mempool();
-                self.invalidate_checkpoint(block_id.height);
             }
         }
     }
 
-    /// Remove a transaction from internal store.
-    // This can only be called when a checkpoint is removed.
-    fn remove_tx(&mut self, txid: Txid) {
-        let aug_tx = match self.txs.remove(&txid) {
-            Some(aug_tx) => aug_tx,
-            None => {
-                debug_assert!(!self.mempool.contains(&txid), "Consistency check");
-                return;
-            }
-        };
+    // Invalidate all checkpoints from the given height
+    fn invalidate_checkpoints(&mut self, height: u32) {
+        let _removed_checkpoints = self.checkpoints.split_off(&height);
+        let removed_txids = self.txid_by_height.split_off(&(height, Txid::all_zeros()));
 
-        for input in &aug_tx.tx.input {
-            if let Some(tx_that_spends) = self.spends.remove(&input.previous_output) {
-                debug_assert_eq!(
-                    tx_that_spends, txid,
-                    "the one that spent it must be this one"
-                );
-            }
+        for (exp_h, txid) in &removed_txids {
+            let h = self.txid_to_index.remove(txid);
+            debug_assert!(matches!(h, Some(h) if h == *exp_h));
         }
 
-        self.mempool.remove(&txid);
-    }
-
-    // Returns the checkpoint height at which it got added so we can recompute the txid digest from
-    // that point.
-    fn add_tx(
-        &mut self,
-        TxAtBlock {
-            tx,
-            confirmation_time,
-        }: TxAtBlock,
-    ) -> Option<u32> {
-        let txid = tx.txid();
-
-        // Look for conflicts to determine whether we should add this transaction or remove the one
-        // it conflicts with. Note that the txids in conflicts will always be unconfirmed
-        // transactions (dealing with confirmed conflicts is done outside and is usually an error).
-        let conflicts = tx
-            .input
-            .iter()
-            .filter_map(|input| Some(*self.spends.get(&input.previous_output)?))
-            .collect::<Vec<_>>();
-
-        if confirmation_time.is_some() {
-            // Because we made sure we only have mempool transactions in conflict list, if this one
-            // is already confirmed, its safe to remove them.
-            for conflicting_txid in conflicts {
-                self.remove_tx(conflicting_txid);
-            }
-        } else {
-            // in this branch we have a mempool confict
-            // TODO: add some way to customize the way conflicts are resolved in mempool
-            for conflicting_txid in conflicts {
-                self.remove_tx(conflicting_txid);
-            }
-        }
-
-        for input in tx.input.iter() {
-            if input.previous_output.is_null() {
-                continue;
-            }
-            let removed = self.spends.insert(input.previous_output, txid);
-            debug_assert_eq!(
-                removed, None,
-                "we should have already removed all conflicts!"
-            );
-        }
-
-        self.txs.insert(
-            txid,
-            TxAtBlock {
-                tx,
-                confirmation_time,
-            },
-        );
-
-        match confirmation_time {
-            Some(confirmation_time) => {
-                // Find the first checkpoint above or equal to the tx's height
-                let (checkpoint_height, checkpoint_data) = self
-                    .checkpoints
-                    .range_mut(confirmation_time.height..)
-                    .next()
-                    .expect("the caller must have checked that no txs are outside of range");
-
-                checkpoint_data.ordered_txids.insert(txid);
-
-                Some(*checkpoint_height)
-            }
-            None => {
-                self.mempool.insert(txid);
-                None
-            }
+        // TODO: have a method to make mempool consistent
+        if !removed_txids.is_empty() {
+            self.mempool.clear()
         }
     }
 
-    // Invalidate all checkpoints after the given height
-    fn invalidate_checkpoint(&mut self, height: u32) {
-        let removed = self.checkpoints.split_off(&height);
-
-        for (_height, data) in removed {
-            for txid in data.ordered_txids {
-                self.remove_tx(txid);
-            }
-        }
+    /// Iterates over confirmed txids, in increasing confirmations.
+    pub fn iter_confirmed_txids(&self) -> impl Iterator<Item = &(u32, Txid)> + DoubleEndedIterator {
+        self.txid_by_height.iter().rev()
     }
 
-    /// Iterate over all transactions in our transaction store.
-    /// Can be both related/unrelated and/or confirmed/unconfirmed.
-    pub fn iter_tx(&self) -> impl Iterator<Item = (Txid, &TxAtBlock)> {
-        self.txs.iter().map(|(txid, tx)| (*txid, tx))
+    /// Iterates over unconfirmed txids.
+    pub fn iter_mempool_txids(&self) -> impl Iterator<Item = &Txid> {
+        self.mempool.iter()
     }
 
-    pub fn full_txout(&self, outpoint: OutPoint) -> Option<FullTxOut> {
-        let tx_in_block = self.txs.get(&outpoint.txid)?;
-        let spent_by = self.outspend(outpoint);
-        let txout = tx_in_block.tx.output.get(outpoint.vout as usize)?;
+    pub fn iter_txids(&self) -> impl Iterator<Item = (Option<u32>, Txid)> + '_ {
+        let mempool_iter = self.iter_mempool_txids().map(|&txid| (None, txid));
+        let confirmed_iter = self
+            .iter_confirmed_txids()
+            .map(|&(h, txid)| (Some(h), txid));
+        mempool_iter.chain(confirmed_iter)
+    }
+
+    pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut> {
+        let height = self.transaction_at(&outpoint.txid)?;
+
+        let txout = graph
+            .tx(&outpoint.txid)
+            .map(|tx| tx.output.get(outpoint.vout as usize))
+            .flatten()
+            .cloned()?;
+
+        let spent_by = graph
+            .outspend(&outpoint)
+            .map(|txid_map| {
+                // find txids
+                let txids = txid_map
+                    .iter()
+                    .filter(|&txid| self.txid_to_index.contains_key(txid))
+                    .collect::<Vec<_>>();
+                debug_assert!(txids.len() <= 1, "conflicting txs in sparse chain");
+                txids.get(0).cloned()
+            })
+            .flatten()
+            .cloned();
 
         Some(FullTxOut {
-            value: txout.value,
-            spent_by,
             outpoint,
-            script_pubkey: txout.script_pubkey.clone(),
-            confirmed_at: tx_in_block.confirmation_time,
+            txout,
+            height,
+            spent_by,
         })
     }
 
-    /// Iterates over all transactions related to the descriptor ordered by decending confirmation
-    /// with those transactions that are unconfirmed first.
-    ///
-    /// "related" means that the transactoin has an output with a script pubkey produced by the
-    /// descriptor or it spends from such an output.
-    // TODO:  maybe change this so we can iterate over a height range using checkpoints
-    pub fn iter_tx_by_confirmation_time(
-        &self,
-    ) -> impl DoubleEndedIterator<Item = (Txid, &TxAtBlock)> + '_ {
-        // Since HashSet is not necessarily a DoubleEndedIterator we collect into a vector first.
-        let mempool_tx = self
-            .mempool
-            .iter()
-            .map(|txid| (*txid, self.txs.get(txid).unwrap()))
-            .collect::<Vec<_>>();
-        let confirmed_tx = self.checkpoints.iter().rev().flat_map(|(_, data)| {
-            data.ordered_txids
-                .iter()
-                .map(|txid| (*txid, self.txs.get(txid).unwrap()))
-        });
-
-        mempool_tx.into_iter().chain(confirmed_tx)
+    pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
+        self.checkpoint_limit = limit.unwrap_or(0);
     }
 
-    pub fn unconfirmed(&self) -> &HashSet<Txid> {
-        &self.mempool
-    }
-
-    /// Get a stored transaction given its `Txid`.
-    pub fn get_tx(&self, txid: Txid) -> Option<&TxAtBlock> {
-        self.txs.get(&txid)
+    pub fn prune_checkpoints(&mut self) -> Option<BTreeMap<u32, BlockHash>> {
+        if self.checkpoint_limit > 0 {
+            if let Some(&height) = self.checkpoints.keys().rev().nth(self.checkpoint_limit) {
+                return Some(self.checkpoints.split_off(&height));
+            }
+        }
+        None
     }
 }
 
+/// TODO: How do we ensure `txids` do not have a height greater than `new_tip`?
+/// TODO: Add `relevant_blocks: Vec<BlockId>`
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckpointCandidate {
     /// List of transactions in this checkpoint. They needs to be consistent with tracker's state
     /// for the new checkpoint to be included.
-    pub transactions: Vec<TxAtBlock>,
+    pub txids: Vec<(Txid, Option<u32>)>,
     /// The new checkpoint can be applied upon this tip. A tracker will usually reject updates that
     /// do not have `base_tip` equal to it's latest valid checkpoint.
     pub base_tip: Option<BlockId>,
-    /// Invalidates a checkpoint before considering this checkpoint.
+    /// Invalidates a block before considering this checkpoint.
     pub invalidate: Option<BlockId>,
     /// Sets the tip that this checkpoint was creaed for. All data in this checkpoint must be valid
     /// with respect to this tip.
@@ -542,18 +327,8 @@ pub struct TxAtBlock {
 /// A `TxOut` with as much data as we can retreive about it
 #[derive(Debug, Clone, PartialEq)]
 pub struct FullTxOut {
-    pub value: u64,
-    pub spent_by: Option<Txid>,
     pub outpoint: OutPoint,
-    pub confirmed_at: Option<BlockTime>,
-    pub script_pubkey: Script,
-}
-
-impl From<FullTxOut> for TxOut {
-    fn from(ftxout: FullTxOut) -> Self {
-        TxOut {
-            value: ftxout.value,
-            script_pubkey: ftxout.script_pubkey,
-        }
-    }
+    pub txout: TxOut,
+    pub height: Option<u32>,
+    pub spent_by: Option<Txid>,
 }

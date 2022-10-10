@@ -9,7 +9,7 @@ use bdk_core::{
     },
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     miniscript::{Descriptor, DescriptorPublicKey},
-    ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
+    ApplyResult, DescriptorExt, KeychainTracker, SparseChain, TxGraph,
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
@@ -129,6 +129,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut tracker = KeychainTracker::default();
     let mut chain = SparseChain::default();
+    let mut graph = TxGraph::default();
     tracker.add_keychain(Keychain::External, descriptor);
 
     let internal = args
@@ -154,7 +155,7 @@ fn main() -> anyhow::Result<()> {
     let mut client = Client::new(ureq::Agent::new(), esplora_url);
     client.parallel_requests = 5;
 
-    fully_sync(&client, &mut tracker, &mut chain)?;
+    fully_sync(&client, &mut tracker, &mut chain, &mut graph)?;
 
     match args.command {
         Commands::Address { addr_cmd } => {
@@ -189,13 +190,13 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Balance => {
-            let (confirmed, unconfirmed) = tracker.iter_unspent_full(&chain).fold(
+            let (confirmed, unconfirmed) = tracker.iter_unspent_full(&chain, &graph).fold(
                 (0, 0),
                 |(confirmed, unconfirmed), (spk_index, utxo)| {
-                    if utxo.confirmed_at.is_some() || spk_index.0 == Keychain::Internal {
-                        (confirmed + utxo.value, unconfirmed)
+                    if utxo.height.is_some() || spk_index.0 == Keychain::Internal {
+                        (confirmed + utxo.txout.value, unconfirmed)
                     } else {
-                        (confirmed, unconfirmed + utxo.value)
+                        (confirmed, unconfirmed + utxo.txout.value)
                     }
                 },
             );
@@ -205,13 +206,13 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Txo { utxo_cmd } => match utxo_cmd {
             TxoCmd::List => {
-                for (spk_index, txout) in tracker.iter_txout_full(&chain) {
+                for (spk_index, txout) in tracker.iter_txout_full(&chain, &graph) {
                     let script = tracker.spk_at_index(spk_index).unwrap();
                     let address = Address::from_script(script, args.network).unwrap();
 
                     println!(
                         "{:?} {} {} {} spent:{:?}",
-                        spk_index, txout.value, txout.outpoint, address, txout.spent_by
+                        spk_index, txout.txout.value, txout.outpoint, address, txout.spent_by
                     )
                 }
             }
@@ -228,7 +229,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             let mut candidates = tracker
-                .iter_unspent_full(&chain)
+                .iter_unspent_full(&chain, &graph)
                 .filter_map(|((keychain, index), utxo)| {
                     Some((
                         tracker
@@ -243,21 +244,17 @@ fn main() -> anyhow::Result<()> {
             // apply coin selection algorithm
             match coin_select {
                 CoinSelectionAlgo::LargestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.value))
+                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.txout.value))
                 }
-                CoinSelectionAlgo::SmallestFirst => candidates.sort_by_key(|(_, utxo)| utxo.value),
-                CoinSelectionAlgo::OldestFirst => candidates.sort_by_key(|(_, utxo)| {
-                    utxo.confirmed_at
-                        .map(|utxo| utxo.height)
-                        .unwrap_or(u32::MAX)
-                }),
-                CoinSelectionAlgo::NewestFirst => candidates.sort_by_key(|(_, utxo)| {
-                    Reverse(
-                        utxo.confirmed_at
-                            .map(|utxo| utxo.height)
-                            .unwrap_or(u32::MAX),
-                    )
-                }),
+                CoinSelectionAlgo::SmallestFirst => {
+                    candidates.sort_by_key(|(_, utxo)| utxo.txout.value)
+                }
+                CoinSelectionAlgo::OldestFirst => {
+                    candidates.sort_by_key(|(_, utxo)| utxo.height.unwrap_or(u32::MAX))
+                }
+                CoinSelectionAlgo::NewestFirst => {
+                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.height.unwrap_or(u32::MAX)))
+                }
                 CoinSelectionAlgo::BranchAndBound => {}
             }
 
@@ -266,7 +263,7 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|(plan, utxo)| {
                     WeightedValue::new(
-                        utxo.value,
+                        utxo.txout.value,
                         plan.expected_weight() as _,
                         plan.witness_version().is_some(),
                     )
@@ -347,7 +344,7 @@ fn main() -> anyhow::Result<()> {
 
             let prevouts = selected_txos
                 .iter()
-                .map(|(_, utxo)| TxOut::from(utxo.clone()))
+                .map(|(_, utxo)| utxo.txout.clone())
                 .collect::<Vec<_>>();
             let sighash_prevouts = Prevouts::All(&prevouts);
 
@@ -425,6 +422,7 @@ pub fn fully_sync(
     client: &Client,
     tracker: &mut KeychainTracker<Keychain>,
     chain: &mut SparseChain,
+    graph: &mut TxGraph,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut active_indexes = vec![];
@@ -472,7 +470,7 @@ pub fn fully_sync(
         tracker.derive_spks(keychain, active_index);
     }
 
-    tracker.sync(&chain);
+    tracker.sync(&chain, &graph);
 
     Ok(())
 }
