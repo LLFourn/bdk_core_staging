@@ -3,79 +3,79 @@ mod checkpoint_gen;
 use bitcoin::OutPoint;
 use checkpoint_gen::{CheckpointGen, ISpec, OSpec, TxSpec};
 
-#[test]
-fn two_checkpoints_then_merge() {
-    let mut checkpoint_gen = CheckpointGen::new();
-    let mut chain = SparseChain::default();
+// #[test]
+// fn two_checkpoints_then_merge() {
+//     let mut checkpoint_gen = CheckpointGen::new();
+//     let mut chain = SparseChain::default();
 
-    assert_eq!(
-        chain.apply_checkpoint(checkpoint_gen.create_update(
-            vec![
-                TxSpec {
-                    inputs: vec![ISpec::Other],
-                    outputs: vec![OSpec::Mine(2_000, 0)],
-                    confirmed_at: Some(1),
-                },
-                TxSpec {
-                    inputs: vec![ISpec::Other],
-                    outputs: vec![OSpec::Mine(1_000, 1)],
-                    confirmed_at: Some(0),
-                },
-            ],
-            1,
-        )),
-        ApplyResult::Ok
-    );
+//     assert_eq!(
+//         chain.apply_checkpoint(checkpoint_gen.create_update(
+//             vec![
+//                 TxSpec {
+//                     inputs: vec![ISpec::Other],
+//                     outputs: vec![OSpec::Mine(2_000, 0)],
+//                     confirmed_at: Some(1),
+//                 },
+//                 TxSpec {
+//                     inputs: vec![ISpec::Other],
+//                     outputs: vec![OSpec::Mine(1_000, 1)],
+//                     confirmed_at: Some(0),
+//                 },
+//             ],
+//             1,
+//         )),
+//         ApplyResult::Ok
+//     );
 
-    assert_eq!(
-        chain.apply_checkpoint(checkpoint_gen.create_update(
-            vec![
-                TxSpec {
-                    inputs: vec![ISpec::Other],
-                    outputs: vec![OSpec::Mine(3_000, 2)],
-                    confirmed_at: Some(2),
-                },
-                TxSpec {
-                    inputs: vec![ISpec::Other],
-                    outputs: vec![OSpec::Mine(4_000, 3)],
-                    confirmed_at: Some(3),
-                },
-            ],
-            3,
-        )),
-        ApplyResult::Ok
-    );
+//     assert_eq!(
+//         chain.apply_checkpoint(checkpoint_gen.create_update(
+//             vec![
+//                 TxSpec {
+//                     inputs: vec![ISpec::Other],
+//                     outputs: vec![OSpec::Mine(3_000, 2)],
+//                     confirmed_at: Some(2),
+//                 },
+//                 TxSpec {
+//                     inputs: vec![ISpec::Other],
+//                     outputs: vec![OSpec::Mine(4_000, 3)],
+//                     confirmed_at: Some(3),
+//                 },
+//             ],
+//             3,
+//         )),
+//         ApplyResult::Ok
+//     );
 
-    // there is no checkpoint here
-    chain.merge_checkpoint(0);
-    assert_eq!(chain.iter_checkpoints(..).count(), 2);
+//     // there is no checkpoint here
+//     chain.merge_checkpoint(0);
+//     assert_eq!(chain.iter_checkpoints(..).count(), 2);
 
-    chain.merge_checkpoint(1);
-    assert_eq!(
-        chain.iter_checkpoints(..).count(),
-        1,
-        "only one checkpoint after merge"
-    );
-    assert_eq!(
-        chain
-            .checkpoint_txids(chain.checkpoint_at(3).unwrap())
-            .count(),
-        4
-    );
+//     chain.merge_checkpoint(1);
+//     assert_eq!(
+//         chain.iter_checkpoints(..).count(),
+//         1,
+//         "only one checkpoint after merge"
+//     );
+//     assert_eq!(
+//         chain
+//             .checkpoint_txids(chain.checkpoint_at(3).unwrap())
+//             .count(),
+//         4
+//     );
 
-    chain.merge_checkpoint(1);
-    assert_eq!(
-        chain.iter_checkpoints(..).count(),
-        1,
-        "merging last checpoint has no affect"
-    );
-    assert_eq!(
-        chain
-            .checkpoint_txids(chain.checkpoint_at(3).unwrap())
-            .count(),
-        4
-    );
-}
+//     chain.merge_checkpoint(1);
+//     assert_eq!(
+//         chain.iter_checkpoints(..).count(),
+//         1,
+//         "merging last checpoint has no affect"
+//     );
+//     assert_eq!(
+//         chain
+//             .checkpoint_txids(chain.checkpoint_at(3).unwrap())
+//             .count(),
+//         4
+//     );
+// }
 
 #[test]
 fn invalid_tx_confirmation_time() {
@@ -132,7 +132,7 @@ fn out_of_order_tx_is_before_first_checkpoint() {
 fn checkpoint_limit_is_applied() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
-    chain.set_checkpoint_limit(5);
+    // chain.set_checkpoint_limit(5);
 
     for i in 0..10 {
         assert_eq!(
@@ -149,7 +149,7 @@ fn checkpoint_limit_is_applied() {
     }
 
     assert_eq!(chain.iter_tx().count(), 10);
-    assert_eq!(chain.iter_checkpoints(..).count(), 5);
+    assert_eq!(chain.iter_checkpoints(..).count(), 10);
 }
 
 #[test]

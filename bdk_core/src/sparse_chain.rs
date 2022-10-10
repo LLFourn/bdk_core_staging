@@ -1,10 +1,7 @@
 use core::ops::RangeBounds;
 
 use crate::{collections::*, BlockId, BlockTime, Vec};
-use bitcoin::{
-    hashes::{sha256, Hash, HashEngine},
-    BlockHash, OutPoint, Script, Transaction, TxOut, Txid,
-};
+use bitcoin::{BlockHash, OutPoint, Script, Transaction, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {
@@ -17,9 +14,6 @@ pub struct SparseChain {
     txs: HashMap<Txid, TxAtBlock>,
     /// A list of mempool txids
     mempool: HashSet<Txid>,
-    /// The maximum number of checkpoints that the descriptor should store. When a new checkpoint is
-    /// added which would push it above the limit we merge the oldest two checkpoints together.
-    checkpoint_limit: Option<usize>,
 }
 
 /// We keep this for two reasons:
@@ -32,8 +26,7 @@ pub struct SparseChain {
 #[derive(Clone)]
 struct CheckpointData {
     block_hash: BlockHash,
-    ordered_txids: BTreeSet<(u32, Txid)>,
-    txid_digest: sha256::HashEngine,
+    ordered_txids: BTreeSet<Txid>,
 }
 
 impl core::fmt::Debug for CheckpointData {
@@ -41,10 +34,6 @@ impl core::fmt::Debug for CheckpointData {
         f.debug_struct("CheckpointData")
             .field("block_hash", &self.block_hash)
             .field("txids", &self.ordered_txids)
-            .field(
-                "txid_digest",
-                &sha256::Hash::from_engine(self.txid_digest.clone()),
-            )
             .finish()
     }
 }
@@ -78,14 +67,6 @@ pub enum StaleReason {
 }
 
 impl SparseChain {
-    /// Set the checkpoint limit for this tracker.
-    /// If the limit is exceeded the last two checkpoints are merged together.
-    pub fn set_checkpoint_limit(&mut self, limit: usize) {
-        assert!(limit > 1);
-        self.checkpoint_limit = Some(limit);
-        self.apply_checkpoint_limit()
-    }
-
     pub fn outspend(&self, outpoint: OutPoint) -> Option<Txid> {
         self.spends.get(&outpoint).cloned()
     }
@@ -104,14 +85,6 @@ impl SparseChain {
             .map(|(outpoint, txid)| (outpoint.vout, *txid))
     }
 
-    fn apply_checkpoint_limit(&mut self) {
-        // we merge the oldest two checkpoints because they are least likely to be reverted.
-        while self.checkpoints.len() > self.checkpoint_limit.unwrap_or(usize::MAX) {
-            let oldest = *self.checkpoints.iter().next().unwrap().0;
-            self.merge_checkpoint(oldest);
-        }
-    }
-
     /// Get the transaction ids in a particular checkpoint.
     ///
     /// The `Txid`s are ordered first by their confirmation height (ascending) and then lexically by their `Txid`.
@@ -122,7 +95,7 @@ impl SparseChain {
     pub fn checkpoint_txids(
         &self,
         checkpoint_id: BlockId,
-    ) -> impl DoubleEndedIterator<Item = Txid> + '_ {
+    ) -> impl DoubleEndedIterator<Item = &Txid> + '_ {
         let data = self
             .checkpoints
             .get(&checkpoint_id.height)
@@ -132,26 +105,7 @@ impl SparseChain {
             "tracker had a different block hash for checkpoint at that height"
         );
 
-        data.ordered_txids.iter().map(|(_, txid)| *txid)
-    }
-
-    /// Gets the SHA256 hash of all the `Txid`s of all the transactions included in all checkpoints
-    /// up to and including `checkpoint_id`.
-    ///
-    /// ## Panics
-    ///
-    /// This will panic if a checkpoint doesn't exist with `checkpoint_id`
-    pub fn txid_digest_at(&self, checkpoint_id: BlockId) -> sha256::Hash {
-        let data = self
-            .checkpoints
-            .get(&checkpoint_id.height)
-            .expect("the tracker did not have a checkpoint at that height");
-        assert_eq!(
-            data.block_hash, checkpoint_id.hash,
-            "tracker had a different block hash for checkpoint at that height"
-        );
-
-        sha256::Hash::from_engine(data.txid_digest.clone())
+        data.ordered_txids.iter()
     }
 
     /// Get the BlockId for the last known tip.
@@ -313,7 +267,6 @@ impl SparseChain {
             .or_insert_with(|| CheckpointData {
                 block_hash: new_checkpoint.new_tip.hash,
                 ordered_txids: Default::default(),
-                txid_digest: Default::default(),
             });
 
         let mut deepest_change = None;
@@ -322,13 +275,6 @@ impl SparseChain {
                 deepest_change = Some(deepest_change.unwrap_or(u32::MAX).min(change));
             }
         }
-        if let Some(change_depth) = deepest_change {
-            self.recompute_txid_digests(change_depth);
-        }
-
-        self.apply_checkpoint_limit();
-
-        debug_assert!(self.is_latest_checkpoint_hash_correct());
 
         ApplyResult::Ok
     }
@@ -388,43 +334,6 @@ impl SparseChain {
             }
         }
         None
-    }
-
-    /// Performs recomputation of transaction digest of checkpoint data
-    /// from the given height.
-    fn recompute_txid_digests(&mut self, from: u32) {
-        let mut prev_accum_digest = self
-            .checkpoints
-            .range(..from)
-            .last()
-            .map(|(_, prev)| prev.txid_digest.clone())
-            .unwrap_or_else(sha256::HashEngine::default);
-
-        for (_height, data) in self.checkpoints.range_mut(from..) {
-            let mut txid_digest = prev_accum_digest.clone();
-            for (_, txid) in &data.ordered_txids {
-                txid_digest.input(txid);
-            }
-
-            data.txid_digest = txid_digest.clone();
-            prev_accum_digest = txid_digest;
-        }
-    }
-
-    /// Takes the checkpoint at a height and merges its transactions into the next checkpoint
-    pub fn merge_checkpoint(&mut self, height: u32) {
-        if let Some(checkpoint) = self.checkpoints.remove(&height) {
-            match self.checkpoints.range_mut((height + 1)..).next() {
-                Some((_, next_one)) => {
-                    next_one.ordered_txids.extend(checkpoint.ordered_txids);
-                }
-                None => {
-                    // put it back because there's no checkpoint greater than it
-                    self.checkpoints.insert(height, checkpoint);
-                }
-            }
-        }
-        debug_assert!(self.is_latest_checkpoint_hash_correct());
     }
 
     /// Clear the mempool list. Use with caution.
@@ -533,9 +442,7 @@ impl SparseChain {
                     .next()
                     .expect("the caller must have checked that no txs are outside of range");
 
-                checkpoint_data
-                    .ordered_txids
-                    .insert((confirmation_time.height, txid));
+                checkpoint_data.ordered_txids.insert(txid);
 
                 Some(*checkpoint_height)
             }
@@ -551,7 +458,7 @@ impl SparseChain {
         let removed = self.checkpoints.split_off(&height);
 
         for (_height, data) in removed {
-            for (_, txid) in data.ordered_txids {
+            for txid in data.ordered_txids {
                 self.remove_tx(txid);
             }
         }
@@ -595,7 +502,7 @@ impl SparseChain {
         let confirmed_tx = self.checkpoints.iter().rev().flat_map(|(_, data)| {
             data.ordered_txids
                 .iter()
-                .map(|(_, txid)| (*txid, self.txs.get(txid).unwrap()))
+                .map(|txid| (*txid, self.txs.get(txid).unwrap()))
         });
 
         mempool_tx.into_iter().chain(confirmed_tx)
@@ -608,26 +515,6 @@ impl SparseChain {
     /// Get a stored transaction given its `Txid`.
     pub fn get_tx(&self, txid: Txid) -> Option<&TxAtBlock> {
         self.txs.get(&txid)
-    }
-
-    /// internal debug function to double check correctness of the accumulated digest at the tip
-    #[must_use]
-    fn is_latest_checkpoint_hash_correct(&self) -> bool {
-        if let Some(tip) = self.latest_checkpoint() {
-            let mut txs = self
-                .iter_tx()
-                .filter(|(_, tx)| tx.confirmation_time.is_some())
-                .collect::<Vec<_>>();
-            txs.sort_by_key(|(_, tx)| (tx.confirmation_time.unwrap().height, tx.tx.txid()));
-            let mut hasher = sha256::HashEngine::default();
-            for (txid, _) in txs {
-                hasher.input(&txid);
-            }
-            let txid_hash = sha256::Hash::from_engine(hasher);
-            self.txid_digest_at(tip) == txid_hash
-        } else {
-            true
-        }
     }
 }
 

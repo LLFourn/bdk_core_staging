@@ -2,7 +2,7 @@ use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     FullTxOut, SparseChain, Vec,
 };
-use bitcoin::{self, hashes::sha256, OutPoint, Script, Transaction, Txid};
+use bitcoin::{self, OutPoint, Script, Transaction, Txid};
 
 /// A *script pubkey* tracker.
 ///
@@ -27,8 +27,6 @@ pub struct SpkTracker<I> {
     txouts: BTreeMap<OutPoint, I>,
     /// A lookup from script pubkey derivation index to related outpoints
     spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
-    /// A set of previous txid digests the tracker has seen.
-    txid_digests_seen: HashSet<sha256::Hash>,
 }
 
 impl<I> Default for SpkTracker<I> {
@@ -39,7 +37,6 @@ impl<I> Default for SpkTracker<I> {
             spk_indexes: Default::default(),
             spk_txouts: Default::default(),
             unused: Default::default(),
-            txid_digests_seen: Default::default(),
         }
     }
 }
@@ -52,31 +49,26 @@ impl<I: Clone + Ord> SpkTracker<I> {
         let txids_to_add = chain
             .iter_checkpoints(..)
             .rev()
-            .take_while(|checkpoint_id| {
-                !self
-                    .txid_digests_seen
-                    .contains(&chain.txid_digest_at(*checkpoint_id))
-            })
+            // .take_while(|checkpoint_id| {
+            //     !self
+            //         .txid_digests_seen
+            //         .contains(&chain.txid_digest_at(*checkpoint_id))
+            // })
             .flat_map(|checkpoint_id| chain.checkpoint_txids(checkpoint_id))
-            .chain(chain.unconfirmed().iter().cloned())
+            .chain(chain.unconfirmed().iter())
             .collect::<Vec<_>>();
 
         for txid_to_add in txids_to_add {
             self.add_tx(txid_to_add, chain);
         }
-
-        if let Some(latest_checkpoint) = chain.latest_checkpoint() {
-            let latest_txid_digest = chain.txid_digest_at(latest_checkpoint);
-            self.txid_digests_seen.insert(latest_txid_digest);
-        }
     }
 
-    fn add_tx(&mut self, txid: Txid, chain: &SparseChain) {
-        let tx = &chain.get_tx(txid).expect("must exist").tx;
+    fn add_tx(&mut self, txid: &Txid, chain: &SparseChain) {
+        let tx = &chain.get_tx(*txid).expect("must exist").tx;
         for (i, out) in tx.output.iter().enumerate() {
             if let Some(index) = self.index_of_spk(&out.script_pubkey) {
                 let outpoint = OutPoint {
-                    txid,
+                    txid: *txid,
                     vout: i as u32,
                 };
 
