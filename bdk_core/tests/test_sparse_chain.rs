@@ -3,30 +3,33 @@ mod checkpoint_gen;
 use bitcoin::{hashes::Hash, BlockHash, OutPoint};
 use checkpoint_gen::{CheckpointGen, ISpec, OSpec, TxSpec};
 
-// TODO: How do we ensure `txids` do not have a height greater than `new_tip`?
-// TODO: This candidate is invalid, return error.
-// #[test]
-// fn invalid_tx_confirmation_time() {
-//     let mut checkpoint_gen = CheckpointGen::new();
-//     let mut chain = SparseChain::default();
-//     let mut graph = TxGraph::default();
+#[test]
+fn invalid_tx_confirmation_time() {
+    let mut checkpoint_gen = CheckpointGen::new();
+    let mut chain = SparseChain::default();
+    let mut graph = TxGraph::default();
 
-//     assert_eq!(
-//         chain.apply_checkpoint(checkpoint_gen.create_update(
-//             &mut graph,
-//             vec![TxSpec {
-//                 inputs: vec![ISpec::Other],
-//                 outputs: vec![OSpec::Mine(2_000, 1)],
-//                 confirmed_at: Some(2),
-//             },],
-//             1,
-//         )),
-//         ApplyResult::Ok
-//     );
+    let update = checkpoint_gen.create_update(
+        &mut graph,
+        vec![TxSpec {
+            inputs: vec![ISpec::Other],
+            outputs: vec![OSpec::Mine(2_000, 1)],
+            confirmed_at: Some(2),
+        }],
+        1,
+    );
 
-//     assert_eq!(chain.iter_checkpoints(..).count(), 1);
-//     assert_eq!(chain.iter_confirmed_txids().count(), 0);
-// }
+    assert_eq!(
+        chain.apply_checkpoint(update.clone()),
+        ApplyResult::Stale(StaleReason::TxidHeightGreaterThanNewTip {
+            tip: update.new_tip,
+            txid: update.txids[0]
+        }),
+    );
+
+    assert_eq!(chain.iter_checkpoints(..).count(), 0);
+    assert_eq!(chain.iter_txids().count(), 0);
+}
 
 #[test]
 fn out_of_order_tx_is_before_first_checkpoint() {

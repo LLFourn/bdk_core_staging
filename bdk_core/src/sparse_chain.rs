@@ -28,8 +28,7 @@ pub enum ApplyResult {
     // TODO: return a diff
     Ok,
     /// The checkpoint cannot be applied to the current state because it does not apply to the current
-    /// tip of the tracker or does not invalidate the right checkpoint such that it does.
-    // TDOD: Have a stale reason
+    /// tip of the tracker, or does not invalidate the right checkpoint, or the candidate is invalid.
     Stale(StaleReason),
     /// The checkpoint you tried to apply was inconsistent with the current state.
     ///
@@ -46,6 +45,10 @@ pub enum StaleReason {
     BaseTipNotMatching {
         got: Option<BlockId>,
         expected: BlockId,
+    },
+    TxidHeightGreaterThanNewTip {
+        tip: BlockId,
+        txid: (Txid, Option<u32>),
     },
 }
 
@@ -139,7 +142,7 @@ impl SparseChain {
     /// Applies a new candidate checkpoint to the tracker.
     #[must_use]
     pub fn apply_checkpoint(&mut self, new_checkpoint: CheckpointCandidate) -> ApplyResult {
-        // Enforce base-tip rule (if any)
+        // enforce base-tip rule (if any)
         if let Some(exp_tip) = new_checkpoint.base_tip {
             let current_tip = self.latest_checkpoint();
             if !matches!(current_tip, Some(tip) if tip == exp_tip) {
@@ -150,23 +153,31 @@ impl SparseChain {
             }
         }
 
-        // ensure all confirmed txs are still at the same height
         for (txid, new_height) in &new_checkpoint.txids {
-            let new_height = new_height.unwrap_or(u32::MAX);
+            // ensure new_height does not surpass new_tip
+            if matches!(new_height, Some(h) if h > &new_checkpoint.new_tip.height) {
+                return ApplyResult::Stale(StaleReason::TxidHeightGreaterThanNewTip {
+                    tip: new_checkpoint.new_tip,
+                    txid: (*txid, new_height.clone()),
+                });
+            }
 
+            // ensure all currently confirmed txs are still at the same height (unless, if they are
+            // to be invalidated)
             if let Some(&height) = self.txid_to_index.get(txid) {
-                // No need to check consistency if height will be invalidated
+                // no need to check consistency if height will be invalidated
                 if matches!(new_checkpoint.invalidate, Some(invalid) if height >= invalid.height) {
                     continue;
                 }
-
-                if new_height != height {
-                    // inconsistent
-                    return ApplyResult::Inconsistent {
-                        txid: *txid,
-                        conflicts_with: *txid,
-                    };
+                // consistent if height stays the same
+                if matches!(new_height, Some(new_height) if *new_height == height) {
+                    continue;
                 }
+                // inconsistent
+                return ApplyResult::Inconsistent {
+                    txid: *txid,
+                    conflicts_with: *txid,
+                };
             }
         }
 
