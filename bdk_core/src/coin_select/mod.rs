@@ -17,17 +17,10 @@ pub use bnb::*;
 pub const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
 
 /// Helper to calculate varint size. `v` is the value the varint represents.
-pub fn varint_size(v: usize) -> u32 {
-    if v <= 0xfc {
-        return 1;
-    }
-    if v <= 0xffff {
-        return 3;
-    }
-    if v <= 0xffff_ffff {
-        return 5;
-    }
-    return 9;
+// Shamelessly copied from
+// https://github.com/rust-bitcoin/rust-miniscript/blob/d5615acda1a7fdc4041a11c1736af139b8c7ebe8/src/util.rs#L8
+pub(crate) fn varint_size(v: usize) -> u32 {
+    bitcoin::VarInt(v as u64).len() as u32
 }
 
 #[cfg(feature = "std")]
