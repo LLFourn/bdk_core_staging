@@ -18,15 +18,13 @@ use bitcoin::{self, OutPoint, Script, Transaction};
 #[derive(Clone, Debug)]
 pub struct SpkTracker<I> {
     /// Derived script_pubkeys ordered by derivation index.
-    script_pubkeys: BTreeMap<I, Script>,
+    script_pubkeys: BTreeMap<I, (Script, HashSet<OutPoint>)>,
     /// A reverse lookup from out script_pubkeys to derivation index
     spk_indexes: HashMap<Script, I>,
     /// A set of unused derivation indices.
     unused: BTreeSet<I>,
     /// Index the Outpoints owned by this tracker to the index of script pubkey.
     txouts: BTreeMap<OutPoint, I>,
-    /// A lookup from script pubkey derivation index to related outpoints
-    spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
 }
 
 impl<I> Default for SpkTracker<I> {
@@ -35,7 +33,6 @@ impl<I> Default for SpkTracker<I> {
             txouts: Default::default(),
             script_pubkeys: Default::default(),
             spk_indexes: Default::default(),
-            spk_txouts: Default::default(),
             unused: Default::default(),
         }
     }
@@ -51,18 +48,16 @@ impl<I: Clone + Ord> SpkTracker<I> {
 
     fn add_tx(&mut self, tx: &Transaction) {
         for (i, out) in tx.output.iter().enumerate() {
-            if let Some(index) = self.index_of_spk(&out.script_pubkey) {
+            if let Some(index) = self.spk_indexes.get(&out.script_pubkey) {
                 let outpoint = OutPoint {
                     txid: tx.txid(),
                     vout: i as u32,
                 };
 
-                self.txouts.insert(outpoint, index.clone());
-                self.spk_txouts
-                    .entry(index.clone())
-                    .or_default()
-                    .insert(outpoint);
+                let (_, ops) = self.script_pubkeys.get_mut(index).expect("should exist");
+                ops.insert(outpoint);
 
+                self.txouts.insert(outpoint, index.clone());
                 self.unused.remove(&index);
             }
         }
@@ -125,12 +120,12 @@ impl<I: Clone + Ord> SpkTracker<I> {
     /// Returns the script that has been derived at the index.
     ///
     /// If that index hasn't been derived yet it will return `None`.
-    pub fn spk_at_index(&self, index: I) -> Option<&Script> {
+    pub fn spk_at_index(&self, index: I) -> Option<&(Script, HashSet<OutPoint>)> {
         self.script_pubkeys.get(&index)
     }
 
     /// Iterate over the script pubkeys that have been derived already
-    pub fn script_pubkeys(&self) -> &BTreeMap<I, Script> {
+    pub fn script_pubkeys(&self) -> &BTreeMap<I, (Script, HashSet<OutPoint>)> {
         &self.script_pubkeys
     }
 
@@ -138,10 +133,27 @@ impl<I: Clone + Ord> SpkTracker<I> {
     ///
     /// The tracker will look for transactions spending to/from this script pubkey on all checkpoints
     /// that are subsequently added.
-    pub fn add_spk(&mut self, index: I, spk: Script) {
-        self.spk_indexes.insert(spk.clone(), index.clone());
-        self.script_pubkeys.insert(index.clone(), spk);
-        self.unused.insert(index);
+    pub fn add_spk(&mut self, index: I, spk: Script) -> Result<bool, Script> {
+        let (entry_spk, entry_ops) = self
+            .script_pubkeys
+            .entry(index.clone())
+            .or_insert_with(|| (spk.clone(), HashSet::new()));
+
+        if entry_spk != &spk {
+            return Err(entry_spk.clone());
+        }
+
+        self.spk_indexes
+            .entry(spk.clone())
+            .or_insert_with(|| index.clone());
+
+        let changed = if entry_ops.is_empty() {
+            self.unused.insert(index)
+        } else {
+            false
+        };
+
+        Ok(changed)
     }
 
     /// Iterate over the script pubkeys that have been derived but do not have a transaction spending to them.
@@ -149,7 +161,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
         self.unused.iter().map(|index| {
             (
                 index.clone(),
-                self.spk_at_index(index.clone()).expect("must exist"),
+                &self.spk_at_index(index.clone()).expect("must exist").0,
             )
         })
     }
@@ -158,9 +170,9 @@ impl<I: Clone + Ord> SpkTracker<I> {
     ///
     /// i.e. has a transaction which spends to it.
     pub fn is_used(&self, index: I) -> bool {
-        self.spk_txouts
+        self.script_pubkeys
             .get(&index)
-            .map(|set| !set.is_empty())
+            .map(|(_, ops)| !ops.is_empty())
             .unwrap_or(false)
     }
 

@@ -179,7 +179,7 @@ fn main() -> anyhow::Result<()> {
                         true => change_keychain,
                         false => Keychain::External,
                     };
-                    for (index, spk) in tracker.script_pubkeys() {
+                    for (index, (spk, _)) in tracker.script_pubkeys() {
                         if index.0 == target_keychain {
                             let address = Address::from_script(&spk, args.network)
                                 .expect("should always be able to derive address");
@@ -207,7 +207,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Txo { utxo_cmd } => match utxo_cmd {
             TxoCmd::List => {
                 for (spk_index, txout) in tracker.iter_txout_full(&chain, &graph) {
-                    let script = tracker.spk_at_index(spk_index).unwrap();
+                    let (script, _) = tracker.spk_at_index(spk_index).unwrap();
                     let address = Address::from_script(script, args.network).unwrap();
 
                     println!(

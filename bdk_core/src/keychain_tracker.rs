@@ -95,7 +95,9 @@ impl<K: Clone + Ord + Debug> KeychainTracker<K> {
                 .derived_descriptor(&secp)
                 .expect("the descritpor cannot need hardened derivation")
                 .script_pubkey();
-            self.inner.add_spk((keychain.clone(), index), spk);
+            self.inner
+                .add_spk((keychain.clone(), index), spk)
+                .expect("spk index should not contain another script");
         }
 
         true
@@ -120,8 +122,10 @@ impl<K: Clone + Ord + Debug> KeychainTracker<K> {
             .script_pubkey();
 
         let index = (keychain.clone(), next_derivation_index);
-        self.inner.add_spk(index.clone(), new_spk);
-        let new_spk = self
+        self.inner
+            .add_spk(index.clone(), new_spk)
+            .expect("spk index should not contain another script");
+        let (new_spk, _) = self
             .inner
             .script_pubkeys()
             .get(&index)
