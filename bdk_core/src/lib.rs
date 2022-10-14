@@ -12,6 +12,8 @@ mod descriptor_ext;
 pub use descriptor_ext::*;
 mod sparse_chain;
 pub use sparse_chain::*;
+mod txout_ext;
+pub use txout_ext::*;
 
 #[allow(unused_imports)]
 #[macro_use]
