@@ -1,4 +1,4 @@
-use bitcoin::{OutPoint, Transaction, Txid};
+use bitcoin::{OutPoint, Transaction, TxIn, Txid};
 
 use crate::{alloc::vec::Vec, collections::*};
 
@@ -48,10 +48,7 @@ impl TxGraph {
             .iter()
             .map(|txin| txin.previous_output)
             .for_each(|outpoint| {
-                self.spends
-                    .entry(outpoint)
-                    .or_insert_with(HashSet::new)
-                    .insert(txid);
+                self.spends.entry(outpoint).or_default().insert(txid);
             });
 
         (0..tx.output.len() as u32)
@@ -67,17 +64,35 @@ impl TxGraph {
         self.spends.get(outpoint).map(|txids| txids.is_empty())
     }
 
-    /// Return all txids of conflicting transactions to the given tx.
-    pub fn conflicting_txids(&self, tx: &Transaction, include_self: bool) -> Vec<Txid> {
-        let mut txids = tx
-            .input
-            .iter()
-            .filter_map(|txin| self.spends.get(&txin.previous_output))
-            .flat_map(|txids| txids.iter())
-            .collect::<HashSet<_>>();
-        if !include_self {
-            txids.remove(&tx.txid());
-        }
-        txids.into_iter().cloned().collect()
+    /// Returns all txids of conflicting spends.
+    pub fn conflicting_spends<'g, 't>(
+        &'g self,
+        txid: &'t Txid,
+        txin: &TxIn,
+    ) -> impl Iterator<Item = &'g Txid> + 't
+    where
+        'g: 't,
+    {
+        self.spends
+            .get(&txin.previous_output)
+            .into_iter()
+            .flat_map(|spend_set| spend_set.iter())
+            .filter(move |&spend_txid| spend_txid != txid)
+    }
+
+    /// Return an iterator of conflicting txids, where the first field of the tuple is the vin of
+    /// the original tx in which the txid conflicts.
+    pub fn conflicting_txids<'g, 't>(
+        &'g self,
+        tx: &'t Transaction,
+    ) -> impl Iterator<Item = (usize, &'g Txid)> + 't
+    where
+        'g: 't,
+    {
+        tx.input.iter().enumerate().flat_map(|(vin, txin)| {
+            self.conflicting_spends(&tx.txid(), txin)
+                .map(move |spend_txid| (vin, spend_txid))
+                .collect::<Vec<_>>()
+        })
     }
 }
