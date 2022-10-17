@@ -6,19 +6,15 @@ use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, TxOut, Txid};
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {
     /// Block height to checkpoint data.
-    /// TODO: `<u32, C>` where C is checkpoint
     checkpoints: BTreeMap<u32, BlockHash>,
     /// Txids prepended by confirmation height.
-    /// TODO: `(I, Txid)` where I is tx_index
     txid_by_height: BTreeSet<(u32, Txid)>,
     /// Confirmation heights of txids.
-    /// TODO: `<Txid, I>` where I is tx_index
     txid_to_index: HashMap<Txid, u32>,
-    /// A list of mempool txids (TODO: Could we move this into txids?).
+    /// A list of mempool txids.
     mempool: HashSet<Txid>,
-    /// Limit number of checkpoints
-    /// 0 means no limit
-    checkpoint_limit: usize,
+    /// Limit number of checkpoints.
+    checkpoint_limit: Option<usize>,
 }
 
 /// The result of attempting to apply a checkpoint
@@ -299,16 +295,12 @@ impl SparseChain {
     }
 
     pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
-        self.checkpoint_limit = limit.unwrap_or(0);
+        self.checkpoint_limit = limit;
     }
 
     pub fn prune_checkpoints(&mut self) -> Option<BTreeMap<u32, BlockHash>> {
-        if self.checkpoint_limit > 0 {
-            if let Some(&height) = self.checkpoints.keys().rev().nth(self.checkpoint_limit) {
-                return Some(self.checkpoints.split_off(&height));
-            }
-        }
-        None
+        let height = *self.checkpoints.keys().rev().nth(self.checkpoint_limit?)?;
+        return Some(self.checkpoints.split_off(&height));
     }
 }
 
