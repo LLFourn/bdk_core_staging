@@ -1,4 +1,4 @@
-use core::ops::RangeBounds;
+use core::{fmt::Display, ops::RangeBounds};
 
 use crate::{collections::*, BlockId, TxGraph, Vec};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
@@ -90,13 +90,12 @@ impl SparseChain {
     }
 
     /// Return height of tx (if any).
-    pub fn transaction_height(&self, txid: &Txid) -> Option<Option<u32>> {
-        if self.mempool.contains(txid) {
-            return Some(None);
-        }
-
-        let height = self.txid_to_index.get(txid)?;
-        Some(Some(*height))
+    pub fn transaction_height(&self, txid: &Txid) -> Option<TxHeight> {
+        Some(if self.mempool.contains(txid) {
+            TxHeight::Mempool
+        } else {
+            TxHeight::Height(*self.txid_to_index.get(txid)?)
+        })
     }
 
     /// Return an iterator over the checkpoint locations in a height range.
@@ -320,11 +319,33 @@ pub struct CheckpointCandidate {
     pub new_tip: BlockId,
 }
 
+/// Represents the height in which a transaction is confirmed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TxHeight {
+    Height(u32),
+    Mempool,
+}
+
+impl Display for TxHeight {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Height(h) => core::write!(f, "confirmed_at({})", h),
+            Self::Mempool => core::write!(f, "unconfirmed"),
+        }
+    }
+}
+
+impl TxHeight {
+    pub fn is_confirmed(&self) -> bool {
+        matches!(self, Self::Height(_))
+    }
+}
+
 /// A `TxOut` with as much data as we can retreive about it
 #[derive(Debug, Clone, PartialEq)]
 pub struct FullTxOut {
     pub outpoint: OutPoint,
     pub txout: TxOut,
-    pub height: Option<u32>,
+    pub height: TxHeight,
     pub spent_by: Option<Txid>,
 }

@@ -45,7 +45,7 @@ fn add_single_unconfirmed_tx_and_then_confirm_it() {
         let (spk_index, txout) = txouts[0].clone();
         assert_eq!(spk_index, ((), 0));
         assert_eq!(txout.txout.value, 1_000);
-        assert_eq!(txout.height, None);
+        assert_eq!(txout.height, TxHeight::Mempool);
         assert_eq!(unspent, txouts);
     }
 
@@ -65,7 +65,7 @@ fn add_single_unconfirmed_tx_and_then_confirm_it() {
         let (spk_index, txout) = txouts[0].clone();
         assert_eq!(spk_index, ((), 0));
         assert_eq!(txout.txout.value, 1_000);
-        assert_eq!(txout.height, Some(1));
+        assert_eq!(txout.height, TxHeight::Height(1));
         assert_eq!(unspent, txouts);
     }
 }
@@ -116,7 +116,7 @@ fn orphaned_txout_no_longer_appears() {
         let (spk_index, txout) = txouts[0].clone();
         assert_eq!(spk_index, ((), 0));
         assert_eq!(txout.txout.value, 1_001);
-        assert_eq!(txout.height, Some(0));
+        assert_eq!(txout.height, TxHeight::Height(0));
         assert_eq!(unspent, txouts);
     }
 }
