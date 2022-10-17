@@ -1,7 +1,7 @@
-use core::ops::RangeBounds;
+use core::{fmt::Display, ops::RangeBounds};
 
-use crate::{collections::*, BlockId, BlockTime, TxGraph, Vec};
-use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, TxOut, Txid};
+use crate::{collections::*, BlockId, TxGraph, Vec};
+use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {
@@ -329,10 +329,34 @@ pub struct CheckpointCandidate {
     pub new_tip: BlockId,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct TxAtBlock {
-    pub tx: Transaction,
-    pub confirmation_time: Option<BlockTime>,
+// #[derive(Debug, Clone, PartialEq)]
+// pub struct TxAtBlock {
+//     pub tx: Transaction,
+//     pub confirmation_time: Option<BlockTime>,
+// }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TxHeight {
+    Height(u32),
+    Mempool,
+}
+
+impl Display for TxHeight {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Height(h) => core::write!(f, "confirmed_at({})", h),
+            Self::Mempool => core::write!(f, "unconfirmed"),
+        }
+    }
+}
+
+impl From<Option<u32>> for TxHeight {
+    fn from(opt: Option<u32>) -> Self {
+        match opt {
+            Some(h) => Self::Height(h),
+            None => Self::Mempool,
+        }
+    }
 }
 
 /// A `TxOut` with as much data as we can retreive about it

@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    BlockId, CheckpointCandidate, TxAtBlock,
+    BlockId, CheckpointCandidate,
 };
 pub use ureq;
 use ureq::Agent;
@@ -231,10 +231,7 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    transactions.push(TxAtBlock {
-                        tx: tx.to_tx(),
-                        confirmation_time: tx.status.to_block_time(),
-                    })
+                    transactions.push((tx.to_tx(), tx.status.to_block_time()))
                 }
             }
 
@@ -250,7 +247,7 @@ impl Client {
         let update = CheckpointCandidate {
             txids: transactions
                 .iter()
-                .map(|b_tx| (b_tx.tx.txid(), b_tx.confirmation_time.map(|t| t.height)))
+                .map(|(b_tx, b_time)| (b_tx.txid(), b_time.map(|t| t.height)))
                 .collect(),
             base_tip,
             invalidate,
