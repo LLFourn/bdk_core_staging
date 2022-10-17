@@ -1,7 +1,7 @@
 use core::ops::RangeBounds;
 
-use crate::{collections::*, BlockId, BlockTime, TxGraph, Vec};
-use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, TxOut, Txid};
+use crate::{collections::*, BlockId, TxGraph, Vec};
+use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {
@@ -90,7 +90,7 @@ impl SparseChain {
     }
 
     /// Return height of tx (if any).
-    pub fn transaction_at(&self, txid: &Txid) -> Option<Option<u32>> {
+    pub fn transaction_height(&self, txid: &Txid) -> Option<Option<u32>> {
         if self.mempool.contains(txid) {
             return Some(None);
         }
@@ -263,7 +263,7 @@ impl SparseChain {
     }
 
     pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut> {
-        let height = self.transaction_at(&outpoint.txid)?;
+        let height = self.transaction_height(&outpoint.txid)?;
 
         let txout = graph
             .tx(&outpoint.txid)
@@ -318,12 +318,6 @@ pub struct CheckpointCandidate {
     /// Sets the tip that this checkpoint was creaed for. All data in this checkpoint must be valid
     /// with respect to this tip.
     pub new_tip: BlockId,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct TxAtBlock {
-    pub tx: Transaction,
-    pub confirmation_time: Option<BlockTime>,
 }
 
 /// A `TxOut` with as much data as we can retreive about it

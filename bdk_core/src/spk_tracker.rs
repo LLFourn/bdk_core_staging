@@ -76,7 +76,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
     ) -> impl Iterator<Item = (I, OutPoint)> + '_ {
         // TODO: index unspent txouts somewhow
         self.iter_txout(graph)
-            .filter(|(_, outpoint)| chain.transaction_at(&outpoint.txid).is_some())
+            .filter(|(_, outpoint)| chain.transaction_height(&outpoint.txid).is_some())
             .filter(|(_, outpoint)| graph.is_unspent(outpoint).expect("should exist"))
     }
 
