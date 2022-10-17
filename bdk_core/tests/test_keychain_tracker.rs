@@ -34,7 +34,7 @@ fn add_single_unconfirmed_tx_and_then_confirm_it() {
     );
 
     assert_eq!(chain.iter_txids().count(), 1);
-    tracker.sync(&chain, &graph);
+    tracker.sync(&graph);
 
     {
         let txouts = tracker.iter_txout_full(&chain, &graph).collect::<Vec<_>>();
@@ -90,7 +90,7 @@ fn orphaned_txout_no_longer_appears() {
     );
 
     assert_eq!(chain.apply_checkpoint(checkpoint1.clone()), ApplyResult::Ok);
-    tracker.sync(&chain, &graph);
+    tracker.sync(&graph);
 
     let checkpoint2 = CheckpointCandidate {
         last_valid: None,
@@ -107,7 +107,7 @@ fn orphaned_txout_no_longer_appears() {
     };
 
     assert_eq!(chain.apply_checkpoint(checkpoint2.clone()), ApplyResult::Ok);
-    tracker.sync(&chain, &graph);
+    tracker.sync(&graph);
 
     assert_eq!(chain.apply_checkpoint(checkpoint2), ApplyResult::Ok);
     {
@@ -151,7 +151,7 @@ fn output_spend_and_created_in_same_checkpoint() {
     );
 
     assert_eq!(chain.apply_checkpoint(checkpoint1.clone()), ApplyResult::Ok);
-    tracker.sync(&chain, &graph);
+    tracker.sync(&graph);
 
     {
         let txouts = tracker.iter_txout_full(&chain, &graph).collect::<Vec<_>>();
@@ -192,7 +192,7 @@ fn spend_unspent_in_reorg() {
         0,
     );
     assert_eq!(chain.apply_checkpoint(first.clone()), ApplyResult::Ok);
-    tracker.sync(&chain, &graph);
+    tracker.sync(&graph);
     assert_eq!(tracker.iter_unspent(&chain, &graph).count(), 1); // TODO: fails here
     assert_eq!(tracker.iter_txout(&graph).count(), 1);
 
@@ -206,7 +206,7 @@ fn spend_unspent_in_reorg() {
         1,
     );
     assert_eq!(chain.apply_checkpoint(second.clone()), ApplyResult::Ok);
-    tracker.sync(&chain, &graph);
+    tracker.sync(&graph);
     assert_eq!(tracker.iter_unspent(&chain, &graph).count(), 2);
     assert_eq!(tracker.iter_txout(&graph).count(), 2);
 
@@ -227,7 +227,7 @@ fn spend_unspent_in_reorg() {
         )
     };
     assert_eq!(chain.apply_checkpoint(third), ApplyResult::Ok);
-    tracker.sync(&chain, &graph);
+    tracker.sync(&graph);
     assert_eq!(tracker.iter_unspent(&chain, &graph).count(), 0);
     assert_eq!(tracker.iter_txout(&graph).count(), 2);
 }

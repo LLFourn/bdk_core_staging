@@ -1,4 +1,4 @@
-use bitcoin::{OutPoint, Transaction, TxIn, Txid};
+use bitcoin::{OutPoint, Transaction, TxIn, TxOut, Txid};
 
 use crate::{alloc::vec::Vec, collections::*};
 
@@ -60,8 +60,23 @@ impl TxGraph {
         return true;
     }
 
+    /// Determines whether outpoint is spent or not. Returns `None` when outpoint does not exist in
+    /// graph.
     pub fn is_unspent(&self, outpoint: &OutPoint) -> Option<bool> {
         self.spends.get(outpoint).map(|txids| txids.is_empty())
+    }
+
+    /// Iterate over all txouts known by [`TxGraph`].
+    pub fn iter_txout<'g>(&'g self) -> impl Iterator<Item = (OutPoint, &'g TxOut)> {
+        self.txs.iter().flat_map(|(txid, tx)| {
+            tx.output.iter().enumerate().map(|(vout, txout)| {
+                let op = OutPoint {
+                    txid: *txid,
+                    vout: vout as u32,
+                };
+                (op, txout)
+            })
+        })
     }
 
     /// Returns all txids of conflicting spends.

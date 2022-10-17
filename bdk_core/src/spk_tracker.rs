@@ -2,7 +2,7 @@ use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     FullTxOut, SparseChain, TxGraph,
 };
-use bitcoin::{self, OutPoint, Script, Transaction};
+use bitcoin::{self, OutPoint, Script, Transaction, TxOut};
 
 /// A *script pubkey* tracker.
 ///
@@ -42,29 +42,20 @@ impl<I> Default for SpkTracker<I> {
 }
 
 impl<I: Clone + Ord> SpkTracker<I> {
-    pub fn sync(&mut self, chain: &SparseChain, graph: &TxGraph) {
-        chain
-            .iter_txids()
-            .map(|(_, txid)| graph.tx(&txid).expect("tx must exist"))
-            .for_each(|tx| self.add_tx(tx));
+    pub fn sync(&mut self, graph: &TxGraph) {
+        graph
+            .iter_txout()
+            .for_each(|(op, txout)| self.add_txout(&op, txout));
     }
 
-    fn add_tx(&mut self, tx: &Transaction) {
-        for (i, out) in tx.output.iter().enumerate() {
-            if let Some(index) = self.index_of_spk(&out.script_pubkey) {
-                let outpoint = OutPoint {
-                    txid: tx.txid(),
-                    vout: i as u32,
-                };
-
-                self.txouts.insert(outpoint, index.clone());
-                self.spk_txouts
-                    .entry(index.clone())
-                    .or_default()
-                    .insert(outpoint);
-
-                self.unused.remove(&index);
-            }
+    fn add_txout(&mut self, op: &OutPoint, txout: &TxOut) {
+        if let Some(spk_i) = self.index_of_spk(&txout.script_pubkey) {
+            self.txouts.insert(op.clone(), spk_i.clone());
+            self.spk_txouts
+                .entry(spk_i.clone())
+                .or_default()
+                .insert(op.clone());
+            self.unused.remove(&spk_i);
         }
     }
 
@@ -105,6 +96,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
         })
     }
 
+    /// Iterate over all known txouts that spend to tracked scriptPubKeys.
     pub fn iter_txout<'a>(
         &'a self,
         graph: &'a TxGraph,
@@ -113,6 +105,17 @@ impl<I: Clone + Ord> SpkTracker<I> {
             .iter()
             .filter(|(outpoint, _)| graph.tx(&outpoint.txid).is_some())
             .map(|(op, index)| (index.clone(), *op))
+    }
+
+    /// Iterate over all "valid" txouts (either confirmed, or still confirmable in mempool).
+    pub fn iter_valid_txout<'a>(
+        &'a self,
+        chain: &'a SparseChain,
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + 'a {
+        self.txouts
+            .iter()
+            .filter(|(op, _)| chain.transaction_height(&op.txid).is_some())
+            .map(|(op, spk_i)| (spk_i.clone(), *op))
     }
 
     /// Returns the index of the script pubkey at `outpoint`.

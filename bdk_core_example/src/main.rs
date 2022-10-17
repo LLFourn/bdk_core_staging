@@ -468,7 +468,7 @@ pub fn fully_sync(
         tracker.derive_spks(keychain, active_index);
     }
 
-    tracker.sync(&chain, &graph);
+    tracker.sync(&graph);
 
     Ok(())
 }
