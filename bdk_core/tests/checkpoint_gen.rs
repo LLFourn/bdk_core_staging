@@ -124,7 +124,7 @@ impl CheckpointGen {
             txids,
             new_tip,
             invalidate: None,
-            base_tip: self.prev_tip,
+            last_valid: self.prev_tip,
         };
 
         self.prev_tip = Some(new_tip);

@@ -147,7 +147,7 @@ fn adding_checkpoint_where_new_tip_is_base_tip_is_fine() {
     );
 
     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
-    update.base_tip = Some(update.new_tip);
+    update.last_valid = Some(update.new_tip);
     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
     assert_eq!(chain.iter_checkpoints(..).count(), 1);
 }
@@ -169,7 +169,7 @@ fn adding_checkpoint_which_contains_nothing_new_should_create_single_empty_check
     );
 
     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
-    update.base_tip = Some(update.new_tip);
+    update.last_valid = Some(update.new_tip);
     update.new_tip = BlockId {
         height: 1,
         ..Default::default()
@@ -177,7 +177,7 @@ fn adding_checkpoint_which_contains_nothing_new_should_create_single_empty_check
     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
     assert_eq!(chain.iter_checkpoints(..).count(), 2);
 
-    update.base_tip = Some(update.new_tip);
+    update.last_valid = Some(update.new_tip);
     update.new_tip = BlockId {
         height: 2,
         ..Default::default()
@@ -205,7 +205,7 @@ fn adding_checkpoint_where_tx_conftime_has_changed() {
     );
 
     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
-    update.base_tip = Some(update.new_tip);
+    update.last_valid = Some(update.new_tip);
     update.new_tip = BlockId {
         height: 1,
         ..Default::default()
@@ -236,9 +236,9 @@ fn invalidte_first_and_only_checkpoint() {
     assert_eq!(chain.apply_checkpoint(update1.clone()), ApplyResult::Ok);
 
     let update2 = CheckpointCandidate {
-        base_tip: Some(BlockId {
-            height: 0,
-            hash: BlockHash::all_zeros(),
+        last_valid: Some(BlockId {
+            height: 1,
+            hash: BlockHash::from_slice(&[1_u8; 32]).unwrap(),
         }),
         ..checkpoint_gen.create_update(
             &mut graph,
@@ -252,17 +252,14 @@ fn invalidte_first_and_only_checkpoint() {
     };
     assert_eq!(
         chain.apply_checkpoint(update2.clone()),
-        ApplyResult::Stale(StaleReason::BaseTipNotMatching {
-            got: chain.latest_checkpoint(),
-            expected: update2.base_tip.unwrap(),
+        ApplyResult::Stale(StaleReason::LastValidHashNotMatching {
+            got: chain.latest_checkpoint().map(|b| b.hash),
+            expected: update2.last_valid.unwrap(),
         })
     );
 
     let update3 = CheckpointCandidate {
-        base_tip: Some(BlockId {
-            height: 1,
-            hash: BlockHash::all_zeros(),
-        }),
+        last_valid: None,
         invalidate: Some(update1.new_tip),
         ..update2.clone()
     };
@@ -310,7 +307,7 @@ fn checkpoints_at_same_height_with_different_tx_applied_one_after_the_other() {
         0,
     );
 
-    update2.base_tip = Some(update1.new_tip);
+    update2.last_valid = Some(update1.new_tip);
     assert_eq!(chain.apply_checkpoint(update2.clone()), ApplyResult::Ok);
 
     assert_eq!(chain.iter_checkpoints(..).count(), 1);
@@ -399,7 +396,7 @@ fn empty_checkpoint_doesnt_get_removed() {
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate {
             txids: vec![],
-            base_tip: None,
+            last_valid: None,
             invalidate: None,
             new_tip: BlockId {
                 height: 0,

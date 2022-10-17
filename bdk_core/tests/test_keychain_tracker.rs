@@ -92,17 +92,20 @@ fn orphaned_txout_no_longer_appears() {
     assert_eq!(chain.apply_checkpoint(checkpoint1.clone()), ApplyResult::Ok);
     tracker.sync(&chain, &graph);
 
-    let mut checkpoint2 = checkpoint_gen.create_update(
-        &mut graph,
-        vec![TxSpec {
-            inputs: vec![ISpec::Other],
-            outputs: vec![OSpec::Mine(1_001, 1), OSpec::Other(1_800)],
-            confirmed_at: Some(0),
-        }],
-        0,
-    );
+    let checkpoint2 = CheckpointCandidate {
+        last_valid: None,
+        invalidate: Some(checkpoint1.new_tip),
+        ..checkpoint_gen.create_update(
+            &mut graph,
+            vec![TxSpec {
+                inputs: vec![ISpec::Other],
+                outputs: vec![OSpec::Mine(1_001, 1), OSpec::Other(1_800)],
+                confirmed_at: Some(0),
+            }],
+            0,
+        )
+    };
 
-    checkpoint2.invalidate = Some(checkpoint1.new_tip);
     assert_eq!(chain.apply_checkpoint(checkpoint2.clone()), ApplyResult::Ok);
     tracker.sync(&chain, &graph);
 
@@ -208,7 +211,7 @@ fn spend_unspent_in_reorg() {
     assert_eq!(tracker.iter_txout(&graph).count(), 2);
 
     let third = CheckpointCandidate {
-        base_tip: Some(second.new_tip),
+        last_valid: Some(first.new_tip),
         invalidate: Some(second.new_tip),
         ..checkpoint_gen.create_update(
             &mut graph,

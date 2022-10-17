@@ -38,13 +38,17 @@ pub enum StaleReason {
         got: Option<BlockHash>,
         expected: BlockId,
     },
-    BaseTipNotMatching {
-        got: Option<BlockId>,
+    LastValidHashNotMatching {
+        got: Option<BlockHash>,
         expected: BlockId,
     },
     TxidHeightGreaterThanNewTip {
         tip: BlockId,
         txid: (Txid, Option<u32>),
+    },
+    LastValidConflictsWithInvalidate {
+        last_valid: BlockId,
+        invalidate: BlockId,
     },
 }
 
@@ -119,7 +123,7 @@ impl SparseChain {
                 .into_iter()
                 .map(|txid| (txid, Some(block_id.height)))
                 .collect(),
-            base_tip: self.latest_checkpoint(),
+            last_valid: self.latest_checkpoint(),
             invalidate: None,
             new_tip: block_id,
         };
@@ -137,12 +141,24 @@ impl SparseChain {
     #[must_use]
     pub fn apply_checkpoint(&mut self, new_checkpoint: CheckpointCandidate) -> ApplyResult {
         // enforce base-tip rule (if any)
-        if let Some(exp_tip) = new_checkpoint.base_tip {
-            let current_tip = self.latest_checkpoint();
-            if !matches!(current_tip, Some(tip) if tip == exp_tip) {
-                return ApplyResult::Stale(StaleReason::BaseTipNotMatching {
-                    got: current_tip,
-                    expected: exp_tip,
+        if let Some(last_valid) = &new_checkpoint.last_valid {
+            // ensure last_valid & invalidate makes sense
+            if let Some(invalid) = &new_checkpoint.invalidate {
+                if invalid.height <= last_valid.height {
+                    return ApplyResult::Stale(StaleReason::LastValidConflictsWithInvalidate {
+                        last_valid: last_valid.clone(),
+                        invalidate: invalid.clone(),
+                    });
+                }
+            }
+
+            let current_hash = self.checkpoints.get(&last_valid.height);
+
+            // if block exists, but is of a different hash, this is invalid
+            if matches!(current_hash, Some(h) if h != &last_valid.hash) {
+                return ApplyResult::Stale(StaleReason::LastValidHashNotMatching {
+                    got: current_hash.cloned(),
+                    expected: last_valid.clone(),
                 });
             }
         }
@@ -311,7 +327,7 @@ pub struct CheckpointCandidate {
     pub txids: Vec<(Txid, Option<u32>)>,
     /// The new checkpoint can be applied upon this tip. A tracker will usually reject updates that
     /// do not have `base_tip` equal to it's latest valid checkpoint.
-    pub base_tip: Option<BlockId>,
+    pub last_valid: Option<BlockId>,
     /// Invalidates a block before considering this checkpoint.
     pub invalidate: Option<BlockId>,
     /// Sets the tip that this checkpoint was creaed for. All data in this checkpoint must be valid

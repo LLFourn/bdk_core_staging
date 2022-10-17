@@ -175,11 +175,11 @@ impl Client {
         let mut transactions = vec![];
         let mut last_active_index = None;
         let mut invalidate = None;
-        let mut base_tip = None;
+        let mut last_valid = None;
 
         for tip in known_tips {
             if self.is_block_present(tip)? {
-                base_tip = Some(tip);
+                last_valid = Some(tip);
                 break;
             } else {
                 invalidate = Some(tip);
@@ -249,7 +249,7 @@ impl Client {
                 .iter()
                 .map(|(tx, conf)| (tx.txid(), conf.map(|b| b.height)))
                 .collect(),
-            base_tip,
+            last_valid,
             invalidate,
             new_tip,
         };
