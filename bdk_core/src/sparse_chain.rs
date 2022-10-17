@@ -71,8 +71,7 @@ impl SparseChain {
 
         let h = block_id.height;
 
-        self.txid_by_height
-            .range((h, Txid::all_zeros())..(h + 1, Txid::all_zeros()))
+        self.txid_by_height.range((h, Txid::all_zeros())..)
     }
 
     /// Get the BlockId for the last known tip.
