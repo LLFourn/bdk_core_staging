@@ -103,17 +103,6 @@ impl<I: Clone + Ord> SpkTracker<I> {
         self.txouts.iter().map(|(op, index)| (index.clone(), *op))
     }
 
-    /// Iterate over all "valid" txouts (either confirmed, or still confirmable in mempool).
-    pub fn iter_valid_txout<'a>(
-        &'a self,
-        chain: &'a SparseChain,
-    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + 'a {
-        self.txouts
-            .iter()
-            .filter(|(op, _)| chain.transaction_height(&op.txid).is_some())
-            .map(|(op, spk_i)| (spk_i.clone(), *op))
-    }
-
     /// Returns the index of the script pubkey at `outpoint`.
     ///
     /// This returns `Some(spk_index)` if the txout has been found with a script pubkey in the tracker.
