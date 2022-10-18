@@ -96,9 +96,9 @@ impl SparseChain {
     /// Return height of tx (if any).
     pub fn transaction_height(&self, txid: &Txid) -> Option<TxHeight> {
         Some(if self.mempool.contains(txid) {
-            TxHeight::Mempool
+            TxHeight::Unconfirmed
         } else {
-            TxHeight::Height(*self.txid_to_index.get(txid)?)
+            TxHeight::Confirmed(*self.txid_to_index.get(txid)?)
         })
     }
 
@@ -352,22 +352,22 @@ pub struct CheckpointCandidate {
 /// Represents the height in which a transaction is confirmed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TxHeight {
-    Height(u32),
-    Mempool,
+    Confirmed(u32),
+    Unconfirmed,
 }
 
 impl Display for TxHeight {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Height(h) => core::write!(f, "confirmed_at({})", h),
-            Self::Mempool => core::write!(f, "unconfirmed"),
+            Self::Confirmed(h) => core::write!(f, "confirmed_at({})", h),
+            Self::Unconfirmed => core::write!(f, "unconfirmed"),
         }
     }
 }
 
 impl TxHeight {
     pub fn is_confirmed(&self) -> bool {
-        matches!(self, Self::Height(_))
+        matches!(self, Self::Confirmed(_))
     }
 }
 
