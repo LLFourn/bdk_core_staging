@@ -190,23 +190,31 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Balance => {
-            let (confirmed, unconfirmed) = tracker.iter_unspent_full(&chain, &graph).fold(
-                (0, 0),
-                |(confirmed, unconfirmed), (spk_index, utxo)| {
+            // tracker.iter_unspent(&chain, &graph)
+            //     .filter_map(|(spk_i, op)| chain.full_txout(graph, op));
+            let (confirmed, unconfirmed) = tracker
+                .iter_unspent(&chain, &graph)
+                .filter_map(|(spk_i, op)| chain.full_txout(&graph, op).map(|utxo| (spk_i, utxo)))
+                .fold((0, 0), |(confirmed, unconfirmed), (spk_index, utxo)| {
                     if utxo.height.is_confirmed() || spk_index.0 == Keychain::Internal {
                         (confirmed + utxo.txout.value, unconfirmed)
                     } else {
                         (confirmed, unconfirmed + utxo.txout.value)
                     }
-                },
-            );
+                });
 
             println!("confirmed: {}", confirmed);
             println!("unconfirmed: {}", unconfirmed);
         }
         Commands::Txo { utxo_cmd } => match utxo_cmd {
             TxoCmd::List => {
-                for (spk_index, txout) in tracker.iter_txout_full(&chain, &graph) {
+                for (spk_index, txout) in
+                    tracker
+                        .iter_unspent(&chain, &graph)
+                        .filter_map(|(spk_i, op)| {
+                            chain.full_txout(&graph, op).map(|utxo| (spk_i, utxo))
+                        })
+                {
                     let script = tracker.spk_at_index(spk_index).unwrap();
                     let address = Address::from_script(script, args.network).unwrap();
 
@@ -229,7 +237,8 @@ fn main() -> anyhow::Result<()> {
             };
 
             let mut candidates = tracker
-                .iter_unspent_full(&chain, &graph)
+                .iter_unspent(&chain, &graph)
+                .filter_map(|(spk_i, op)| chain.full_txout(&graph, op).map(|utxo| (spk_i, utxo)))
                 .filter_map(|((keychain, index), utxo)| {
                     Some((
                         tracker

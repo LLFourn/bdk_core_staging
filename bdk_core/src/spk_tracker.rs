@@ -1,6 +1,6 @@
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    FullTxOut, SparseChain, TxGraph,
+    SparseChain, TxGraph,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut};
 
@@ -60,6 +60,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
     }
 
     /// Iterate over unspent transactions outputs (i.e. UTXOs).
+    /// TODO: Remove when we add `UnspentTracker`.
     pub fn iter_unspent<'a>(
         &'a self,
         chain: &'a SparseChain,
@@ -69,31 +70,6 @@ impl<I: Clone + Ord> SpkTracker<I> {
         self.iter_txout()
             .filter(|(_, outpoint)| chain.transaction_height(&outpoint.txid).is_some())
             .filter(|(_, outpoint)| graph.is_unspent(outpoint).expect("should exist"))
-    }
-
-    /// Convience method for retreiving  the same txouts [`iter_unspent`] gives and turning each outpoint into a `FullTxOut`
-    /// using data from `chain`.
-    ///
-    /// [`iter_unspent`]: Self::iter_unspent
-    pub fn iter_unspent_full<'a>(
-        &'a self,
-        chain: &'a SparseChain,
-        graph: &'a TxGraph,
-    ) -> impl Iterator<Item = (I, FullTxOut)> + 'a {
-        self.iter_txout_full(chain, graph)
-            .filter(|(_, txout)| txout.spent_by.is_none())
-    }
-
-    /// Iterate over all the transaction outputs disovered by the tracker along with their
-    /// associated script index.
-    pub fn iter_txout_full<'a>(
-        &'a self,
-        chain: &'a SparseChain,
-        graph: &'a TxGraph,
-    ) -> impl DoubleEndedIterator<Item = (I, FullTxOut)> + 'a {
-        self.txouts.iter().filter_map(|(outpoint, spk_index)| {
-            Some((spk_index.clone(), chain.full_txout(graph, *outpoint)?))
-        })
     }
 
     /// Iterate over all known txouts that spend to tracked scriptPubKeys.

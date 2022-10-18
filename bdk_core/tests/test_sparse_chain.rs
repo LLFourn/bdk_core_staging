@@ -69,7 +69,7 @@ fn checkpoint_limit_is_applied() {
     let mut checkpoint_gen = CheckpointGen::new();
     let mut chain = SparseChain::default();
     let mut graph = TxGraph::default();
-    // chain.set_checkpoint_limit(5);
+    chain.set_checkpoint_limit(Some(5));
 
     for i in 0..10 {
         assert_eq!(
@@ -87,7 +87,9 @@ fn checkpoint_limit_is_applied() {
     }
 
     assert_eq!(chain.iter_confirmed_txids().count(), 10);
-    assert_eq!(chain.iter_checkpoints(..).count(), 10);
+    let latest = chain.latest_checkpoint();
+    assert_eq!(chain.iter_checkpoints(..).count(), 5);
+    assert_eq!(chain.latest_checkpoint(), latest);
 }
 
 #[test]
