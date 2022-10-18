@@ -252,9 +252,9 @@ fn invalidte_first_and_only_checkpoint() {
     };
     assert_eq!(
         chain.apply_checkpoint(update2.clone()),
-        ApplyResult::Stale(StaleReason::LastValidHashNotMatching {
-            got: chain.latest_checkpoint().map(|b| b.hash),
-            expected: update2.last_valid.unwrap(),
+        ApplyResult::Stale(StaleReason::LastValidDoesNotExist {
+            got: chain.latest_checkpoint(),
+            last_valid: update2.last_valid.unwrap(),
         })
     );
 

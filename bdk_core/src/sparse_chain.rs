@@ -34,21 +34,21 @@ pub enum ApplyResult {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StaleReason {
-    InvalidationHashNotMatching {
-        got: Option<BlockHash>,
-        expected: BlockId,
+    LastValidDoesNotExist {
+        got: Option<BlockId>,
+        last_valid: BlockId,
     },
-    LastValidHashNotMatching {
-        got: Option<BlockHash>,
-        expected: BlockId,
+    LastValidConflictsNewTip {
+        new_tip: BlockId,
+        last_valid: BlockId,
+    },
+    InvalidateDoesNotPreceedLastValid {
+        preceeds_last_valid: Option<BlockId>,
+        invalidate: BlockId,
     },
     TxidHeightGreaterThanNewTip {
         tip: BlockId,
         txid: (Txid, Option<u32>),
-    },
-    LastValidConflictsWithInvalidate {
-        last_valid: BlockId,
-        invalidate: BlockId,
     },
 }
 
@@ -140,25 +140,49 @@ impl SparseChain {
     /// Applies a new candidate checkpoint to the tracker.
     #[must_use]
     pub fn apply_checkpoint(&mut self, new_checkpoint: CheckpointCandidate) -> ApplyResult {
-        // enforce base-tip rule (if any)
+        // `last_valid` should always exist on chain
+        // `new_tip` should be greater than or equal to `last_valid`
         if let Some(last_valid) = &new_checkpoint.last_valid {
-            // ensure last_valid & invalidate makes sense
-            if let Some(invalid) = &new_checkpoint.invalidate {
-                if invalid.height <= last_valid.height {
-                    return ApplyResult::Stale(StaleReason::LastValidConflictsWithInvalidate {
-                        last_valid: last_valid.clone(),
-                        invalidate: invalid.clone(),
-                    });
-                }
+            let block_h = self.checkpoints.get(&last_valid.height);
+
+            // `last_valid` should exist and have the same hash
+            if !matches!(block_h, Some(h) if h == &last_valid.hash) {
+                return ApplyResult::Stale(StaleReason::LastValidDoesNotExist {
+                    got: block_h.map(|&hash| BlockId {
+                        height: last_valid.height,
+                        hash,
+                    }),
+                    last_valid: last_valid.clone(),
+                });
             }
 
-            let current_hash = self.checkpoints.get(&last_valid.height);
+            // new tip should be of equal or greater height than last_valid
+            if last_valid.height > new_checkpoint.new_tip.height
+                // if new tip is at the same height as last valid, block hashes should also match
+                || last_valid.height == new_checkpoint.new_tip.height
+                    && last_valid.hash != new_checkpoint.new_tip.hash
+            {
+                return ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
+                    new_tip: new_checkpoint.new_tip,
+                    last_valid: last_valid.clone(),
+                });
+            }
+        }
 
-            // if block exists, but is of a different hash, this is invalid
-            if matches!(current_hash, Some(h) if h != &last_valid.hash) {
-                return ApplyResult::Stale(StaleReason::LastValidHashNotMatching {
-                    got: current_hash.cloned(),
-                    expected: last_valid.clone(),
+        // `invalidate` (if any) should be the checkpoint directly following `last_valid`
+        if let Some(invalidate) = &new_checkpoint.invalidate {
+            // obtain checkpoint following `last_valid`
+            let next_block = match &new_checkpoint.last_valid {
+                Some(last_valid) => self.checkpoints.range(last_valid.height..).nth(1),
+                None => self.checkpoints.iter().next(),
+            }
+            .map(|(&height, &hash)| BlockId { height, hash });
+
+            // ensure next checkpoint is the same as `invalidate`
+            if !matches!(next_block.as_ref(), Some(b) if b == invalidate) {
+                return ApplyResult::Stale(StaleReason::InvalidateDoesNotPreceedLastValid {
+                    preceeds_last_valid: next_block,
+                    invalidate: invalidate.clone(),
                 });
             }
         }
@@ -192,14 +216,6 @@ impl SparseChain {
         }
 
         if let Some(invalid) = &new_checkpoint.invalidate {
-            let block_hash = self.checkpoints.get(&invalid.height);
-            if !matches!(block_hash, Some(h) if h == &invalid.hash) {
-                return ApplyResult::Stale(StaleReason::InvalidationHashNotMatching {
-                    got: block_hash.cloned(),
-                    expected: invalid.clone(),
-                });
-            }
-
             self.invalidate_checkpoints(invalid.height);
         }
 
@@ -216,7 +232,6 @@ impl SparseChain {
                     }
                 }
                 None => {
-                    // TODO: Use u32::MAX for mempool?
                     self.mempool.insert(txid);
                 }
             }
