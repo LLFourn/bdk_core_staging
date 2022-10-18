@@ -1,6 +1,6 @@
-use bitcoin::{OutPoint, Transaction, TxIn, TxOut, Txid};
+use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
-use crate::{alloc::vec::Vec, collections::*, Box};
+use crate::{collections::*, Box};
 
 #[derive(Clone, Debug, Default)]
 pub struct TxGraph {
@@ -92,36 +92,23 @@ impl TxGraph {
         })
     }
 
-    /// Returns all txids of conflicting spends.
-    pub fn conflicting_spends<'g, 't>(
-        &'g self,
-        txid: &'t Txid,
-        txin: &TxIn,
-    ) -> impl Iterator<Item = &'g Txid> + 't
-    where
-        'g: 't,
-    {
-        self.spends
-            .get(&txin.previous_output)
-            .into_iter()
-            .flat_map(|spend_set| spend_set.iter())
-            .filter(move |&spend_txid| spend_txid != txid)
-    }
-
     /// Return an iterator of conflicting txids, where the first field of the tuple is the vin of
     /// the original tx in which the txid conflicts.
-    pub fn conflicting_txids<'g, 't>(
+    pub fn conflicting_txids<'g>(
         &'g self,
-        tx: &'t Transaction,
-    ) -> impl Iterator<Item = (usize, &'g Txid)> + 't
-    where
-        'g: 't,
-    {
-        tx.input.iter().enumerate().flat_map(|(vin, txin)| {
-            self.conflicting_spends(&tx.txid(), txin)
-                .map(move |spend_txid| (vin, spend_txid))
-                .collect::<Vec<_>>()
-        })
+        tx: &'g Transaction,
+    ) -> impl Iterator<Item = (usize, Txid)> + '_ {
+        tx.input
+            .iter()
+            .enumerate()
+            .flat_map(|(vin, txin)| {
+                self.spends
+                    .get(&txin.previous_output)
+                    .into_iter()
+                    .flat_map(|spend_set| spend_set.iter())
+                    .map(move |&spend_txid| (vin, spend_txid))
+            })
+            .filter(move |(_, spend_txid)| spend_txid != &tx.txid())
     }
 }
 
