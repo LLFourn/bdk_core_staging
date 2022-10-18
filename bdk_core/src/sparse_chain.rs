@@ -326,9 +326,18 @@ impl SparseChain {
         self.checkpoint_limit = limit;
     }
 
-    pub fn prune_checkpoints(&mut self) -> Option<BTreeMap<u32, BlockHash>> {
-        let height = *self.checkpoints.keys().rev().nth(self.checkpoint_limit?)?;
-        return Some(self.checkpoints.split_off(&height));
+    fn prune_checkpoints(&mut self) -> Option<BTreeMap<u32, BlockHash>> {
+        let limit = self.checkpoint_limit?;
+
+        // find last height to be pruned
+        let last_height = *self.checkpoints.keys().rev().nth(limit)?;
+        // first height to be kept
+        let keep_height = last_height + 1;
+
+        let mut split = self.checkpoints.split_off(&keep_height);
+        core::mem::swap(&mut self.checkpoints, &mut split);
+
+        Some(split)
     }
 }
 
