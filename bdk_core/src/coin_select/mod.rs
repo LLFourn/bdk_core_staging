@@ -158,19 +158,20 @@ pub mod tester {
     use miniscript::{
         plan::{Assets, Plan},
         Descriptor, DescriptorPublicKey,
+        descriptor::KeyMap,
     };
 
     #[derive(Debug, Clone)]
     pub struct TestCandidate {
         pub txo: TxOut,
-        pub plan: Plan<DescriptorPublicKey>,
+        pub plan: Plan,
     }
 
     impl From<TestCandidate> for WeightedValue {
         fn from(test_candidate: TestCandidate) -> Self {
             Self {
                 value: test_candidate.txo.value,
-                weight: TXIN_BASE_WEIGHT + test_candidate.plan.expected_weight() as u32,
+                weight: TXIN_BASE_WEIGHT + test_candidate.plan.satisfaction_weight() as u32,
                 input_count: 1,
                 is_segwit: test_candidate.plan.witness_version().is_some(),
             }
@@ -179,26 +180,22 @@ pub mod tester {
 
     pub struct Tester {
         descriptor: Descriptor<DescriptorPublicKey>,
-        assets: Assets<DescriptorPublicKey>,
+        secrets: KeyMap,
     }
 
     impl Tester {
         pub fn new(secp: &Secp256k1<All>, desc_str: &str) -> Self {
             // let desc_str = "tr(xprv9uBuvtdjghkz8D1qzsSXS9Vs64mqrUnXqzNccj2xcvnCHPpXKYE1U2Gbh9CDHk8UPyF2VuXpVkDA7fk5ZP4Hd9KnhUmTscKmhee9Dp5sBMK)";
-            let (descriptor, seckeys) =
+            let (descriptor, secrets) =
                 Descriptor::<DescriptorPublicKey>::parse_descriptor(secp, desc_str).unwrap();
 
-            let assets = Assets {
-                keys: seckeys.keys().cloned().collect(),
-                ..Default::default()
-            };
-
-            Self { descriptor, assets }
+            Self { descriptor, secrets }
         }
 
         pub fn gen_candidate(&self, derivation_index: u32, value: u64) -> TestCandidate {
             let descriptor = self.descriptor.at_derivation_index(derivation_index);
-            let plan = descriptor.plan_satisfaction(&self.assets).unwrap();
+            let assets = Assets::new().add(descriptor.available_keys(&self.secrets));
+            let plan = descriptor.get_plan(&assets).unwrap();
             let txo = TxOut {
                 value,
                 script_pubkey: descriptor.script_pubkey(),
@@ -220,7 +217,7 @@ pub mod tester {
             CoinSelectorOpt::fund_outputs(
                 &[recipient.txo],
                 &drain.txo,
-                drain.plan.expected_weight() as u32,
+                drain.plan.satisfaction_weight() as u32,
             )
         }
     }
