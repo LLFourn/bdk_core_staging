@@ -281,9 +281,8 @@ impl SparseChain {
         let height = self.transaction_height(&outpoint.txid)?;
 
         let txout = graph
-            .tx(&outpoint.txid)
-            .map(|tx| tx.output.get(outpoint.vout as usize))
-            .flatten()
+            .tx(&outpoint.txid)?
+            .output(outpoint.vout as _)
             .cloned()?;
 
         let spent_by = graph
