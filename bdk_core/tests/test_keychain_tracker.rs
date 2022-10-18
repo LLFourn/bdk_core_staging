@@ -194,7 +194,7 @@ fn spend_unspent_in_reorg() {
     assert_eq!(chain.apply_checkpoint(first.clone()), ApplyResult::Ok);
     tracker.sync(&graph);
     assert_eq!(tracker.iter_unspent(&chain, &graph).count(), 1); // TODO: fails here
-    assert_eq!(tracker.iter_txout(&graph).count(), 1);
+    assert_eq!(tracker.iter_txout().count(), 1);
 
     let second = checkpoint_gen.create_update(
         &mut graph,
@@ -208,7 +208,7 @@ fn spend_unspent_in_reorg() {
     assert_eq!(chain.apply_checkpoint(second.clone()), ApplyResult::Ok);
     tracker.sync(&graph);
     assert_eq!(tracker.iter_unspent(&chain, &graph).count(), 2);
-    assert_eq!(tracker.iter_txout(&graph).count(), 2);
+    assert_eq!(tracker.iter_txout().count(), 2);
 
     let third = CheckpointCandidate {
         last_valid: Some(first.new_tip),
@@ -229,5 +229,5 @@ fn spend_unspent_in_reorg() {
     assert_eq!(chain.apply_checkpoint(third), ApplyResult::Ok);
     tracker.sync(&graph);
     assert_eq!(tracker.iter_unspent(&chain, &graph).count(), 0);
-    assert_eq!(tracker.iter_txout(&graph).count(), 2);
+    assert_eq!(tracker.iter_txout().count(), 2);
 }

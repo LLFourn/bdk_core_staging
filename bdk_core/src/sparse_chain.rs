@@ -340,11 +340,11 @@ pub struct CheckpointCandidate {
     /// for the new checkpoint to be included.
     pub txids: Vec<(Txid, Option<u32>)>,
     /// The new checkpoint can be applied upon this tip. A tracker will usually reject updates that
-    /// do not have `base_tip` equal to it's latest valid checkpoint.
+    /// do not have `last_valid` equal to it's latest valid checkpoint.
     pub last_valid: Option<BlockId>,
     /// Invalidates a block before considering this checkpoint.
     pub invalidate: Option<BlockId>,
-    /// Sets the tip that this checkpoint was creaed for. All data in this checkpoint must be valid
+    /// Sets the tip that this checkpoint was created for. All data in this checkpoint must be valid
     /// with respect to this tip.
     pub new_tip: BlockId,
 }

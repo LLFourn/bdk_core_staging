@@ -66,7 +66,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
         graph: &'a TxGraph,
     ) -> impl Iterator<Item = (I, OutPoint)> + '_ {
         // TODO: index unspent txouts somewhow
-        self.iter_txout(graph)
+        self.iter_txout()
             .filter(|(_, outpoint)| chain.transaction_height(&outpoint.txid).is_some())
             .filter(|(_, outpoint)| graph.is_unspent(outpoint).expect("should exist"))
     }
@@ -99,12 +99,8 @@ impl<I: Clone + Ord> SpkTracker<I> {
     /// Iterate over all known txouts that spend to tracked scriptPubKeys.
     pub fn iter_txout<'a>(
         &'a self,
-        graph: &'a TxGraph,
-    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + 'a {
-        self.txouts
-            .iter()
-            .filter(|(outpoint, _)| graph.tx(&outpoint.txid).is_some())
-            .map(|(op, index)| (index.clone(), *op))
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + ExactSizeIterator + 'a {
+        self.txouts.iter().map(|(op, index)| (index.clone(), *op))
     }
 
     /// Iterate over all "valid" txouts (either confirmed, or still confirmable in mempool).
