@@ -46,8 +46,8 @@ pub enum StaleReason {
         succeeds_last_valid: Option<BlockId>,
         invalidate: BlockId,
     },
-    TxidHeightGreaterThanNewTip {
-        tip: BlockId,
+    TxidHeightGreaterThanLatest {
+        latest: BlockId,
         txid: (Txid, Option<u32>),
     },
 }
@@ -125,13 +125,12 @@ impl SparseChain {
                 .collect(),
             last_valid: self.latest_checkpoint(),
             invalidate: None,
-            new_tip: block_id,
+            new_tip: Some(block_id),
         };
 
-        if let Some(matching_checkpoint) = self.checkpoint_at(block_id.height) {
-            if matching_checkpoint.hash != block_id.hash {
-                checkpoint.invalidate = Some(matching_checkpoint);
-            }
+        let matching_checkpoint = self.checkpoint_at(block_id.height);
+        if matches!(matching_checkpoint, Some(id) if id != block_id) {
+            checkpoint.invalidate = matching_checkpoint;
         }
 
         self.apply_checkpoint(checkpoint)
@@ -156,16 +155,14 @@ impl SparseChain {
                 });
             }
 
-            // new tip should be of equal or greater height than last_valid
-            if last_valid.height > new_checkpoint.new_tip.height
-                // if new tip is at the same height as last valid, block hashes should also match
-                || last_valid.height == new_checkpoint.new_tip.height
-                    && last_valid.hash != new_checkpoint.new_tip.hash
-            {
-                return ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
-                    new_tip: new_checkpoint.new_tip,
-                    last_valid: last_valid.clone(),
-                });
+            // new tip (if any) should be of greater height than last_valid
+            if let Some(new_tip) = &new_checkpoint.new_tip {
+                if last_valid.height >= new_tip.height {
+                    return ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
+                        new_tip: *new_tip,
+                        last_valid: last_valid.clone(),
+                    });
+                }
             }
         }
 
@@ -187,13 +184,17 @@ impl SparseChain {
             }
         }
 
-        for (txid, new_height) in &new_checkpoint.txids {
-            // ensure new_height does not surpass new_tip
-            if matches!(new_height, Some(h) if h > &new_checkpoint.new_tip.height) {
-                return ApplyResult::Stale(StaleReason::TxidHeightGreaterThanNewTip {
-                    tip: new_checkpoint.new_tip,
-                    txid: (*txid, new_height.clone()),
-                });
+        let latest_checkpoint = new_checkpoint.new_tip.or(new_checkpoint.last_valid);
+
+        for (txid, tx_height) in &new_checkpoint.txids {
+            // ensure new_height does not surpass latest checkpoint
+            if let Some(latest) = &latest_checkpoint {
+                if matches!(tx_height, Some(tx_h) if tx_h > &latest.height) {
+                    return ApplyResult::Stale(StaleReason::TxidHeightGreaterThanLatest {
+                        latest: *latest,
+                        txid: (*txid, tx_height.clone()),
+                    });
+                }
             }
 
             // ensure all currently confirmed txs are still at the same height (unless, if they are
@@ -204,7 +205,7 @@ impl SparseChain {
                     continue;
                 }
                 // consistent if height stays the same
-                if matches!(new_height, Some(new_height) if *new_height == height) {
+                if matches!(tx_height, Some(new_height) if *new_height == height) {
                     continue;
                 }
                 // inconsistent
@@ -219,9 +220,10 @@ impl SparseChain {
             self.invalidate_checkpoints(invalid.height);
         }
 
-        self.checkpoints
-            .entry(new_checkpoint.new_tip.height)
-            .or_insert_with(|| new_checkpoint.new_tip.hash);
+        // record latest checkpoint (if any)
+        if let Some(latest) = &latest_checkpoint {
+            self.checkpoints.entry(latest.height).or_insert(latest.hash);
+        }
 
         for (txid, conf) in new_checkpoint.txids {
             match conf {
@@ -352,7 +354,7 @@ pub struct CheckpointCandidate {
     pub invalidate: Option<BlockId>,
     /// Sets the tip that this checkpoint was created for. All data in this checkpoint must be valid
     /// with respect to this tip.
-    pub new_tip: BlockId,
+    pub new_tip: Option<BlockId>,
 }
 
 /// Represents the height in which a transaction is confirmed at.
