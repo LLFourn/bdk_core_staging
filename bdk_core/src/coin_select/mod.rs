@@ -8,6 +8,7 @@ pub use coin_selector::*;
 // mod bnb;
 // pub use bnb::*;
 mod bnb;
+pub mod metrics;
 
 /// Txin "base" fields include `outpoint` (32+4) and `nSequence` (4). This does not include
 /// `scriptSigLen` or `scriptSig`.

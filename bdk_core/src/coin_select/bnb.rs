@@ -154,18 +154,18 @@ mod test {
         target: Target,
     ) -> Option<(i64, u32)> {
         if bound {
-            let lower_bound_excess = cs.excess(target).max(0);
+            let lower_bound_excess = cs.excess(target, None).max(0);
             let lower_bound_weight = {
                 let mut cs = cs.clone();
-                cs.select_until_target_met(target)?;
+                cs.select_until_target_met(target, None)?;
                 cs.selected_weight()
             };
             Some((lower_bound_excess, lower_bound_weight))
         } else {
-            if cs.excess(target) < 0 {
+            if cs.excess(target, None) < 0 {
                 None
             } else {
-                Some((cs.excess(target), cs.selected_weight()))
+                Some((cs.excess(target, None), cs.selected_weight()))
             }
         }
     }
@@ -236,12 +236,13 @@ mod test {
             .expect("found a solution");
 
         assert_eq!(i, 176);
-        assert_eq!(sol.excess(target), 8);
+        let excess = sol.excess(target, None);
+        assert_eq!(excess, 8);
         // we pretend drain has no weight to get the feerate if we remove the above excess
-        assert!(sol.feerate_with_drain(target.value, 8, 0) >= FeeRate::default_min_relay_fee());
+        let implied_feerate = sol.implied_feerate(target.value, Some((excess as u64, 0)));
+        assert!(implied_feerate >= FeeRate::default_min_relay_fee());
         assert!(
-            sol.feerate_with_drain(target.value, 8, 0)
-                <= FeeRate::default_min_relay_fee() + FeeRate::from_sats_per_wu(0.001)
+            implied_feerate <= FeeRate::default_min_relay_fee() + FeeRate::from_sats_per_wu(0.001)
         );
     }
 
@@ -304,19 +305,19 @@ mod test {
             let solutions = cs.branch_and_bound(
                 |cs, bound| {
                     if bound {
-                        let lower_bound_excess = cs.excess(target).max(0);
+                        let lower_bound_excess = cs.excess(target, None).max(0);
                         let lower_bound_weight = {
                             let mut cs = cs.clone();
-                            cs.select_until_target_met(target)?;
+                            cs.select_until_target_met(target, None)?;
                             cs.selected_weight()
                         };
                         Some((lower_bound_excess, lower_bound_weight))
                     }
                     else {
-                        if cs.excess(target) < 0 {
+                        if cs.excess(target, None) < 0 {
                             None
                         } else {
-                            Some((cs.excess(target), cs.selected_weight()))
+                            Some((cs.excess(target, None), cs.selected_weight()))
                         }
                     }
                 },
