@@ -1,68 +1,66 @@
-use super::{CoinSelector, Finished, Unfinished};
-use crate::{collections::BinaryHeap, Vec};
+use super::CoinSelector;
+use crate::collections::BinaryHeap;
 
 #[derive(Debug)]
-struct Branch<'a, O, H> {
-    heuristic_score: O,
-    depth: usize,
-    selector: CoinSelector<'a, Unfinished>,
+struct Branch<'a, O> {
+    lower_bound: O,
+    selector: CoinSelector<'a>,
     already_scored: bool,
-    hint: H,
 }
 
-impl<'a, O: Ord, H> Ord for Branch<'a, O, H> {
+impl<'a, O: Ord> Ord for Branch<'a, O> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // NOTE: reverse the order because we want a min-heap
-        other.heuristic_score.cmp(&self.heuristic_score)
+        other.lower_bound.cmp(&self.lower_bound)
     }
 }
 
-impl<'a, O: PartialOrd, H> PartialOrd for Branch<'a, O, H> {
+impl<'a, O: Ord> PartialOrd for Branch<'a, O> {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        other.heuristic_score.partial_cmp(&self.heuristic_score)
+        Some(self.cmp(other))
     }
 }
 
-impl<'a, O: PartialEq, H> PartialEq for Branch<'a, O, H> {
+impl<'a, O: PartialEq> PartialEq for Branch<'a, O> {
     fn eq(&self, other: &Self) -> bool {
-        self.heuristic_score == other.heuristic_score
+        self.lower_bound == other.lower_bound
     }
 }
 
-impl<'a, O: PartialEq, H> Eq for Branch<'a, O, H> {}
+impl<'a, O: PartialEq> Eq for Branch<'a, O> {}
 
 #[derive(Debug)]
-pub(crate) struct BnbIter<'a, O, F, G, H> {
-    queue: BinaryHeap<Branch<'a, O, H>>,
-    pool: Vec<usize>,
+pub(crate) struct BnbIter<'a, O, F> {
+    queue: BinaryHeap<Branch<'a, O>>,
     best: Option<O>,
     score_fn: F,
-    heuristic_fn: G,
 }
 
-impl<'a, O, F, G, H> Iterator for BnbIter<'a, O, F, G, H>
+impl<'a, O, F> Iterator for BnbIter<'a, O, F>
 where
     O: Ord + core::fmt::Debug + Clone,
-    F: FnMut(&CoinSelector<'a, Finished>, H) -> Option<O>,
-    G: FnMut(&CoinSelector<'a, Unfinished>, &[usize]) -> Option<(O, H)>,
+    F: FnMut(&CoinSelector<'a>, bool) -> Option<O>,
 {
-    type Item = Option<(CoinSelector<'a, Finished>, O)>;
+    type Item = Option<(CoinSelector<'a>, O)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let branch = loop {
-            let branch = self.queue.pop()?;
-            self.insert_new_branches(&branch.selector, branch.depth);
-            if !branch.already_scored {
-                break branch;
+        let branch = self.queue.pop()?;
+        if let Some(best) = &self.best {
+            // If the next thing in queue is worse than our best we're done
+            if *best < branch.lower_bound {
+                return None;
             }
-        };
+        }
 
-        let finished_selector = match branch.selector.finish() {
-            Some(finished_selector) => finished_selector,
-            None => return Some(None),
-        };
+        let selector = branch.selector;
 
-        let score = match (self.score_fn)(&finished_selector, branch.hint) {
+        self.insert_new_branches(&selector);
+
+        if branch.already_scored {
+            return Some(None);
+        }
+
+        let score = match (self.score_fn)(&selector, false) {
             Some(score) => score,
             None => return Some(None),
         };
@@ -71,57 +69,54 @@ where
             Some(best_score) if score >= *best_score => Some(None),
             _ => {
                 self.best = Some(score.clone());
-                return Some(Some((finished_selector, score)));
+                return Some(Some((selector, score)));
             }
         }
     }
 }
 
-impl<'a, O, F, G, H> BnbIter<'a, O, F, G, H>
+impl<'a, O, F> BnbIter<'a, O, F>
 where
-    G: FnMut(&CoinSelector<'a, Unfinished>, &[usize]) -> Option<(O, H)>,
     O: Ord,
+    F: FnMut(&CoinSelector<'a>, bool) -> Option<O>,
 {
-    pub fn new<S>(selector: &CoinSelector<'a, S>, score_fn: F, heuristic_fn: G) -> Self {
-        let pool = selector.unselected_indexes().collect();
-        let selector = selector.clone().unfinish();
-
+    pub fn new(selector: &CoinSelector<'a>, score_fn: F) -> Self {
         let mut iter = BnbIter {
             queue: Default::default(),
-            pool,
             best: None,
             score_fn,
-            heuristic_fn,
         };
 
-        iter.insert_new_branches(&selector, 0);
+        iter.consider_adding_to_queue(selector, false);
 
         iter
     }
 
-    fn insert_new_branches(&mut self, cs: &CoinSelector<'a, Unfinished>, cur_depth: usize) {
-        let remaining = &self.pool[cur_depth..];
+    fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a>, already_scored: bool) {
+        if let Some(heuristic) = (self.score_fn)(cs, true) {
+            if self.best.is_none() || self.best.as_ref().unwrap() > &heuristic {
+                self.queue.push(Branch {
+                    lower_bound: heuristic,
+                    selector: cs.clone(),
+                    already_scored,
+                });
+            }
+        }
+    }
 
-        if remaining.is_empty() {
+    fn insert_new_branches(&mut self, cs: &CoinSelector<'a>) {
+        if cs.exhausted() {
             return;
         }
 
+        let next_unselected = cs.unselected_indexes().next().unwrap();
         let mut inclusion_cs = cs.clone();
-        inclusion_cs.select(self.pool[cur_depth]);
-        let exclusion_cs = cs;
+        inclusion_cs.select(next_unselected);
+        let mut exclusion_cs = cs.clone();
+        exclusion_cs.ban(next_unselected);
 
-        for (child_cs, already_scored) in [(&inclusion_cs, false), (exclusion_cs, true)] {
-            if let Some((heuristic, hint)) = (self.heuristic_fn)(child_cs, remaining) {
-                if self.best.is_none() || self.best.as_ref().unwrap() > &heuristic {
-                    self.queue.push(Branch {
-                        heuristic_score: heuristic,
-                        depth: cur_depth + 1,
-                        selector: child_cs.clone(),
-                        already_scored,
-                        hint,
-                    });
-                }
-            }
+        for (child_cs, already_scored) in [(&inclusion_cs, false), (&exclusion_cs, true)] {
+            self.consider_adding_to_queue(child_cs, already_scored)
         }
     }
 }
@@ -129,18 +124,20 @@ where
 #[cfg(test)]
 mod test {
 
+    use crate::coin_select::{CoinSelector, Target, WeightedValue};
+    use alloc::vec::Vec;
+    use proptest::{
+        prelude::*,
+        test_runner::{RngAlgorithm, TestRng},
+    };
     use rand::{Rng, RngCore};
-
-    use super::*;
-    use crate::coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue};
 
     fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = WeightedValue> {
         core::iter::repeat_with(move || {
-            let value = rng.gen_range(0..100_000);
-            let weight = rng.gen_range(0..1_000);
+            let value = rng.gen_range(0..1_000);
             WeightedValue {
                 value,
-                weight,
+                weight: 100,
                 input_count: rng.gen_range(1..2),
                 is_segwit: rng.gen_bool(0.5),
             }
@@ -148,47 +145,127 @@ mod test {
     }
 
     #[test]
-    fn todo_turn_into_proptest() {
-        let mut wv = test_wv(rand::thread_rng());
-        let num_canidates = 100;
-        let solution: Vec<WeightedValue> = (0..10).map(|_| wv.next().unwrap()).collect();
-        let target = solution.iter().map(|c| c.value).sum();
-        let solution_length = solution.len();
+    /// Detect regressions/improvements by making sure it always finds the solution in the same
+    /// number of iterations.
+    fn finds_a_solution_in_n_iter() {
+        let solution_len = 8;
+        let num_additional_canidates = 50;
 
-        let mut candidates = solution;
-        candidates.extend(wv.take(num_canidates - candidates.len()));
+        let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
+        let mut wv = test_wv(&mut rng);
+
+        let solution: Vec<WeightedValue> = (0..solution_len).map(|_| wv.next().unwrap()).collect();
+        let solution_weight = solution.iter().map(|sol| sol.weight).sum();
+        let target = solution.iter().map(|c| c.value).sum();
+
+        let mut candidates = solution.clone();
+        candidates.extend(wv.take(num_additional_canidates));
         candidates.sort_unstable_by_key(|wv| core::cmp::Reverse(wv.value));
 
-        let cs = CoinSelector::new(
-            &candidates,
-            CoinSelectorOpt {
-                target_value: target,
-                base_weight: 0,
-            },
-        );
+        let cs = CoinSelector::new(&candidates, 0);
 
-        let solutions = cs.branch_and_bound(
-            |cs, _| Some((cs.abs_excess(0), cs.selected_weight())),
-            |cs, candidates| {
-                Some((
-                    (
-                        cs.abs_excess(0).max(0),
-                        cs.iter_finished(candidates).next()?.selected_weight(),
-                    ),
-                    (),
-                ))
-            },
-        );
+        let target = Target {
+            value: target,
+            // we're trying to find an exact selection value so set fees to 0
+            feerate: 0.0,
+            min_fee: 0,
+        };
 
-        let (_i, (best, _score)) = solutions
+        let solutions = cs.branch_and_bound(|cs, bound| {
+            if bound {
+                let lower_bound_excess = cs.excess(target).max(0);
+                let lower_bound_weight = {
+                    let mut cs = cs.clone();
+                    cs.select_until_target_met(target);
+                    cs.selected_weight()
+                };
+                Some((lower_bound_excess, lower_bound_weight))
+            } else {
+                if cs.excess(target) < 0 {
+                    None
+                } else {
+                    Some((cs.excess(target), cs.selected_weight()))
+                }
+            }
+        });
+
+        let (i, (best, _score)) = solutions
             .enumerate()
+            .take(1635)
             .filter_map(|(i, sol)| Some((i, sol?)))
             .last()
             .expect("it found a solution");
-        dbg!(_i);
 
-        dbg!(solution_length, best.selected().len());
-        assert!(best.selected().len() <= solution_length);
-        assert_eq!(best.selected_value(), target);
+        assert_eq!(i, 1634);
+
+        assert!(best.selected_weight() <= solution_weight);
+        assert_eq!(best.selected_value(), target.value);
+    }
+
+    proptest! {
+
+
+        #[test]
+        fn always_finds_solution_eventually(
+            solution_len in 1usize..10,
+            num_additional_canidates in 0usize..100,
+            num_preselected in 0usize..10
+        ) {
+            let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
+            let mut wv = test_wv(&mut rng);
+
+            let solution: Vec<WeightedValue> = (0..solution_len).map(|_| wv.next().unwrap()).collect();
+            let target = solution.iter().map(|c| c.value).sum();
+            let solution_weight = solution.iter().map(|sol| sol.weight).sum();
+
+            let mut candidates = solution.clone();
+            candidates.extend(wv.take(num_additional_canidates));
+
+            let mut cs = CoinSelector::new(&candidates, 0);
+            for i in 0..num_preselected.min(solution_len) {
+                cs.select(i);
+            }
+
+            // sort in descending value
+            cs.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.value));
+
+            let target = Target {
+                value: target,
+                // we're trying to find an exact selection value so set fees to 0
+                feerate: 0.0,
+                min_fee: 0
+            };
+
+            let solutions = cs.branch_and_bound(
+                |cs, bound| {
+                    if bound {
+                        let lower_bound_excess = cs.excess(target).max(0);
+                        let lower_bound_weight = {
+                            let mut cs = cs.clone();
+                            cs.select_until_target_met(target)?;
+                            cs.selected_weight()
+                        };
+                        Some((lower_bound_excess, lower_bound_weight))
+                    }
+                    else {
+                        if cs.excess(target) < 0 {
+                            None
+                        } else {
+                            Some((cs.excess(target), cs.selected_weight()))
+                        }
+                    }
+                },
+            );
+            let (_i, (best, _score)) = solutions
+                .enumerate()
+                .filter_map(|(i, sol)| Some((i, sol?)))
+                .last()
+                .expect("it found a solution");
+
+
+
+            prop_assert!(best.selected_weight() <= solution_weight);
+            prop_assert_eq!(best.selected_value(), target.value);
+        }
     }
 }
