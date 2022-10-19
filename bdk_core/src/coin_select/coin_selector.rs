@@ -88,6 +88,10 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
+    pub fn candidates(&self) -> impl DoubleEndedIterator<Item=(usize, WeightedValue)> + ExactSizeIterator + '_ {
+        self.candidate_order.iter().map(|i| (*i, self.candidates[*i]))
+    }
+
     pub fn candidate(&self, index: usize) -> WeightedValue {
         self.candidates[index]
     }
@@ -280,6 +284,7 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
+    #[must_use]
     pub fn select_until_target_met(&mut self, target: Target) -> Option<()> {
         self.select_until(|cs| cs.excess(target) >= 0)
     }
