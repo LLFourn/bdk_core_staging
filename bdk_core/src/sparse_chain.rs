@@ -295,10 +295,7 @@ impl SparseChain {
     pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut> {
         let height = self.transaction_height(&outpoint.txid)?;
 
-        let txout = graph
-            .tx(&outpoint.txid)?
-            .output(outpoint.vout as _)
-            .cloned()?;
+        let txout = graph.txout(&outpoint).cloned()?;
 
         let spent_by = graph
             .outspend(&outpoint)

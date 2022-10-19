@@ -1,10 +1,10 @@
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
-use crate::{collections::*, Box};
+use crate::{collections::*, Vec};
 
 #[derive(Clone, Debug, Default)]
 pub struct TxGraph {
-    txs: HashMap<Txid, TxInGraph>,
+    txs: HashMap<Txid, TxNode>,
     spends: BTreeMap<OutPoint, HashSet<Txid>>,
 }
 
@@ -29,17 +29,38 @@ impl TxGraph {
             .map(|(outpoint, spends)| (outpoint.vout, spends))
     }
 
-    /// Get transaction by txid.
-    pub fn tx(&self, txid: &Txid) -> Option<&TxInGraph> {
-        self.txs.get(txid)
+    /// Get a transaction by txid. This only returns `Some` for full transactions.
+    pub fn tx(&self, txid: &Txid) -> Option<&Transaction> {
+        match self.txs.get(txid)? {
+            TxNode::Whole(tx) => Some(tx),
+            TxNode::Partial(_) => None,
+        }
+    }
+
+    /// Obtains a single tx output (if any) at specified outpoint.
+    pub fn txout(&self, outpoint: &OutPoint) -> Option<&TxOut> {
+        match self.txs.get(&outpoint.txid)? {
+            TxNode::Whole(tx) => tx.output.get(outpoint.vout as usize),
+            TxNode::Partial(txouts) => txouts.get(&(outpoint.vout as usize)),
+        }
+    }
+
+    /// Returns a [`BTreeMap`] of outputs of a given txid.
+    pub fn txouts(&self, txid: &Txid) -> Option<BTreeMap<usize, &TxOut>> {
+        Some(match self.txs.get(txid)? {
+            TxNode::Whole(tx) => tx.output.iter().enumerate().collect::<BTreeMap<_, _>>(),
+            TxNode::Partial(txouts) => txouts
+                .iter()
+                .map(|(vout, txout)| (*vout, txout))
+                .collect::<BTreeMap<_, _>>(),
+        })
     }
 
     /// Add transaction, returns true when [`TxGraph`] is updated.
     pub fn insert_tx(&mut self, tx: &Transaction) -> bool {
         let txid = tx.txid();
 
-        if let Some(TxInGraph::Whole(old_tx)) = self.txs.insert(txid, TxInGraph::Whole(tx.clone()))
-        {
+        if let Some(TxNode::Whole(old_tx)) = self.txs.insert(txid, TxNode::Whole(tx.clone())) {
             debug_assert_eq!(&old_tx, tx);
             return false;
         }
@@ -65,11 +86,11 @@ impl TxGraph {
         let tx_entry = self
             .txs
             .entry(outpoint.txid)
-            .or_insert_with(TxInGraph::default);
+            .or_insert_with(TxNode::default);
 
         match tx_entry {
-            TxInGraph::Whole(_) => false,
-            TxInGraph::Partial(txouts) => txouts.insert(outpoint.vout as _, txout).is_some(),
+            TxNode::Whole(_) => false,
+            TxNode::Partial(txouts) => txouts.insert(outpoint.vout as _, txout).is_some(),
         }
     }
 
@@ -79,16 +100,19 @@ impl TxGraph {
         self.spends.get(outpoint).map(|txids| txids.is_empty())
     }
 
-    /// Iterate over all txouts known by [`TxGraph`].
-    pub fn iter_txout<'g>(&'g self) -> impl Iterator<Item = (OutPoint, &'g TxOut)> {
-        self.txs.iter().flat_map(|(txid, tx)| {
-            tx.iter_outputs().map(|(vout, txout)| {
-                let op = OutPoint {
-                    txid: *txid,
-                    vout: vout as u32,
-                };
-                (op, txout)
-            })
+    /// Iterate over all tx outputs known by [`TxGraph`].
+    pub fn iter_all_txouts(&self) -> impl Iterator<Item = (OutPoint, &TxOut)> {
+        self.txs.iter().flat_map(|(txid, tx)| match tx {
+            TxNode::Whole(tx) => tx
+                .output
+                .iter()
+                .enumerate()
+                .map(|(vout, txout)| (OutPoint::new(*txid, vout as _), txout))
+                .collect::<Vec<_>>(),
+            TxNode::Partial(txouts) => txouts
+                .iter()
+                .map(|(vout, txout)| (OutPoint::new(*txid, *vout as _), txout))
+                .collect::<Vec<_>>(),
         })
     }
 
@@ -112,35 +136,15 @@ impl TxGraph {
     }
 }
 
-/// Transaction can either be whole, or we may only have auxiliary txouts avaliable.
+/// Node of a [`TxGraph`]
 #[derive(Clone, Debug)]
-pub enum TxInGraph {
+enum TxNode {
     Whole(Transaction),
     Partial(BTreeMap<usize, TxOut>),
 }
 
-impl Default for TxInGraph {
+impl Default for TxNode {
     fn default() -> Self {
         Self::Partial(BTreeMap::new())
-    }
-}
-
-impl TxInGraph {
-    pub fn output<'t>(&'t self, vout: usize) -> Option<&'t TxOut> {
-        match self {
-            TxInGraph::Whole(tx) => tx.output.get(vout),
-            TxInGraph::Partial(txouts) => txouts.get(&vout),
-        }
-    }
-
-    pub fn iter_outputs<'t>(
-        &'t self,
-    ) -> Box<dyn DoubleEndedIterator<Item = (usize, &'t TxOut)> + 't> {
-        match self {
-            TxInGraph::Whole(tx) => Box::new(tx.output.iter().enumerate()),
-            TxInGraph::Partial(txouts) => {
-                Box::new(txouts.iter().map(|(vout, txout)| (*vout, txout)))
-            }
-        }
     }
 }

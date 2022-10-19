@@ -278,7 +278,7 @@ fn invalidte_first_and_only_checkpoint() {
         .map(|(_, txid)| graph.tx(txid))
         .flatten()
         .unwrap();
-    assert_eq!(tx.output(0).unwrap().value, 2_900);
+    assert_eq!(tx.output[0].value, 2_900);
 }
 
 #[test]

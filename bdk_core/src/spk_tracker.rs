@@ -44,7 +44,7 @@ impl<I> Default for SpkTracker<I> {
 impl<I: Clone + Ord> SpkTracker<I> {
     pub fn sync(&mut self, graph: &TxGraph) {
         graph
-            .iter_txout()
+            .iter_all_txouts()
             .for_each(|(op, txout)| self.add_txout(&op, txout));
     }
 
