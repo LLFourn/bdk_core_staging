@@ -7,7 +7,6 @@ mod spk_tracker;
 pub use spk_tracker::*;
 mod keychain_tracker;
 pub use keychain_tracker::*;
-pub mod coin_select;
 mod descriptor_ext;
 pub use descriptor_ext::*;
 mod sparse_chain;

@@ -7,9 +7,9 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
+    coin_select::{CoinSelector, CoinSelectorOpt, WeightedValue},
     miniscript::{Descriptor, DescriptorPublicKey},
-    ApplyResult, DescriptorExt, KeychainTracker, SparseChain,
+    ApplyResult, DescriptorExt, KeychainTracker, SparseChain, TxOutExt,
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
@@ -271,7 +271,7 @@ fn main() -> anyhow::Result<()> {
                         plan.witness_version().is_some(),
                     )
                 })
-                .collect();
+                .collect::<Vec<_>>();
 
             let mut outputs = vec![TxOut {
                 value,
@@ -282,51 +282,48 @@ fn main() -> anyhow::Result<()> {
                 let (index, script) = tracker.derive_next_unused(change_keychain);
                 (index, script.clone())
             };
-            let change_plan = tracker
-                .descriptor(change_keychain)
-                .at_derivation_index(change_index)
-                .plan_satisfaction(&assets)
-                .expect("failed to obtain change plan");
 
             let mut change_output = TxOut {
                 value: 0,
                 script_pubkey: change_script,
             };
 
-            let cs_opts = CoinSelectorOpt {
-                target_feerate: 0.5,
-                min_drain_value: tracker.descriptor(change_keychain).dust_value(),
-                ..CoinSelectorOpt::fund_outputs(
-                    &outputs,
-                    &change_output,
-                    change_plan.expected_weight() as u32,
-                )
-            };
+            let cs_opts = CoinSelectorOpt::fund_outputs(&outputs);
+            let feerate = 0.5;
+            let min_abs_fee = 300;
 
-            // TODO: How can we make it easy to shuffle in order of inputs and outputs here?
-            // apply coin selection by saying we need to fund these outputs
-            let mut coin_selector = CoinSelector::new(&wv_candidates, &cs_opts);
+            let mut coin_selector = CoinSelector::new(&wv_candidates, cs_opts);
 
-            // just select coins in the order provided until we have enough
-            // only use first result (least waste)
-            let selection = match coin_select {
-                CoinSelectionAlgo::BranchAndBound => {
-                    coin_select_bnb(Duration::from_secs(10), coin_selector.clone())
-                        .map_or_else(|| coin_selector.select_until_finished(), |cs| cs.finish())?
+            let satisfies_fee_policy = |cs: &CoinSelector<'_, _>| cs.rate_excess(feerate) >= 0 && cs.abs_excess(min_abs_fee) >= 0;
+
+            let selection = {
+                match coin_select {
+                    _ => coin_selector.select_in_order()
+                                      .find(satisfies_fee_policy)
+                                      .ok_or(anyhow!("insufficient funds!"))?;
+                    CoinSelectionAlgo::BranchAndBound => {
+                        let change_plan = tracker
+                            .descriptor(change_keychain)
+                            .at_derivation_index(change_index)
+                            .plan_satisfaction(&assets)
+                            .expect("failed to obtain change plan");
+
+
+
+
+                    },
                 }
-                _ => coin_selector.select_until_finished()?,
-            };
-            let (_, selection_meta) = selection.best_strategy();
+            }
 
-            // get the selected utxos
             let selected_txos = selection.apply_selection(&candidates).collect::<Vec<_>>();
+            let excess = selection.rate_excess_with_drain(feerate, change_output.weight()).min(selection.abs_excess(min_abs_fee)) as u64;
 
-            if let Some(drain_value) = selection_meta.drain_value {
-                change_output.value = drain_value;
-                // if the selection tells us to use change and the change value is sufficient we add it as an output
+            if excess > tracker.descriptor(change_keychain).dust_value() {
+                change_output.value = excess;
                 outputs.push(change_output)
             }
 
+            // TODO: add random shuffling of inputs and outputs
             let mut transaction = Transaction {
                 version: 0x02,
                 lock_time: chain
