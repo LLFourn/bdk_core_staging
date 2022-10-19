@@ -1,5 +1,168 @@
-// use bdk_core::*;
-// use bitcoin::{hashes::Hash, BlockHash, OutPoint};
+use bdk_core::*;
+use bitcoin::hashes::Hash;
+
+fn gen_hash<H: Hash>(n: u64) -> H {
+    let data = n.to_le_bytes();
+    Hash::hash(&data[..])
+}
+
+fn gen_block_id(height: u32, hash_n: u64) -> BlockId {
+    BlockId {
+        height,
+        hash: gen_hash(hash_n),
+    }
+}
+
+#[test]
+fn check_last_valid_rules() {
+    let mut chain = SparseChain::default();
+
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            new_tip: Some(gen_block_id(0, 0)),
+            ..Default::default()
+        }),
+        ApplyResult::Ok,
+        "add first tip should succeed",
+    );
+
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            last_valid: Some(gen_block_id(0, 0)),
+            new_tip: Some(gen_block_id(1, 1)),
+            ..Default::default()
+        }),
+        ApplyResult::Ok,
+        "applying second tip on top of first should succeed",
+    );
+
+    // TODO: Help! Should we expect `last_valid` to always be defined when we are keeping at least
+    // one checkpoint from the old sparse chain?
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            last_valid: None,
+            new_tip: Some(gen_block_id(2, 2)),
+            ..Default::default()
+        }),
+        ApplyResult::Ok,
+        "applying third tip on top without specifying last valid should succeed",
+    );
+
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            last_valid: Some(gen_block_id(1, 2)),
+            new_tip: Some(gen_block_id(3, 3)),
+            ..Default::default()
+        }),
+        ApplyResult::Stale(StaleReason::LastValidDoesNotExist {
+            got: Some(gen_block_id(1, 1)),
+            last_valid: gen_block_id(1, 2)
+        }),
+        "applying new tip, in which suppled last_valid is non-existant, should fail",
+    );
+
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            last_valid: Some(gen_block_id(2, 2)),
+            new_tip: Some(gen_block_id(2, 3)),
+            ..Default::default()
+        }),
+        ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
+            last_valid: gen_block_id(2, 2),
+            new_tip: gen_block_id(2, 3),
+        }),
+        "applying new tip, in which new_tip conflicts last_valid, should fail",
+    );
+
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            last_valid: Some(gen_block_id(2, 2)),
+            new_tip: Some(gen_block_id(1, 3)),
+            ..Default::default()
+        }),
+        ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
+            last_valid: gen_block_id(2, 2),
+            new_tip: gen_block_id(1, 3),
+        }),
+        "applying new tip, in which new_tip conflicts last_valid, should fail (2)",
+    );
+}
+
+#[test]
+fn check_invalidate_rules() {
+    let mut chain = SparseChain::default();
+
+    // add one checkpoint
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            new_tip: Some(gen_block_id(1, 1)),
+            ..Default::default()
+        }),
+        ApplyResult::Ok
+    );
+
+    // when we are invalidating the one and only checkpoint, `last_valid` should be `None`
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            last_valid: Some(gen_block_id(1, 1)),
+            invalidate: Some(gen_block_id(1, 1)),
+            ..Default::default()
+        }),
+        ApplyResult::Stale(StaleReason::InvalidateIsNotAfterLastValid {
+            succeeds_last_valid: None,
+            invalidate: gen_block_id(1, 1),
+        }),
+        "should fail when invalidate does not directly preceed last_valid",
+    );
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            last_valid: None,
+            invalidate: Some(gen_block_id(1, 1)),
+            ..Default::default()
+        }),
+        ApplyResult::Ok,
+        "invalidate should succeed",
+    );
+
+    // add two checkpoints
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            new_tip: Some(gen_block_id(1, 1)),
+            ..Default::default()
+        }),
+        ApplyResult::Ok
+    );
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            new_tip: Some(gen_block_id(2, 2)),
+            ..Default::default()
+        }),
+        ApplyResult::Ok
+    );
+
+    // `invalidate` should directly follow `last_valid`
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            last_valid: None,
+            invalidate: Some(gen_block_id(2, 2)),
+            ..Default::default()
+        }),
+        ApplyResult::Stale(StaleReason::InvalidateIsNotAfterLastValid {
+            succeeds_last_valid: Some(gen_block_id(1, 1)),
+            invalidate: gen_block_id(2, 2),
+        }),
+        "should fail when checkpoint directly following last_valid is not invalidate",
+    );
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            last_valid: Some(gen_block_id(1, 1)),
+            invalidate: Some(gen_block_id(2, 2)),
+            ..Default::default()
+        }),
+        ApplyResult::Ok,
+        "should succeed",
+    );
+}
 
 // #[test]
 // fn invalid_tx_confirmation_time() {

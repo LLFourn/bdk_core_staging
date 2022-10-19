@@ -342,7 +342,7 @@ impl SparseChain {
 
 /// TODO: How do we ensure `txids` do not have a height greater than `new_tip`?
 /// TODO: Add `relevant_blocks: Vec<BlockId>`
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct CheckpointCandidate {
     /// List of transactions in this checkpoint. They needs to be consistent with tracker's state
     /// for the new checkpoint to be included.
