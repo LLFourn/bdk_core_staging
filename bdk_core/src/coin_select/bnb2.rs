@@ -5,13 +5,14 @@ use crate::collections::BinaryHeap;
 struct Branch<'a, O> {
     lower_bound: O,
     selector: CoinSelector<'a>,
-    already_scored: bool,
+    is_exclusion: bool,
 }
 
 impl<'a, O: Ord> Ord for Branch<'a, O> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        // NOTE: reverse the order because we want a min-heap
-        other.lower_bound.cmp(&self.lower_bound)
+        // NOTE: reverse comparision because we want a min-heap NOTE: Tiebreak equal scores based on
+        // whether it's exlusion or not (preferring inclusion). We do this because early in a BnB
+        (&other.lower_bound, other.is_exclusion).cmp(&(&self.lower_bound, self.is_exclusion))
     }
 }
 
@@ -56,7 +57,7 @@ where
 
         self.insert_new_branches(&selector);
 
-        if branch.already_scored {
+        if branch.is_exclusion {
             return Some(None);
         }
 
@@ -92,13 +93,13 @@ where
         iter
     }
 
-    fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a>, already_scored: bool) {
+    fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a>, is_exclusion: bool) {
         if let Some(heuristic) = (self.score_fn)(cs, true) {
             if self.best.is_none() || self.best.as_ref().unwrap() > &heuristic {
                 self.queue.push(Branch {
                     lower_bound: heuristic,
                     selector: cs.clone(),
-                    already_scored,
+                    is_exclusion,
                 });
             }
         }
@@ -115,8 +116,8 @@ where
         let mut exclusion_cs = cs.clone();
         exclusion_cs.ban(next_unselected);
 
-        for (child_cs, already_scored) in [(&inclusion_cs, false), (&exclusion_cs, true)] {
-            self.consider_adding_to_queue(child_cs, already_scored)
+        for (child_cs, is_exclusion) in [(&inclusion_cs, false), (&exclusion_cs, true)] {
+            self.consider_adding_to_queue(child_cs, is_exclusion)
         }
     }
 }
@@ -144,10 +145,28 @@ mod test {
         })
     }
 
+    fn min_excess_then_weight<'a>(cs: &CoinSelector<'a>, bound: bool, target: Target) -> Option<(i64, u32)> {
+        if bound {
+            let lower_bound_excess = cs.excess(target).max(0);
+            let lower_bound_weight = {
+                let mut cs = cs.clone();
+                cs.select_until_target_met(target)?;
+                cs.selected_weight()
+            };
+            Some((lower_bound_excess, lower_bound_weight))
+        } else {
+            if cs.excess(target) < 0 {
+                None
+            } else {
+                Some((cs.excess(target), cs.selected_weight()))
+            }
+        }
+    }
+
     #[test]
     /// Detect regressions/improvements by making sure it always finds the solution in the same
     /// number of iterations.
-    fn finds_a_solution_in_n_iter() {
+    fn finds_an_exact_solution_in_n_iter() {
         let solution_len = 8;
         let num_additional_canidates = 50;
 
@@ -171,42 +190,78 @@ mod test {
             min_fee: 0,
         };
 
-        let solutions = cs.branch_and_bound(|cs, bound| {
-            if bound {
-                let lower_bound_excess = cs.excess(target).max(0);
-                let lower_bound_weight = {
-                    let mut cs = cs.clone();
-                    cs.select_until_target_met(target);
-                    cs.selected_weight()
-                };
-                Some((lower_bound_excess, lower_bound_weight))
-            } else {
-                if cs.excess(target) < 0 {
-                    None
-                } else {
-                    Some((cs.excess(target), cs.selected_weight()))
-                }
-            }
-        });
+        let solutions = cs.branch_and_bound(|cs, bound| min_excess_then_weight(cs, bound, target));
 
         let (i, (best, _score)) = solutions
             .enumerate()
-            .take(1635)
+            .take(807)
             .filter_map(|(i, sol)| Some((i, sol?)))
             .last()
             .expect("it found a solution");
 
-        assert_eq!(i, 1634);
+        assert_eq!(i, 806);
 
         assert!(best.selected_weight() <= solution_weight);
         assert_eq!(best.selected_value(), target.value);
     }
 
+    #[test]
+    fn finds_solution_if_possible_in_n_iter() {
+        let num_inputs = 17;
+        let target = 8_314;
+        let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
+        let wv = test_wv(&mut rng);
+        let candidates = wv.take(num_inputs).collect::<Vec<_>>();
+        let cs = CoinSelector::new(&candidates, 0);
+
+        let target = Target {
+            value: target,
+            // we're trying to find an exact selection value so set fees to 0
+            feerate: 0.0,
+            min_fee: 0,
+        };
+
+        let solutions = cs.branch_and_bound(|cs, bound| min_excess_then_weight(cs, bound, target));
+
+        let (i, (sol, _score)) = solutions
+            .enumerate()
+            .filter_map(|(i, sol)| Some((i, sol?)))
+            .last()
+            .expect("found a solution");
+
+        assert_eq!(i, 75);
+        assert_eq!(sol.excess(target), 6);
+    }
+
+
     proptest! {
 
+        #[test]
+        fn finds_solution_if_possible(num_inputs in 1usize..50, target in 0u64..10_000) {
+            let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
+            let wv = test_wv(&mut rng);
+            let candidates = wv.take(num_inputs).collect::<Vec<_>>();
+            let cs = CoinSelector::new(&candidates, 0);
+
+            let target = Target {
+                value: target,
+                // we're trying to find an exact selection value so set fees to 0
+                feerate: 0.0,
+                min_fee: 0,
+            };
+
+            let total: u64 = candidates.iter().map(|wv| wv.value).sum();
+
+            let solutions = cs.branch_and_bound(|cs, bound| min_excess_then_weight(cs, bound, target));
+
+            match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
+                Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target.value),
+                _ => assert!(total < target.value)
+            }
+        }
 
         #[test]
-        fn always_finds_solution_eventually(
+        fn always_finds_exact_solution_eventually(
             solution_len in 1usize..10,
             num_additional_canidates in 0usize..100,
             num_preselected in 0usize..10
