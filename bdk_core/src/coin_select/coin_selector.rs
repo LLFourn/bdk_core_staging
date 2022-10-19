@@ -88,8 +88,12 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
-    pub fn candidates(&self) -> impl DoubleEndedIterator<Item=(usize, WeightedValue)> + ExactSizeIterator + '_ {
-        self.candidate_order.iter().map(|i| (*i, self.candidates[*i]))
+    pub fn candidates(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (usize, WeightedValue)> + ExactSizeIterator + '_ {
+        self.candidate_order
+            .iter()
+            .map(|i| (*i, self.candidates[*i]))
     }
 
     pub fn candidate(&self, index: usize) -> WeightedValue {
@@ -313,7 +317,7 @@ impl<'a> CoinSelector<'a> {
         O: Ord + core::fmt::Debug + Clone,
         F: FnMut(&CoinSelector<'a>, bool) -> Option<O>,
     {
-        crate::coin_select::bnb2::BnbIter::new(self, score_fn)
+        crate::coin_select::bnb::BnbIter::new(self, score_fn)
     }
 
     pub fn minimize_waste<'b, C>(
