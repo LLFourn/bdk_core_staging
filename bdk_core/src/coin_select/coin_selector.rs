@@ -1,5 +1,5 @@
 use super::*;
-use crate::Vec;
+use crate::{FeeRate, Vec};
 use alloc::borrow::Cow;
 
 /// A [`WeightedValue`] represents an input candidate for [`CoinSelector`]. This can either be a
@@ -34,11 +34,11 @@ impl WeightedValue {
     }
 
     /// Effective value of this input candidate: `actual_value - input_weight * feerate (sats/wu)`.
-    pub fn effective_value(&self, effective_feerate: f32) -> i64 {
+    pub fn effective_value(&self, feerate: FeeRate) -> i64 {
         // We prefer undershooting the candidate's effective value (so we over estimate the fee of a
         // candidate). If we overshoot the candidate's effective value, it may be possible to find a
         // solution which does not meet the target feerate.
-        self.value as i64 - (self.weight as f32 * effective_feerate).ceil() as i64
+        self.value as i64 - (self.weight as f32 * feerate.spwu()).ceil() as i64
     }
 }
 
@@ -61,7 +61,7 @@ impl<'a> CoinSelector<'a> {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Target {
-    pub feerate: f32,
+    pub feerate: FeeRate,
     pub min_fee: u64,
     pub value: u64,
 }
@@ -69,7 +69,7 @@ pub struct Target {
 impl Default for Target {
     fn default() -> Self {
         Self {
-            feerate: 0.25,
+            feerate: FeeRate::default_min_relay_fee(),
             min_fee: 0, // TODO figure out what the actual network rule is for this
             value: 0,
         }
@@ -189,32 +189,55 @@ impl<'a> CoinSelector<'a> {
     }
 
     // /// Waste sum of all selected inputs.
-    fn selected_waste(&self, feerate: f32, long_term_feerate: f32) -> f32 {
-        self.selected_weight() as f32 * (feerate - long_term_feerate)
+    fn selected_waste(&self, feerate: FeeRate, long_term_feerate: FeeRate) -> f32 {
+        self.selected_weight() as f32 * (feerate.spwu() - long_term_feerate.spwu())
     }
 
-    fn effective_value(&self, feerate: f32) -> i64 {
-        self.selected_value() as i64 - self.fee_needed(feerate) as i64
+    fn effective_value(&self, feerate: FeeRate) -> i64 {
+        self.selected_value() as i64 - self.fee_wihout_drain(feerate) as i64
     }
 
-    fn effective_value_with_drain(&self, feerate: f32, drain_weight: u32) -> i64 {
+    fn effective_value_with_drain(&self, feerate: FeeRate, drain_weight: u32) -> i64 {
         self.selected_value() as i64 - self.fee_needed_with_drain(feerate, drain_weight) as i64
     }
 
-    fn rate_excess(&self, target_value: u64, feerate: f32) -> i64 {
+    fn rate_excess(&self, target_value: u64, feerate: FeeRate) -> i64 {
         self.effective_value(feerate) - target_value as i64
     }
 
-    fn rate_excess_with_drain(&self, target_value: u64, feerate: f32, drain_weight: u32) -> i64 {
+    fn rate_excess_with_drain(
+        &self,
+        target_value: u64,
+        feerate: FeeRate,
+        drain_weight: u32,
+    ) -> i64 {
         self.effective_value_with_drain(feerate, drain_weight) - target_value as i64
     }
 
-    fn fee_needed(&self, feerate: f32) -> u64 {
-        (self.current_weight() as f32 * feerate).ceil() as u64
+    fn fee_wihout_drain(&self, feerate: FeeRate) -> u64 {
+        (self.current_weight() as f32 * feerate.spwu()).ceil() as u64
     }
 
-    fn fee_needed_with_drain(&self, feerate: f32, drain_weight: u32) -> u64 {
-        (self.weight_with_drain(drain_weight) as f32 * feerate).ceil() as u64
+    pub fn implied_feerate(&self, target_value: u64) -> FeeRate {
+        FeeRate::from_sats_per_wu(
+            (self.selected_value() as i64 - target_value as i64) as f32
+                / self.current_weight() as f32,
+        )
+    }
+
+    pub fn feerate_with_drain(
+        &self,
+        target_value: u64,
+        drain_value: u64,
+        drain_weight: u32,
+    ) -> FeeRate {
+        let numerator = self.selected_value() as i64 - target_value as i64 - drain_value as i64;
+        let denom = self.current_weight() + drain_weight;
+        FeeRate::from_sats_per_wu(numerator as f32 / denom as f32)
+    }
+
+    fn fee_needed_with_drain(&self, feerate: FeeRate, drain_weight: u32) -> u64 {
+        (self.weight_with_drain(drain_weight) as f32 * feerate.spwu()).ceil() as u64
     }
 
     fn abs_excess(&self, target_value: u64, abs_fee: u64) -> i64 {
@@ -240,14 +263,14 @@ impl<'a> CoinSelector<'a> {
     pub fn waste(
         &self,
         target: Target,
-        long_term_feerate: f32,
+        long_term_feerate: FeeRate,
         drain_weights: Option<(u32, u32)>,
     ) -> f32 {
         let mut waste = self.selected_waste(target.feerate, long_term_feerate);
         match drain_weights {
             Some((drain_weight, drain_spend_weight)) => {
-                waste += drain_weight as f32 * target.feerate
-                    + drain_spend_weight as f32 * long_term_feerate;
+                waste += drain_weight as f32 * target.feerate.spwu()
+                    + drain_spend_weight as f32 * long_term_feerate.spwu();
             }
             None => waste += self.excess(target) as f32,
         }
@@ -323,7 +346,7 @@ impl<'a> CoinSelector<'a> {
     pub fn minimize_waste<'b, C>(
         &'b self,
         target: Target,
-        long_term_feerate: f32,
+        long_term_feerate: FeeRate,
         mut change_policy: C,
     ) -> impl Iterator<Item = Option<(CoinSelector<'a>, u32)>> + 'b
     where
@@ -331,7 +354,7 @@ impl<'a> CoinSelector<'a> {
     {
         let mut sorted_inputs = self.clone();
         sorted_inputs.sort_candidates_by_key(|(_, wv)| wv.effective_value(target.feerate));
-        let rate_diff = target.feerate - long_term_feerate;
+        let rate_diff = target.feerate.spwu() - long_term_feerate.spwu();
 
         let score_fn = move |cs: &CoinSelector<'a>, bound| {
             let drain_weights = change_policy(cs, target);

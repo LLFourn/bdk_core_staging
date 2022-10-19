@@ -14,6 +14,8 @@ mod sparse_chain;
 pub use sparse_chain::*;
 mod txout_ext;
 pub use txout_ext::*;
+mod feerate;
+pub use feerate::*;
 
 #[allow(unused_imports)]
 #[macro_use]

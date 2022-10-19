@@ -125,7 +125,10 @@ where
 #[cfg(test)]
 mod test {
 
-    use crate::coin_select::{CoinSelector, Target, WeightedValue};
+    use crate::{
+        coin_select::{CoinSelector, Target, WeightedValue},
+        FeeRate,
+    };
     use alloc::vec::Vec;
     use proptest::{
         prelude::*,
@@ -190,7 +193,7 @@ mod test {
         let target = Target {
             value: target,
             // we're trying to find an exact selection value so set fees to 0
-            feerate: 0.0,
+            feerate: FeeRate::zero(),
             min_fee: 0,
         };
 
@@ -211,7 +214,7 @@ mod test {
 
     #[test]
     fn finds_solution_if_possible_in_n_iter() {
-        let num_inputs = 17;
+        let num_inputs = 18;
         let target = 8_314;
         let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
         let wv = test_wv(&mut rng);
@@ -220,8 +223,7 @@ mod test {
 
         let target = Target {
             value: target,
-            // we're trying to find an exact selection value so set fees to 0
-            feerate: 0.0,
+            feerate: FeeRate::default_min_relay_fee(),
             min_fee: 0,
         };
 
@@ -233,8 +235,14 @@ mod test {
             .last()
             .expect("found a solution");
 
-        assert_eq!(i, 75);
-        assert_eq!(sol.excess(target), 6);
+        assert_eq!(i, 176);
+        assert_eq!(sol.excess(target), 8);
+        // we pretend drain has no weight to get the feerate if we remove the above excess
+        assert!(sol.feerate_with_drain(target.value, 8, 0) >= FeeRate::default_min_relay_fee());
+        assert!(
+            sol.feerate_with_drain(target.value, 8, 0)
+                <= FeeRate::default_min_relay_fee() + FeeRate::from_sats_per_wu(0.001)
+        );
     }
 
     proptest! {
@@ -248,8 +256,7 @@ mod test {
 
             let target = Target {
                 value: target,
-                // we're trying to find an exact selection value so set fees to 0
-                feerate: 0.0,
+                feerate: FeeRate::default_min_relay_fee(),
                 min_fee: 0,
             };
 
@@ -290,7 +297,7 @@ mod test {
             let target = Target {
                 value: target,
                 // we're trying to find an exact selection value so set fees to 0
-                feerate: 0.0,
+                feerate: FeeRate::zero(),
                 min_fee: 0
             };
 
