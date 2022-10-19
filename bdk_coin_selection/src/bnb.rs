@@ -1,5 +1,5 @@
 use super::CoinSelector;
-use crate::collections::BinaryHeap;
+use alloc::collections::BinaryHeap;
 
 #[derive(Debug)]
 struct Branch<'a, O> {
@@ -83,7 +83,7 @@ where
 {
     pub fn new(selector: &CoinSelector<'a>, score_fn: F) -> Self {
         let mut iter = BnbIter {
-            queue: Default::default(),
+            queue: BinaryHeap::default(),
             best: None,
             score_fn,
         };
@@ -124,11 +124,7 @@ where
 
 #[cfg(test)]
 mod test {
-
-    use crate::{
-        coin_select::{CoinSelector, Target, WeightedValue},
-        FeeRate,
-    };
+    use crate::{CoinSelector, Target, WeightedValue, FeeRate};
     use alloc::vec::Vec;
     use proptest::{
         prelude::*,
@@ -249,7 +245,7 @@ mod test {
     proptest! {
 
         #[test]
-        fn finds_solution_if_possible(num_inputs in 1usize..50, target in 0u64..10_000) {
+        fn always_finds_solution_if_possible(num_inputs in 1usize..50, target in 0u64..10_000) {
             let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
             let wv = test_wv(&mut rng);
             let candidates = wv.take(num_inputs).collect::<Vec<_>>();
@@ -257,7 +253,7 @@ mod test {
 
             let target = Target {
                 value: target,
-                feerate: FeeRate::default_min_relay_fee(),
+                feerate: FeeRate::zero(),
                 min_fee: 0,
             };
 

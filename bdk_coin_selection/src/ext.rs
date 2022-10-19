@@ -1,6 +1,5 @@
 use core::mem::size_of;
-
-use crate::coin_select::varint_size;
+use crate::varint_size;
 
 const TXOUT_BASE_WEIGHT: u32 = 4 * size_of::<u64>() as u32; // just the value
 

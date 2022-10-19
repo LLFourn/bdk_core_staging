@@ -1,6 +1,8 @@
 use super::*;
-use crate::{FeeRate, Vec};
+use crate::FeeRate;
 use alloc::borrow::Cow;
+use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
 
 /// A [`WeightedValue`] represents an input candidate for [`CoinSelector`]. This can either be a
 /// single UTXO, or a group of UTXOs that should be spent together.
@@ -173,9 +175,9 @@ impl<'a> CoinSelector<'a> {
     /// How much the current selection overshoots the value needed to acheive `target`.
     ///
     /// You may optionally pass in a drain `(value, weight)` tuple. A useful use of this is to pass
-    /// in a value of `0` for the value (but use the correct weight) which will mean the return the
-    /// value is precisely the amonut of satoshis to set the drain output so you have 0 excess
-    /// (which is usually your goal).
+    /// in `0` for the value (but use the correct weight) which make the function return precisely
+    /// the amonut of satoshis to set the drain output to so you have 0 excess (which is usually your
+    /// goal).
     pub fn excess(&self, target: Target, drain: Option<(u64, u32)>) -> i64 {
         let (drain_value, drain_weight) = drain.unwrap_or((0, 0));
         let rate_excess = self.effective_value(target.feerate, Some(drain_weight))
@@ -308,6 +310,6 @@ impl<'a> CoinSelector<'a> {
         O: Ord + core::fmt::Debug + Clone,
         F: FnMut(&CoinSelector<'a>, bool) -> Option<O>,
     {
-        crate::coin_select::bnb::BnbIter::new(self, score_fn)
+        crate::bnb::BnbIter::new(self, score_fn)
     }
 }

@@ -1,5 +1,4 @@
-use super::{CoinSelector, Target};
-use crate::FeeRate;
+use crate::{CoinSelector, Target, FeeRate};
 
 pub fn minimize_waste<'a, C>(
     cs: &CoinSelector<'a>,

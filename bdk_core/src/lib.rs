@@ -7,15 +7,10 @@ mod spk_tracker;
 pub use spk_tracker::*;
 mod keychain_tracker;
 pub use keychain_tracker::*;
-pub mod coin_select;
 mod descriptor_ext;
 pub use descriptor_ext::*;
 mod sparse_chain;
 pub use sparse_chain::*;
-mod txout_ext;
-pub use txout_ext::*;
-mod feerate;
-pub use feerate::*;
 
 #[allow(unused_imports)]
 #[macro_use]

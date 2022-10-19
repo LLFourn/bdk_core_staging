@@ -1,6 +1,8 @@
-use core::fmt::Debug;
+#[no_std]
 
-use crate::collections::BTreeSet;
+#[allow(unused)]
+#[macro_use]
+extern crate alloc;
 
 mod coin_selector;
 pub use coin_selector::*;
@@ -9,6 +11,10 @@ pub use coin_selector::*;
 // pub use bnb::*;
 mod bnb;
 pub mod metrics;
+
+mod feerate;
+pub use feerate::*;
+pub mod ext;
 
 /// Txin "base" fields include `outpoint` (32+4) and `nSequence` (4). This does not include
 /// `scriptSigLen` or `scriptSig`.
