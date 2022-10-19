@@ -65,7 +65,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
         &'a self,
         chain: &'a SparseChain,
         graph: &'a TxGraph,
-    ) -> impl Iterator<Item = (I, OutPoint)> + '_ {
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + '_ {
         // TODO: index unspent txouts somewhow
         self.iter_txout()
             .filter(|(_, outpoint)| chain.transaction_height(&outpoint.txid).is_some())
@@ -109,7 +109,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
     }
 
     /// Iterate over the script pubkeys that have been derived but do not have a transaction spending to them.
-    pub fn iter_unused(&self) -> impl Iterator<Item = (I, &Script)> {
+    pub fn iter_unused(&self) -> impl DoubleEndedIterator<Item = (I, &Script)> + ExactSizeIterator {
         self.unused.iter().map(|index| {
             (
                 index.clone(),

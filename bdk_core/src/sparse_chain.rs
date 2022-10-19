@@ -42,8 +42,8 @@ pub enum StaleReason {
         new_tip: BlockId,
         last_valid: BlockId,
     },
-    InvalidateDoesNotPreceedLastValid {
-        preceeds_last_valid: Option<BlockId>,
+    InvalidateIsNotAfterLastValid {
+        succeeds_last_valid: Option<BlockId>,
         invalidate: BlockId,
     },
     TxidHeightGreaterThanNewTip {
@@ -172,16 +172,16 @@ impl SparseChain {
         // `invalidate` (if any) should be the checkpoint directly following `last_valid`
         if let Some(invalidate) = &new_checkpoint.invalidate {
             // obtain checkpoint following `last_valid`
-            let next_block = match &new_checkpoint.last_valid {
+            let next_checkpoint = match &new_checkpoint.last_valid {
                 Some(last_valid) => self.checkpoints.range(last_valid.height..).nth(1),
                 None => self.checkpoints.iter().next(),
             }
             .map(|(&height, &hash)| BlockId { height, hash });
 
             // ensure next checkpoint is the same as `invalidate`
-            if !matches!(next_block.as_ref(), Some(b) if b == invalidate) {
-                return ApplyResult::Stale(StaleReason::InvalidateDoesNotPreceedLastValid {
-                    preceeds_last_valid: next_block,
+            if !matches!(next_checkpoint.as_ref(), Some(b) if b == invalidate) {
+                return ApplyResult::Stale(StaleReason::InvalidateIsNotAfterLastValid {
+                    succeeds_last_valid: next_checkpoint,
                     invalidate: invalidate.clone(),
                 });
             }
