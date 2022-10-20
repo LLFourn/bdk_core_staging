@@ -44,7 +44,7 @@ pub enum StaleReason {
     },
     TxUnexpectedlyMoved {
         txid: Txid,
-        from: u32,
+        from: Option<u32>,
         to: Option<u32>,
     },
 }
@@ -192,7 +192,7 @@ impl SparseChain {
                 // inconsistent
                 return ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
                     txid: *txid,
-                    from: height,
+                    from: Some(height),
                     to: *tx_height,
                 });
             }
@@ -349,17 +349,6 @@ impl CheckpointCandidate {
             new_tip,
         }
     }
-}
-
-pub struct Update {
-    pub txids: BTreeSet<(TxHeight, Txid)>,
-    pub base_tip: Option<BlockId>,
-    pub new_tip: BlockId,
-}
-
-pub struct Invalidate {
-    pub last_valid: Option<BlockId>,
-    pub invalidate: BlockId,
 }
 
 /// Represents the height in which a transaction is confirmed at.

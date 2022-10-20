@@ -207,14 +207,14 @@ fn checkpoint_limit_is_respected() {
 fn add_txids() {
     let mut chain = SparseChain::default();
 
-    let txids = (0..100)
+    let txids_1 = (0..100)
         .map(gen_hash::<Txid>)
         .map(|txid| (txid, Some(1)))
         .collect();
 
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate {
-            txids,
+            txids: txids_1,
             ..CheckpointCandidate::new(None, gen_block_id(1, 1))
         }),
         ApplyResult::Ok,
@@ -225,6 +225,7 @@ fn add_txids() {
     // * Check txs in sparsechain
     // * Check getting height of txids
     // * Check getting txid of height
+    // * Transaction height of tx should change when new checkpoint is added
 
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate {
@@ -239,204 +240,122 @@ fn add_txids() {
     );
 }
 
-// #[test]
-// fn adding_checkpoint_where_tx_conftime_has_changed() {
-//     let mut checkpoint_gen = CheckpointGen::new();
-//     let mut chain = SparseChain::default();
-//     let mut graph = TxGraph::default();
+#[test]
+fn add_txs_of_same_height_with_different_updates() {
+    let mut chain = SparseChain::default();
+    let block = gen_block_id(0, 0);
 
-//     let mut update = checkpoint_gen.create_update(
-//         &mut graph,
-//         vec![TxSpec {
-//             inputs: vec![ISpec::Other],
-//             outputs: vec![OSpec::Mine(1_900, 0)],
-//             confirmed_at: Some(0),
-//         }],
-//         0,
-//     );
+    // add one block
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate::new(None, block)),
+        ApplyResult::Ok
+    );
 
-//     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
-//     update.last_valid = Some(update.new_tip);
-//     update.new_tip = BlockId {
-//         height: 1,
-//         ..Default::default()
-//     };
-//     update.txids[0].1 = Some(1);
-//     assert!(matches!(
-//         chain.apply_checkpoint(update.clone()),
-//         ApplyResult::Inconsistent { .. }
-//     ));
-//     assert_eq!(chain.iter_checkpoints(..).count(), 1);
-// }
+    // add txs of same height with different updates
+    (0..100).for_each(|i| {
+        assert_eq!(
+            chain.apply_checkpoint(CheckpointCandidate {
+                txids: vec![(gen_hash(i as _), Some(0))],
+                ..CheckpointCandidate::new(Some(block), block)
+            }),
+            ApplyResult::Ok,
+        );
+    });
 
-// #[test]
-// fn invalidte_first_and_only_checkpoint() {
-//     let mut checkpoint_gen = CheckpointGen::new();
-//     let mut chain = SparseChain::default();
-//     let mut graph = TxGraph::default();
+    assert_eq!(chain.iter_txids().count(), 100);
+    assert_eq!(chain.iter_confirmed_txids().count(), 100);
+    assert_eq!(chain.iter_mempool_txids().count(), 0);
+    assert_eq!(chain.iter_checkpoints(..).count(), 1);
+}
 
-//     let update1 = checkpoint_gen.create_update(
-//         &mut graph,
-//         vec![TxSpec {
-//             inputs: vec![ISpec::Other],
-//             outputs: vec![OSpec::Mine(2_000, 0)],
-//             confirmed_at: Some(1),
-//         }],
-//         1,
-//     );
-//     assert_eq!(chain.apply_checkpoint(update1.clone()), ApplyResult::Ok);
+#[test]
+fn confirm_tx() {
+    let mut chain = SparseChain::default();
 
-//     let update2 = CheckpointCandidate {
-//         last_valid: Some(BlockId {
-//             height: 1,
-//             hash: BlockHash::from_slice(&[1_u8; 32]).unwrap(),
-//         }),
-//         ..checkpoint_gen.create_update(
-//             &mut graph,
-//             vec![TxSpec {
-//                 inputs: vec![ISpec::Other],
-//                 outputs: vec![OSpec::Mine(2_900, 0)],
-//                 confirmed_at: Some(2),
-//             }],
-//             2,
-//         )
-//     };
-//     assert_eq!(
-//         chain.apply_checkpoint(update2.clone()),
-//         ApplyResult::Stale(StaleReason::LastValidDoesNotExist {
-//             got: chain.latest_checkpoint(),
-//             last_valid: update2.last_valid.unwrap(),
-//         })
-//     );
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            txids: vec![(gen_hash(10), None), (gen_hash(20), None)],
+            ..CheckpointCandidate::new(None, gen_block_id(1, 1))
+        }),
+        ApplyResult::Ok,
+        "adding two txs from mempool should succeed"
+    );
 
-//     let update3 = CheckpointCandidate {
-//         last_valid: None,
-//         invalidate: Some(update1.new_tip),
-//         ..update2.clone()
-//     };
-//     assert_eq!(chain.apply_checkpoint(update3.clone()), ApplyResult::Ok);
-//     println!(
-//         "confirmed: {:#?}",
-//         chain.iter_confirmed_txids().collect::<Vec<_>>()
-//     );
-//     assert_eq!(chain.iter_confirmed_txids().count(), 1);
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            txids: vec![(gen_hash(10), Some(0))],
+            ..CheckpointCandidate::new(Some(gen_block_id(1, 1)), gen_block_id(1, 1))
+        }),
+        ApplyResult::Ok,
+        "it should be okay to confirm tx into block before last_valid (partial sync)",
+    );
+    assert_eq!(chain.iter_txids().count(), 2);
+    assert_eq!(chain.iter_confirmed_txids().count(), 1);
+    assert_eq!(chain.iter_mempool_txids().count(), 1);
 
-//     let tx = chain
-//         .iter_confirmed_txids()
-//         .next()
-//         .map(|(_, txid)| graph.tx(txid))
-//         .flatten()
-//         .unwrap();
-//     assert_eq!(tx.output[0].value, 2_900);
-// }
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            txids: vec![(gen_hash(20), Some(2))],
+            ..CheckpointCandidate::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
+        }),
+        ApplyResult::Ok,
+        "it should be okay to confirm tx into the tip introduced",
+    );
+    assert_eq!(chain.iter_txids().count(), 2);
+    assert_eq!(chain.iter_confirmed_txids().count(), 2);
+    assert_eq!(chain.iter_mempool_txids().count(), 0);
 
-// #[test]
-// fn checkpoints_at_same_height_with_different_tx_applied_one_after_the_other() {
-//     let mut checkpoint_gen = CheckpointGen::new();
-//     let mut chain = SparseChain::default();
-//     let mut graph = TxGraph::default();
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            txids: vec![(gen_hash(10), None)],
+            ..CheckpointCandidate::new(Some(gen_block_id(2, 2)), gen_block_id(2, 2))
+        }),
+        ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
+            txid: gen_hash(10),
+            from: Some(0),
+            to: None,
+        }),
+        "tx cannot be unconfirmed without invalidate"
+    );
 
-//     let update1 = checkpoint_gen.create_update(
-//         &mut graph,
-//         vec![TxSpec {
-//             inputs: vec![ISpec::Other],
-//             outputs: vec![OSpec::Mine(1_900, 0)],
-//             confirmed_at: Some(0),
-//         }],
-//         0,
-//     );
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            txids: vec![(gen_hash(20), Some(3))],
+            ..CheckpointCandidate::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
+        }),
+        ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
+            txid: gen_hash(20),
+            from: Some(2),
+            to: Some(3),
+        }),
+        "tx cannot move forward in blocks without invalidate"
+    );
 
-//     assert_eq!(chain.apply_checkpoint(update1.clone()), ApplyResult::Ok);
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            txids: vec![(gen_hash(20), Some(1))],
+            ..CheckpointCandidate::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
+        }),
+        ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
+            txid: gen_hash(20),
+            from: Some(2),
+            to: Some(1),
+        }),
+        "tx cannot move backwards in blocks without invalidate"
+    );
 
-//     let mut update2 = checkpoint_gen.create_update(
-//         &mut graph,
-//         vec![TxSpec {
-//             inputs: vec![ISpec::Other],
-//             outputs: vec![OSpec::Mine(1_900, 0)],
-//             confirmed_at: Some(0),
-//         }],
-//         0,
-//     );
+    assert_eq!(
+        chain.apply_checkpoint(CheckpointCandidate {
+            txids: vec![(gen_hash(20), Some(2))],
+            ..CheckpointCandidate::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
+        }),
+        ApplyResult::Ok,
+        "update can introduce already-existing tx"
+    );
+    assert_eq!(chain.iter_txids().count(), 2);
+    assert_eq!(chain.iter_confirmed_txids().count(), 2);
+    assert_eq!(chain.iter_mempool_txids().count(), 0);
+}
 
-//     update2.last_valid = Some(update1.new_tip);
-//     assert_eq!(chain.apply_checkpoint(update2.clone()), ApplyResult::Ok);
-
-//     assert_eq!(chain.iter_checkpoints(..).count(), 1);
-//     assert_eq!(chain.iter_confirmed_txids().count(), 2);
-// }
-
-// #[test]
-// fn output_is_spent() {
-//     let mut checkpoint_gen = CheckpointGen::new();
-//     let mut chain = SparseChain::default();
-//     let mut graph = TxGraph::default();
-
-//     let first = checkpoint_gen.create_update(
-//         &mut graph,
-//         vec![TxSpec {
-//             inputs: vec![ISpec::Other],
-//             outputs: vec![OSpec::Mine(1_000, 0)],
-//             confirmed_at: Some(0),
-//         }],
-//         0,
-//     );
-
-//     let txid = first.txids[0].0;
-
-//     let second = checkpoint_gen.create_update(
-//         &mut graph,
-//         vec![TxSpec {
-//             inputs: vec![ISpec::Explicit(OutPoint { txid, vout: 0 }), ISpec::Other],
-//             outputs: vec![OSpec::Mine(2_000, 0)],
-//             confirmed_at: Some(1),
-//         }],
-//         1,
-//     );
-
-//     assert_eq!(chain.apply_checkpoint(first.clone()), ApplyResult::Ok);
-//     assert_eq!(chain.apply_checkpoint(second.clone()), ApplyResult::Ok);
-//     let outspend_set = graph
-//         .outspend(&OutPoint { txid, vout: 0 })
-//         .expect("should have outspend");
-//     assert!(outspend_set.contains(&second.txids[0].0));
-// }
-
-// // TODO: Implement consistency detection
-// #[test]
-// fn spent_outpoint_doesnt_exist_but_tx_does() {
-//     let mut checkpoint_gen = CheckpointGen::new();
-//     let mut chain = SparseChain::default();
-//     let mut graph = TxGraph::default();
-
-//     let first = checkpoint_gen.create_update(
-//         &mut graph,
-//         vec![TxSpec {
-//             inputs: vec![ISpec::Other],
-//             outputs: vec![OSpec::Mine(1_000, 0)],
-//             confirmed_at: Some(0),
-//         }],
-//         0,
-//     );
-
-//     assert_eq!(chain.apply_checkpoint(first.clone()), ApplyResult::Ok);
-
-//     let spends_impossible_output = checkpoint_gen.create_update(
-//         &mut graph,
-//         vec![TxSpec {
-//             inputs: vec![ISpec::Explicit(OutPoint {
-//                 txid: first.txids[0].0,
-//                 vout: 1,
-//             })],
-//             outputs: vec![OSpec::Mine(1_000, 0)],
-//             confirmed_at: Some(0),
-//         }],
-//         0,
-//     );
-
-//     assert!(matches!(
-//         chain.apply_checkpoint(spends_impossible_output),
-//         ApplyResult::Inconsistent { .. }
-//     ));
-// }
-
-// // TODO: add test for adding the target
+// TODO: Implement consistency detection
+// TODO: add test for adding the target
