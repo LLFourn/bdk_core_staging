@@ -221,112 +221,23 @@ fn add_txids() {
         "add many txs in single checkpoint should succeed"
     );
 
+    // TODO:
+    // * Check txs in sparsechain
+    // * Check getting height of txids
+    // * Check getting txid of height
+
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate {
             txids: vec![(gen_hash(2), Some(3))],
             ..CheckpointCandidate::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
         }),
-        ApplyResult::Stale(StaleReason::TxidHeightGreaterThanLatest {
-            latest: gen_block_id(2, 2),
+        ApplyResult::Stale(StaleReason::TxidHeightGreaterThanTip {
+            new_tip: gen_block_id(2, 2),
             txid: (gen_hash(2), Some(3)),
         }),
         "adding tx with height greater than new tip should fail",
     );
-
-    // TODO:
-    // * Check txs in sparsechain
-    // * Check getting height of txids
-    // * Check getting txid of height
 }
-
-// #[test]
-// fn out_of_order_tx_is_before_first_checkpoint() {
-//     let mut checkpoint_gen = CheckpointGen::new();
-//     let mut chain = SparseChain::default();
-//     let mut graph = TxGraph::default();
-
-//     assert_eq!(
-//         chain.apply_checkpoint(checkpoint_gen.create_update(
-//             &mut graph,
-//             vec![TxSpec {
-//                 inputs: vec![ISpec::Other],
-//                 outputs: vec![OSpec::Mine(2_000, 1)],
-//                 confirmed_at: Some(1),
-//             },],
-//             1,
-//         )),
-//         ApplyResult::Ok
-//     );
-
-//     assert_eq!(
-//         chain.apply_checkpoint(checkpoint_gen.create_update(
-//             &mut graph,
-//             vec![TxSpec {
-//                 inputs: vec![ISpec::Other],
-//                 outputs: vec![OSpec::Mine(2_000, 1)],
-//                 confirmed_at: Some(0),
-//             },],
-//             2,
-//         )),
-//         ApplyResult::Ok
-//     );
-// }
-
-// #[test]
-// fn many_transactions_in_the_same_height() {
-//     let mut checkpoint_gen = CheckpointGen::new();
-//     let mut chain = SparseChain::default();
-//     let mut graph = TxGraph::default();
-
-//     let txs = (0..100)
-//         .map(|_| TxSpec {
-//             inputs: vec![ISpec::Other],
-//             outputs: vec![OSpec::Mine(1_900, 0)],
-//             confirmed_at: Some(1),
-//         })
-//         .collect();
-
-//     assert_eq!(
-//         chain.apply_checkpoint(checkpoint_gen.create_update(&mut graph, txs, 1,)),
-//         ApplyResult::Ok
-//     );
-// }
-
-// #[test]
-// fn adding_checkpoint_which_contains_nothing_new_should_create_single_empty_checkpoint() {
-//     let mut checkpoint_gen = CheckpointGen::new();
-//     let mut chain = SparseChain::default();
-//     let mut graph = TxGraph::default();
-
-//     let mut update = checkpoint_gen.create_update(
-//         &mut graph,
-//         vec![TxSpec {
-//             inputs: vec![ISpec::Other],
-//             outputs: vec![OSpec::Mine(2_000, 0)],
-//             confirmed_at: Some(0),
-//         }],
-//         0,
-//     );
-
-//     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
-//     update.last_valid = Some(update.new_tip);
-//     update.new_tip = BlockId {
-//         height: 1,
-//         ..Default::default()
-//     };
-//     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
-//     assert_eq!(chain.iter_checkpoints(..).count(), 2);
-
-//     update.last_valid = Some(update.new_tip);
-//     update.new_tip = BlockId {
-//         height: 2,
-//         ..Default::default()
-//     };
-//     assert_eq!(chain.apply_checkpoint(update.clone()), ApplyResult::Ok);
-//     assert_eq!(chain.iter_checkpoints(..).count(), 3);
-//     assert_eq!(chain.iter_checkpoints(..).next().unwrap().height, 0);
-//     assert_eq!(chain.iter_checkpoints(..).last().unwrap().height, 2);
-// }
 
 // #[test]
 // fn adding_checkpoint_where_tx_conftime_has_changed() {

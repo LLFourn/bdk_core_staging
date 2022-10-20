@@ -456,16 +456,6 @@ pub fn fully_sync(
             ApplyResult::Stale(_reason) => {
                 unreachable!("we are the only ones accessing the tracker")
             }
-            ApplyResult::Inconsistent {
-                txid,
-                conflicts_with,
-            } => {
-                return Err(anyhow!(
-                    "blockchain backend returned conflicting info: {} conflicts with {}",
-                    txid,
-                    conflicts_with,
-                ))
-            }
         }
 
         if let Some(last_active_index) = last_active_index {

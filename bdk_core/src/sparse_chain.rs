@@ -26,10 +26,6 @@ pub enum ApplyResult {
     /// The checkpoint cannot be applied to the current state because it does not apply to the current
     /// tip of the tracker, or does not invalidate the right checkpoint, or the candidate is invalid.
     Stale(StaleReason),
-    /// The checkpoint you tried to apply was inconsistent with the current state.
-    ///
-    /// To forcibly apply the checkpoint you must invalidate a the block that `conflicts_with` is in (or one preceeding it).
-    Inconsistent { txid: Txid, conflicts_with: Txid },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -42,9 +38,14 @@ pub enum StaleReason {
         got: Option<BlockId>,
         expected: Option<BlockId>,
     },
-    TxidHeightGreaterThanLatest {
-        latest: BlockId,
+    TxidHeightGreaterThanTip {
+        new_tip: BlockId,
         txid: (Txid, Option<u32>),
+    },
+    TxUnexpectedlyMoved {
+        txid: Txid,
+        from: u32,
+        to: Option<u32>,
     },
 }
 
@@ -171,8 +172,8 @@ impl SparseChain {
         for (txid, tx_height) in &new_checkpoint.txids {
             // ensure new_height does not surpass latest checkpoint
             if matches!(tx_height, Some(tx_h) if tx_h > &new_checkpoint.new_tip.height) {
-                return ApplyResult::Stale(StaleReason::TxidHeightGreaterThanLatest {
-                    latest: new_checkpoint.new_tip,
+                return ApplyResult::Stale(StaleReason::TxidHeightGreaterThanTip {
+                    new_tip: new_checkpoint.new_tip,
                     txid: (*txid, tx_height.clone()),
                 });
             }
@@ -181,18 +182,19 @@ impl SparseChain {
             // to be invalidated)
             if let Some(&height) = self.txid_to_index.get(txid) {
                 // no need to check consistency if height will be invalidated
-                if matches!(new_checkpoint.invalidate, Some(invalid) if height >= invalid.height) {
+                // tx is consistent if height stays the same
+                if matches!(new_checkpoint.invalidate, Some(invalid) if height >= invalid.height)
+                    || matches!(tx_height, Some(new_height) if *new_height == height)
+                {
                     continue;
                 }
-                // consistent if height stays the same
-                if matches!(tx_height, Some(new_height) if *new_height == height) {
-                    continue;
-                }
+
                 // inconsistent
-                return ApplyResult::Inconsistent {
+                return ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
                     txid: *txid,
-                    conflicts_with: *txid,
-                };
+                    from: height,
+                    to: *tx_height,
+                });
             }
         }
 
