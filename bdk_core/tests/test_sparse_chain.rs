@@ -32,12 +32,13 @@ fn check_last_valid_rules() {
         "applying second tip on top of first should succeed",
     );
 
-    // TODO: Help! Should we expect `last_valid` to always be defined when we are keeping at least
-    // one checkpoint from the old sparse chain?
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate::new(None, gen_block_id(2, 2))),
-        ApplyResult::Ok,
-        "applying third tip on top without specifying last valid should succeed",
+        ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+            got: None,
+            expected: Some(gen_block_id(1, 1))
+        }),
+        "applying third tip on top without specifying last valid should fail",
     );
 
     assert_eq!(
@@ -45,33 +46,33 @@ fn check_last_valid_rules() {
             Some(gen_block_id(1, 2)),
             gen_block_id(3, 3),
         )),
-        ApplyResult::Stale(StaleReason::LastValidDoesNotExist {
-            got: Some(gen_block_id(1, 1)),
-            last_valid: gen_block_id(1, 2)
+        ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+            got: Some(gen_block_id(1, 2)),
+            expected: Some(gen_block_id(1, 1)),
         }),
         "applying new tip, in which suppled last_valid is non-existant, should fail",
     );
 
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate::new(
-            Some(gen_block_id(2, 2)),
-            gen_block_id(2, 3),
+            Some(gen_block_id(1, 1)),
+            gen_block_id(1, 3),
         )),
         ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
-            last_valid: gen_block_id(2, 2),
-            new_tip: gen_block_id(2, 3),
+            last_valid: gen_block_id(1, 1),
+            new_tip: gen_block_id(1, 3),
         }),
         "applying new tip, in which new_tip conflicts last_valid, should fail",
     );
 
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate::new(
-            Some(gen_block_id(2, 2)),
-            gen_block_id(1, 3),
+            Some(gen_block_id(1, 1)),
+            gen_block_id(0, 3),
         )),
         ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
-            last_valid: gen_block_id(2, 2),
-            new_tip: gen_block_id(1, 3),
+            last_valid: gen_block_id(1, 1),
+            new_tip: gen_block_id(0, 3),
         }),
         "applying new tip, in which new_tip conflicts last_valid, should fail (2)",
     );
@@ -83,7 +84,7 @@ fn check_invalidate_rules() {
 
     // add one checkpoint
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate::new(None, gen_block_id(1, 1),)),
+        chain.apply_checkpoint(CheckpointCandidate::new(None, gen_block_id(1, 1))),
         ApplyResult::Ok
     );
 
@@ -93,9 +94,9 @@ fn check_invalidate_rules() {
             invalidate: Some(gen_block_id(1, 1)),
             ..CheckpointCandidate::new(Some(gen_block_id(1, 1)), gen_block_id(1, 2))
         }),
-        ApplyResult::Stale(StaleReason::InvalidateIsNotAfterLastValid {
-            succeeds_last_valid: None,
-            invalidate: gen_block_id(1, 1),
+        ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+            got: Some(gen_block_id(1, 1)),
+            expected: None,
         }),
         "should fail when invalidate does not directly preceed last_valid",
     );
@@ -130,9 +131,9 @@ fn check_invalidate_rules() {
             invalidate: Some(gen_block_id(3, 4)),
             ..CheckpointCandidate::new(Some(gen_block_id(1, 2)), gen_block_id(3, 5))
         }),
-        ApplyResult::Stale(StaleReason::InvalidateIsNotAfterLastValid {
-            succeeds_last_valid: Some(gen_block_id(2, 3)),
-            invalidate: gen_block_id(3, 4),
+        ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+            got: Some(gen_block_id(1, 2)),
+            expected: Some(gen_block_id(2, 3)),
         }),
         "should fail when checkpoint directly following last_valid is not invalidate",
     );

@@ -34,17 +34,13 @@ pub enum ApplyResult {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StaleReason {
-    LastValidDoesNotExist {
-        got: Option<BlockId>,
-        last_valid: BlockId,
-    },
     LastValidConflictsNewTip {
         new_tip: BlockId,
         last_valid: BlockId,
     },
-    InvalidateIsNotAfterLastValid {
-        succeeds_last_valid: Option<BlockId>,
-        invalidate: BlockId,
+    UnexpectedLastValid {
+        got: Option<BlockId>,
+        expected: Option<BlockId>,
     },
     TxidHeightGreaterThanLatest {
         latest: BlockId,
@@ -139,50 +135,35 @@ impl SparseChain {
     /// Applies a new candidate checkpoint to the tracker.
     #[must_use]
     pub fn apply_checkpoint(&mut self, new_checkpoint: CheckpointCandidate) -> ApplyResult {
-        // `last_valid` should always exist on chain
-        // `new_tip` should be greater than or equal to `last_valid`
-        if let Some(last_valid) = &new_checkpoint.last_valid {
-            let block_h = self.checkpoints.get(&last_valid.height);
+        // if there is no `invalidate`, `last_valid` should be the last checkpoint in sparsechain
+        // if there is `invalidate`, `last_valid` should be the checkpoint preceding `invalidate`
+        let expected_last_valid = {
+            let upper_bound = new_checkpoint
+                .invalidate
+                .map(|b| b.height)
+                .unwrap_or(u32::MAX);
+            self.checkpoints
+                .range(..upper_bound)
+                .last()
+                .map(|(&height, &hash)| BlockId { height, hash })
+        };
+        if new_checkpoint.last_valid != expected_last_valid {
+            return ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+                got: new_checkpoint.last_valid,
+                expected: expected_last_valid,
+            });
+        }
 
-            // `last_valid` should exist in sparse chain and have the same hash
-            if !matches!(block_h, Some(h) if h == &last_valid.hash) {
-                return ApplyResult::Stale(StaleReason::LastValidDoesNotExist {
-                    got: block_h.map(|&hash| BlockId {
-                        height: last_valid.height,
-                        hash,
-                    }),
-                    last_valid: last_valid.clone(),
-                });
-            }
-
-            // new tip (if any) should be of greater height than last_valid
-            // or have the same height and hash
-            if last_valid.height > new_checkpoint.new_tip.height
-                || !matches!(new_checkpoint.invalidate, Some(invalid) if invalid.height <= new_checkpoint.new_tip.height)
-                    && last_valid.height == new_checkpoint.new_tip.height
-                    && last_valid.hash != new_checkpoint.new_tip.hash
+        // `new_tip.height` should be greater or equal to `last_valid.height`
+        // if `new_tip.height` is equal to `last_valid.height`, the hashes should also be the same
+        if let Some(last_valid) = expected_last_valid {
+            if new_checkpoint.new_tip.height < last_valid.height
+                || new_checkpoint.new_tip.height == last_valid.height
+                    && new_checkpoint.new_tip.hash != last_valid.hash
             {
                 return ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
                     new_tip: new_checkpoint.new_tip,
-                    last_valid: last_valid.clone(),
-                });
-            }
-        }
-
-        // `invalidate` (if any) should be the checkpoint directly following `last_valid`
-        if let Some(invalidate) = &new_checkpoint.invalidate {
-            // obtain checkpoint following `last_valid`
-            let next_checkpoint = match &new_checkpoint.last_valid {
-                Some(last_valid) => self.checkpoints.range(last_valid.height..).nth(1),
-                None => self.checkpoints.iter().next(),
-            }
-            .map(|(&height, &hash)| BlockId { height, hash });
-
-            // ensure next checkpoint is the same as `invalidate`
-            if !matches!(next_checkpoint.as_ref(), Some(b) if b == invalidate) {
-                return ApplyResult::Stale(StaleReason::InvalidateIsNotAfterLastValid {
-                    succeeds_last_valid: next_checkpoint,
-                    invalidate: invalidate.clone(),
+                    last_valid,
                 });
             }
         }
