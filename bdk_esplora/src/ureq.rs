@@ -251,7 +251,7 @@ impl Client {
                 .collect(),
             last_valid,
             invalidate,
-            new_tip: Some(new_tip),
+            new_tip,
         };
 
         Ok((last_active_index, update))

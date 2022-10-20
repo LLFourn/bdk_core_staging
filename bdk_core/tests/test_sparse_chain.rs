@@ -18,20 +18,16 @@ fn check_last_valid_rules() {
     let mut chain = SparseChain::default();
 
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate {
-            new_tip: Some(gen_block_id(0, 0)),
-            ..Default::default()
-        }),
+        chain.apply_checkpoint(CheckpointCandidate::new(None, gen_block_id(0, 0))),
         ApplyResult::Ok,
         "add first tip should succeed",
     );
 
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate {
-            last_valid: Some(gen_block_id(0, 0)),
-            new_tip: Some(gen_block_id(1, 1)),
-            ..Default::default()
-        }),
+        chain.apply_checkpoint(CheckpointCandidate::new(
+            Some(gen_block_id(0, 0)),
+            gen_block_id(1, 1)
+        )),
         ApplyResult::Ok,
         "applying second tip on top of first should succeed",
     );
@@ -39,21 +35,16 @@ fn check_last_valid_rules() {
     // TODO: Help! Should we expect `last_valid` to always be defined when we are keeping at least
     // one checkpoint from the old sparse chain?
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate {
-            last_valid: None,
-            new_tip: Some(gen_block_id(2, 2)),
-            ..Default::default()
-        }),
+        chain.apply_checkpoint(CheckpointCandidate::new(None, gen_block_id(2, 2))),
         ApplyResult::Ok,
         "applying third tip on top without specifying last valid should succeed",
     );
 
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate {
-            last_valid: Some(gen_block_id(1, 2)),
-            new_tip: Some(gen_block_id(3, 3)),
-            ..Default::default()
-        }),
+        chain.apply_checkpoint(CheckpointCandidate::new(
+            Some(gen_block_id(1, 2)),
+            gen_block_id(3, 3),
+        )),
         ApplyResult::Stale(StaleReason::LastValidDoesNotExist {
             got: Some(gen_block_id(1, 1)),
             last_valid: gen_block_id(1, 2)
@@ -62,11 +53,10 @@ fn check_last_valid_rules() {
     );
 
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate {
-            last_valid: Some(gen_block_id(2, 2)),
-            new_tip: Some(gen_block_id(2, 3)),
-            ..Default::default()
-        }),
+        chain.apply_checkpoint(CheckpointCandidate::new(
+            Some(gen_block_id(2, 2)),
+            gen_block_id(2, 3),
+        )),
         ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
             last_valid: gen_block_id(2, 2),
             new_tip: gen_block_id(2, 3),
@@ -75,11 +65,10 @@ fn check_last_valid_rules() {
     );
 
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate {
-            last_valid: Some(gen_block_id(2, 2)),
-            new_tip: Some(gen_block_id(1, 3)),
-            ..Default::default()
-        }),
+        chain.apply_checkpoint(CheckpointCandidate::new(
+            Some(gen_block_id(2, 2)),
+            gen_block_id(1, 3),
+        )),
         ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
             last_valid: gen_block_id(2, 2),
             new_tip: gen_block_id(1, 3),
@@ -94,19 +83,15 @@ fn check_invalidate_rules() {
 
     // add one checkpoint
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate {
-            new_tip: Some(gen_block_id(1, 1)),
-            ..Default::default()
-        }),
+        chain.apply_checkpoint(CheckpointCandidate::new(None, gen_block_id(1, 1),)),
         ApplyResult::Ok
     );
 
     // when we are invalidating the one and only checkpoint, `last_valid` should be `None`
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate {
-            last_valid: Some(gen_block_id(1, 1)),
             invalidate: Some(gen_block_id(1, 1)),
-            ..Default::default()
+            ..CheckpointCandidate::new(Some(gen_block_id(1, 1)), gen_block_id(1, 2))
         }),
         ApplyResult::Stale(StaleReason::InvalidateIsNotAfterLastValid {
             succeeds_last_valid: None,
@@ -116,9 +101,8 @@ fn check_invalidate_rules() {
     );
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate {
-            last_valid: None,
             invalidate: Some(gen_block_id(1, 1)),
-            ..Default::default()
+            ..CheckpointCandidate::new(None, gen_block_id(1, 2))
         }),
         ApplyResult::Ok,
         "invalidate should succeed",
@@ -126,38 +110,36 @@ fn check_invalidate_rules() {
 
     // add two checkpoints
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate {
-            new_tip: Some(gen_block_id(1, 1)),
-            ..Default::default()
-        }),
+        chain.apply_checkpoint(CheckpointCandidate::new(
+            Some(gen_block_id(1, 2)),
+            gen_block_id(2, 3)
+        )),
         ApplyResult::Ok
     );
     assert_eq!(
-        chain.apply_checkpoint(CheckpointCandidate {
-            new_tip: Some(gen_block_id(2, 2)),
-            ..Default::default()
-        }),
+        chain.apply_checkpoint(CheckpointCandidate::new(
+            Some(gen_block_id(2, 3)),
+            gen_block_id(3, 4),
+        )),
         ApplyResult::Ok
     );
 
     // `invalidate` should directly follow `last_valid`
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate {
-            last_valid: None,
-            invalidate: Some(gen_block_id(2, 2)),
-            ..Default::default()
+            invalidate: Some(gen_block_id(3, 4)),
+            ..CheckpointCandidate::new(Some(gen_block_id(1, 2)), gen_block_id(3, 5))
         }),
         ApplyResult::Stale(StaleReason::InvalidateIsNotAfterLastValid {
-            succeeds_last_valid: Some(gen_block_id(1, 1)),
-            invalidate: gen_block_id(2, 2),
+            succeeds_last_valid: Some(gen_block_id(2, 3)),
+            invalidate: gen_block_id(3, 4),
         }),
         "should fail when checkpoint directly following last_valid is not invalidate",
     );
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate {
-            last_valid: Some(gen_block_id(1, 1)),
-            invalidate: Some(gen_block_id(2, 2)),
-            ..Default::default()
+            invalidate: Some(gen_block_id(3, 4)),
+            ..CheckpointCandidate::new(Some(gen_block_id(2, 3)), gen_block_id(3, 5))
         }),
         ApplyResult::Ok,
         "should succeed",
