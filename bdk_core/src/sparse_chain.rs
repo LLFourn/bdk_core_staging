@@ -21,7 +21,6 @@ pub struct SparseChain {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApplyResult {
     /// The checkpoint was applied successfully.
-    // TODO: return a diff
     Ok,
     /// The checkpoint cannot be applied to the current state because it does not apply to the current
     /// tip of the tracker, or does not invalidate the right checkpoint, or the candidate is invalid.
@@ -252,7 +251,6 @@ impl SparseChain {
             debug_assert!(matches!(h, Some(h) if h == *exp_h));
         }
 
-        // TODO: have a method to make mempool consistent
         if !removed_txids.is_empty() {
             self.mempool.clear()
         }
@@ -322,8 +320,6 @@ impl SparseChain {
     }
 }
 
-/// TODO: How do we ensure `txids` do not have a height greater than `new_tip`?
-/// TODO: Add `relevant_blocks: Vec<BlockId>`
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckpointCandidate {
     /// List of transactions in this checkpoint. They needs to be consistent with tracker's state

@@ -190,8 +190,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Balance => {
-            // tracker.iter_unspent(&chain, &graph)
-            //     .filter_map(|(spk_i, op)| chain.full_txout(graph, op));
             let (confirmed, unconfirmed) = tracker
                 .iter_unspent(&chain, &graph)
                 .filter_map(|(spk_i, op)| chain.full_txout(&graph, op).map(|utxo| (spk_i, utxo)))
@@ -208,13 +206,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Txo { utxo_cmd } => match utxo_cmd {
             TxoCmd::List => {
-                for (spk_index, txout) in
-                    tracker
-                        .iter_unspent(&chain, &graph)
-                        .filter_map(|(spk_i, op)| {
-                            chain.full_txout(&graph, op).map(|utxo| (spk_i, utxo))
-                        })
-                {
+                for (spk_index, txout) in tracker.iter_txout().filter_map(|(spk_i, op)| {
+                    chain.full_txout(&graph, op).map(|utxo| (spk_i, utxo))
+                }) {
                     let script = tracker.spk_at_index(spk_index).unwrap();
                     let address = Address::from_script(script, args.network).unwrap();
 

@@ -198,9 +198,7 @@ fn checkpoint_limit_is_respected() {
     }
 
     assert_eq!(chain.iter_confirmed_txids().count(), 10);
-    let latest = chain.latest_checkpoint();
     assert_eq!(chain.iter_checkpoints(..).count(), 5);
-    assert_eq!(chain.latest_checkpoint(), latest);
 }
 
 #[test]
@@ -220,12 +218,6 @@ fn add_txids() {
         ApplyResult::Ok,
         "add many txs in single checkpoint should succeed"
     );
-
-    // TODO:
-    // * Check txs in sparsechain
-    // * Check getting height of txids
-    // * Check getting txid of height
-    // * Transaction height of tx should change when new checkpoint is added
 
     assert_eq!(
         chain.apply_checkpoint(CheckpointCandidate {
@@ -356,6 +348,3 @@ fn confirm_tx() {
     assert_eq!(chain.iter_confirmed_txids().count(), 2);
     assert_eq!(chain.iter_mempool_txids().count(), 0);
 }
-
-// TODO: Implement consistency detection
-// TODO: add test for adding the target

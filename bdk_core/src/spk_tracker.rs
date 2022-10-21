@@ -66,7 +66,6 @@ impl<I: Clone + Ord> SpkTracker<I> {
         chain: &'a SparseChain,
         graph: &'a TxGraph,
     ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + '_ {
-        // TODO: index unspent txouts somewhow
         self.iter_txout()
             .filter(|(_, outpoint)| chain.transaction_height(&outpoint.txid).is_some())
             .filter(|(_, outpoint)| graph.is_unspent(outpoint).expect("should exist"))
