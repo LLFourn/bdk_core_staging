@@ -48,10 +48,10 @@ impl FeeRate {
 
     /// Calculate fee rate from `fee` and weight units (`wu`).
     pub fn from_wu(fee: u64, wu: usize) -> Self {
-        Self::from_sats_per_wu(fee as f32 / wu as f32)
+        Self::from_sat_per_wu(fee as f32 / wu as f32)
     }
 
-    pub fn from_sats_per_wu(sats_per_wu: f32) -> Self {
+    pub fn from_sat_per_wu(sats_per_wu: f32) -> Self {
         Self::new_checked(sats_per_wu)
     }
 

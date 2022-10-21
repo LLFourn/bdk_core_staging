@@ -1,5 +1,99 @@
+use crate::FeeRate;
+
 use super::CoinSelector;
 use alloc::collections::BinaryHeap;
+
+#[derive(Debug)]
+pub(crate) struct BnbIter<'a, M: BnBMetric> {
+    queue: BinaryHeap<Branch<'a, M::Score>>,
+    best: Option<M::Score>,
+    /// The `BnBMetric` that will score each selection
+    metric: M,
+}
+
+impl<'a, M: BnBMetric> Iterator for BnbIter<'a, M> {
+    type Item = Option<(CoinSelector<'a>, M::Score)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let branch = self.queue.pop()?;
+        if let Some(best) = &self.best {
+            // If the next thing in queue is worse than our best we're done
+            if *best < branch.lower_bound {
+                return None;
+            }
+        }
+
+        let selector = branch.selector;
+
+        self.insert_new_branches(&selector);
+
+        if branch.is_exclusion {
+            return Some(None);
+        }
+
+        let score = match self.metric.score(&selector) {
+            Some(score) => score,
+            None => return Some(None),
+        };
+
+        match &self.best {
+            Some(best_score) if score >= *best_score => Some(None),
+            _ => {
+                self.best = Some(score.clone());
+                return Some(Some((selector, score)));
+            }
+        }
+    }
+}
+
+impl<'a, M: BnBMetric> BnbIter<'a, M> {
+    pub fn new(mut selector: CoinSelector<'a>, metric: M) -> Self {
+        let mut iter = BnbIter {
+            queue: BinaryHeap::default(),
+            best: None,
+            metric,
+        };
+
+        if let Some(feerate) = iter
+            .metric
+            .requires_ordering_by_descending_effective_value()
+        {
+            selector.sort_candidates_by_descending_effective_value(feerate);
+        }
+
+        iter.consider_adding_to_queue(&selector, false);
+
+        iter
+    }
+
+    fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a>, is_exclusion: bool) {
+        if let Some(heuristic) = self.metric.bound(cs) {
+            if self.best.is_none() || self.best.as_ref().unwrap() > &heuristic {
+                self.queue.push(Branch {
+                    lower_bound: heuristic,
+                    selector: cs.clone(),
+                    is_exclusion,
+                });
+            }
+        }
+    }
+
+    fn insert_new_branches(&mut self, cs: &CoinSelector<'a>) {
+        if cs.is_exhausted() {
+            return;
+        }
+
+        let next_unselected = cs.unselected_indexes().next().unwrap();
+        let mut inclusion_cs = cs.clone();
+        inclusion_cs.select(next_unselected);
+        let mut exclusion_cs = cs.clone();
+        exclusion_cs.ban(next_unselected);
+
+        for (child_cs, is_exclusion) in [(&inclusion_cs, false), (&exclusion_cs, true)] {
+            self.consider_adding_to_queue(child_cs, is_exclusion)
+        }
+    }
+}
 
 #[derive(Debug)]
 struct Branch<'a, O> {
@@ -30,107 +124,27 @@ impl<'a, O: PartialEq> PartialEq for Branch<'a, O> {
 
 impl<'a, O: PartialEq> Eq for Branch<'a, O> {}
 
-#[derive(Debug)]
-pub(crate) struct BnbIter<'a, O, F> {
-    queue: BinaryHeap<Branch<'a, O>>,
-    best: Option<O>,
-    score_fn: F,
-}
+pub trait BnBMetric {
+    type Score: Ord + Clone + core::fmt::Debug;
 
-impl<'a, O, F> Iterator for BnbIter<'a, O, F>
-where
-    O: Ord + core::fmt::Debug + Clone,
-    F: FnMut(&CoinSelector<'a>, bool) -> Option<O>,
-{
-    type Item = Option<(CoinSelector<'a>, O)>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let branch = self.queue.pop()?;
-        if let Some(best) = &self.best {
-            // If the next thing in queue is worse than our best we're done
-            if *best < branch.lower_bound {
-                return None;
-            }
-        }
-
-        let selector = branch.selector;
-
-        self.insert_new_branches(&selector);
-
-        if branch.is_exclusion {
-            return Some(None);
-        }
-
-        let score = match (self.score_fn)(&selector, false) {
-            Some(score) => score,
-            None => return Some(None),
-        };
-
-        match &self.best {
-            Some(best_score) if score >= *best_score => Some(None),
-            _ => {
-                self.best = Some(score.clone());
-                return Some(Some((selector, score)));
-            }
-        }
-    }
-}
-
-impl<'a, O, F> BnbIter<'a, O, F>
-where
-    O: Ord,
-    F: FnMut(&CoinSelector<'a>, bool) -> Option<O>,
-{
-    pub fn new(selector: &CoinSelector<'a>, score_fn: F) -> Self {
-        let mut iter = BnbIter {
-            queue: BinaryHeap::default(),
-            best: None,
-            score_fn,
-        };
-
-        iter.consider_adding_to_queue(selector, false);
-
-        iter
-    }
-
-    fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a>, is_exclusion: bool) {
-        if let Some(heuristic) = (self.score_fn)(cs, true) {
-            if self.best.is_none() || self.best.as_ref().unwrap() > &heuristic {
-                self.queue.push(Branch {
-                    lower_bound: heuristic,
-                    selector: cs.clone(),
-                    is_exclusion,
-                });
-            }
-        }
-    }
-
-    fn insert_new_branches(&mut self, cs: &CoinSelector<'a>) {
-        if cs.exhausted() {
-            return;
-        }
-
-        let next_unselected = cs.unselected_indexes().next().unwrap();
-        let mut inclusion_cs = cs.clone();
-        inclusion_cs.select(next_unselected);
-        let mut exclusion_cs = cs.clone();
-        exclusion_cs.ban(next_unselected);
-
-        for (child_cs, is_exclusion) in [(&inclusion_cs, false), (&exclusion_cs, true)] {
-            self.consider_adding_to_queue(child_cs, is_exclusion)
-        }
+    fn score<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score>;
+    fn bound<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score>;
+    fn requires_ordering_by_descending_effective_value(&self) -> Option<FeeRate> {
+        None
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::{CoinSelector, Target, WeightedValue, FeeRate};
+    use crate::{CoinSelector, Drain, FeeRate, Target, WeightedValue};
     use alloc::vec::Vec;
     use proptest::{
         prelude::*,
         test_runner::{RngAlgorithm, TestRng},
     };
     use rand::{Rng, RngCore};
+
+    use super::BnBMetric;
 
     fn test_wv(mut rng: impl RngCore) -> impl Iterator<Item = WeightedValue> {
         core::iter::repeat_with(move || {
@@ -144,25 +158,29 @@ mod test {
         })
     }
 
-    fn min_excess_then_weight<'a>(
-        cs: &CoinSelector<'a>,
-        bound: bool,
+    struct MinExcessThenWeight {
         target: Target,
-    ) -> Option<(i64, u32)> {
-        if bound {
-            let lower_bound_excess = cs.excess(target, None).max(0);
+    }
+
+    impl BnBMetric for MinExcessThenWeight {
+        type Score = (i64, u32);
+
+        fn score<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
+            if cs.excess(self.target, Drain::none()) < 0 {
+                None
+            } else {
+                Some((cs.excess(self.target, Drain::none()), cs.selected_weight()))
+            }
+        }
+
+        fn bound<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
+            let lower_bound_excess = cs.excess(self.target, Drain::none()).max(0);
             let lower_bound_weight = {
                 let mut cs = cs.clone();
-                cs.select_until_target_met(target, None)?;
+                cs.select_until_target_met(self.target, Drain::none())?;
                 cs.selected_weight()
             };
             Some((lower_bound_excess, lower_bound_weight))
-        } else {
-            if cs.excess(target, None) < 0 {
-                None
-            } else {
-                Some((cs.excess(target, None), cs.selected_weight()))
-            }
         }
     }
 
@@ -193,7 +211,7 @@ mod test {
             min_fee: 0,
         };
 
-        let solutions = cs.branch_and_bound(|cs, bound| min_excess_then_weight(cs, bound, target));
+        let solutions = cs.branch_and_bound(MinExcessThenWeight { target });
 
         let (i, (best, _score)) = solutions
             .enumerate()
@@ -223,7 +241,7 @@ mod test {
             min_fee: 0,
         };
 
-        let solutions = cs.branch_and_bound(|cs, bound| min_excess_then_weight(cs, bound, target));
+        let solutions = cs.branch_and_bound(MinExcessThenWeight { target });
 
         let (i, (sol, _score)) = solutions
             .enumerate()
@@ -232,14 +250,8 @@ mod test {
             .expect("found a solution");
 
         assert_eq!(i, 176);
-        let excess = sol.excess(target, None);
+        let excess = sol.excess(target, Drain::none());
         assert_eq!(excess, 8);
-        // we pretend drain has no weight to get the feerate if we remove the above excess
-        let implied_feerate = sol.implied_feerate(target.value, Some((excess as u64, 0)));
-        assert!(implied_feerate >= FeeRate::default_min_relay_fee());
-        assert!(
-            implied_feerate <= FeeRate::default_min_relay_fee() + FeeRate::from_sats_per_wu(0.001)
-        );
     }
 
     proptest! {
@@ -257,13 +269,11 @@ mod test {
                 min_fee: 0,
             };
 
-            let total: u64 = candidates.iter().map(|wv| wv.value).sum();
-
-            let solutions = cs.branch_and_bound(|cs, bound| min_excess_then_weight(cs, bound, target));
+            let solutions = cs.branch_and_bound(MinExcessThenWeight { target });
 
             match solutions.enumerate().filter_map(|(i, sol)| Some((i, sol?))).last() {
                 Some((_i, (sol, _score))) => assert!(sol.selected_value() >= target.value),
-                _ => assert!(total < target.value)
+                _ => prop_assert!(!cs.is_selection_possible(target)),
             }
         }
 
@@ -298,26 +308,8 @@ mod test {
                 min_fee: 0
             };
 
-            let solutions = cs.branch_and_bound(
-                |cs, bound| {
-                    if bound {
-                        let lower_bound_excess = cs.excess(target, None).max(0);
-                        let lower_bound_weight = {
-                            let mut cs = cs.clone();
-                            cs.select_until_target_met(target, None)?;
-                            cs.selected_weight()
-                        };
-                        Some((lower_bound_excess, lower_bound_weight))
-                    }
-                    else {
-                        if cs.excess(target, None) < 0 {
-                            None
-                        } else {
-                            Some((cs.excess(target, None), cs.selected_weight()))
-                        }
-                    }
-                },
-            );
+            let solutions = cs.branch_and_bound(MinExcessThenWeight { target });
+
             let (_i, (best, _score)) = solutions
                 .enumerate()
                 .filter_map(|(i, sol)| Some((i, sol?)))

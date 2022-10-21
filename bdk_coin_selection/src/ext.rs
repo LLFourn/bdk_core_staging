@@ -1,5 +1,5 @@
-use core::mem::size_of;
 use crate::varint_size;
+use core::mem::size_of;
 
 const TXOUT_BASE_WEIGHT: u32 = 4 * size_of::<u64>() as u32; // just the value
 

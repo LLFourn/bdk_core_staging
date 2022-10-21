@@ -1,8 +1,6 @@
 use super::*;
-use crate::FeeRate;
-use alloc::borrow::Cow;
-use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
+use crate::{bnb::BnBMetric, FeeRate};
+use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
 
 /// A [`WeightedValue`] represents an input candidate for [`CoinSelector`]. This can either be a
 /// single UTXO, or a group of UTXOs that should be spent together.
@@ -44,6 +42,27 @@ impl WeightedValue {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub struct Drain {
+    pub weight: u32,
+    pub value: u64,
+    pub spend_weight: u32,
+}
+
+impl Drain {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    pub fn is_none(&self) -> bool {
+        self == &Drain::none()
+    }
+
+    pub fn is_some(&self) -> bool {
+        !self.is_none()
+    }
+}
+
 /// [`CoinSelector`] is responsible for selecting and deselecting from a set of canididates.
 #[derive(Debug, Clone)]
 pub struct CoinSelector<'a> {
@@ -53,8 +72,6 @@ pub struct CoinSelector<'a> {
     banned: Cow<'a, BTreeSet<usize>>,
     candidate_order: Cow<'a, Vec<usize>>,
 }
-
-impl<'a> CoinSelector<'a> {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Target {
@@ -132,6 +149,12 @@ impl<'a> CoinSelector<'a> {
         self.selected.contains(&index)
     }
 
+    pub fn is_selection_possible(&self, target: Target) -> bool {
+        let mut test = self.clone();
+        test.select_all_effective(target.feerate);
+        test.excess(target, Drain::none()) >= 0
+    }
+
     pub fn is_empty(&self) -> bool {
         self.selected.is_empty()
     }
@@ -143,19 +166,7 @@ impl<'a> CoinSelector<'a> {
             .sum()
     }
 
-    /// Absolute value sum of all selected inputs.
-    pub fn selected_value(&self) -> u64 {
-        self.selected
-            .iter()
-            .map(|&index| self.candidates[index].value)
-            .sum()
-    }
-
-    /// Current weight of template tx + selected inputs.
-    pub fn weight(&self, drain_weight: Option<u32>) -> u32 {
-        // TODO take into account whether drain tips over varint for number of outputs
-        let drain_weight = drain_weight.unwrap_or(0);
-        // TODO: take into account the witness stack length for each input
+    pub fn input_weight(&self) -> u32 {
         let witness_header_extra_weight = self
             .selected()
             .find(|(_, wv)| wv.is_segwit)
@@ -165,49 +176,56 @@ impl<'a> CoinSelector<'a> {
             let input_count = self.selected().map(|(_, wv)| wv.input_count).sum::<usize>();
             (varint_size(input_count) - 1) * 4
         };
-        self.base_weight
-            + self.selected_weight()
-            + witness_header_extra_weight
-            + vin_count_varint_extra_weight
-            + drain_weight
+
+        self.selected_weight() + witness_header_extra_weight + vin_count_varint_extra_weight
+    }
+
+    /// Absolute value sum of all selected inputs.
+    pub fn selected_value(&self) -> u64 {
+        self.selected
+            .iter()
+            .map(|&index| self.candidates[index].value)
+            .sum()
+    }
+
+    /// Current weight of template tx + selected inputs.
+    pub fn weight(&self, drain_weight: u32) -> u32 {
+        // TODO take into account whether drain tips over varint for number of outputs
+        //
+        // TODO: take into account the witness stack length for each input
+        self.base_weight + self.input_weight() + drain_weight
     }
 
     /// How much the current selection overshoots the value needed to acheive `target`.
     ///
-    /// You may optionally pass in a drain `(value, weight)` tuple. A useful use of this is to pass
-    /// in `0` for the value (but use the correct weight) which make the function return precisely
-    /// the amonut of satoshis to set the drain output to so you have 0 excess (which is usually your
-    /// goal).
-    pub fn excess(&self, target: Target, drain: Option<(u64, u32)>) -> i64 {
-        let (drain_value, drain_weight) = drain.unwrap_or((0, 0));
-        let rate_excess = self.effective_value(target.feerate, Some(drain_weight))
-            - drain_value as i64
-            - target.value as i64;
-        let abs_excess = self.selected_value() as i64
-            - target.min_fee as i64
-            - drain_value as i64
-            - target.value as i64;
-        rate_excess.min(abs_excess)
+    /// In order for the resulting transaction to be valid this must be 0.
+    pub fn excess(&self, target: Target, drain: Drain) -> i64 {
+        self.selected_value() as i64
+            - target.value as i64
+            - drain.value as i64
+            - self.implied_fee(target.feerate, target.min_fee, drain.weight) as i64
     }
 
-    pub fn implied_feerate(&self, target_value: u64, drain: Option<(u64, u32)>) -> FeeRate {
-        let (drain_value, drain_weight) = drain.unwrap_or((0, 0));
-        let numerator = self.selected_value() as i64 - target_value as i64 - drain_value as i64;
-        let denom = self.weight(Some(drain_weight));
-        FeeRate::from_sats_per_wu(numerator as f32 / denom as f32)
+    /// The feerate the transaction would have if we were to use this selection of inputs to acheive
+    /// the
+    pub fn implied_feerate(&self, target_value: u64, drain: Drain) -> FeeRate {
+        let numerator = self.selected_value() as i64 - target_value as i64 - drain.value as i64;
+        let denom = self.weight(drain.weight);
+        FeeRate::from_sat_per_wu(numerator as f32 / denom as f32)
     }
 
-    pub fn implied_fee(&self, feerate: FeeRate, min_fee: u64, drain_weight: Option<u32>) -> u64 {
+    pub fn implied_fee(&self, feerate: FeeRate, min_fee: u64, drain_weight: u32) -> u64 {
         ((self.weight(drain_weight) as f32 * feerate.spwu()).ceil() as u64).max(min_fee)
+    }
+
+    /// The value of the current selected inputs minus the fee needed to pay for the selected inputs
+    pub fn effective_value(&self, feerate: FeeRate) -> i64 {
+        self.selected_value() as i64 - (self.input_weight() as f32 * feerate.spwu()).ceil() as i64
     }
 
     // /// Waste sum of all selected inputs.
     fn selected_waste(&self, feerate: FeeRate, long_term_feerate: FeeRate) -> f32 {
         self.selected_weight() as f32 * (feerate.spwu() - long_term_feerate.spwu())
-    }
-
-    fn effective_value(&self, feerate: FeeRate, drain_weight: Option<u32>) -> i64 {
-        self.selected_value() as i64 - self.implied_fee(feerate, 0, drain_weight) as i64
     }
 
     pub fn sort_candidates_by<F>(&mut self, mut cmp: F)
@@ -226,47 +244,57 @@ impl<'a> CoinSelector<'a> {
         self.sort_candidates_by(|a, b| key_fn(a).cmp(&key_fn(b)))
     }
 
+    pub fn sort_candidates_by_descending_effective_value(&mut self, feerate: FeeRate) {
+        self.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.effective_value(feerate)))
+    }
+
     pub fn waste(
         &self,
         target: Target,
         long_term_feerate: FeeRate,
-        drain_weights: Option<(u32, u32)>,
+        drain: Drain,
+        excess_discount: f32,
     ) -> f32 {
+        debug_assert!(excess_discount >= 0.0 && excess_discount <= 1.0);
         let mut waste = self.selected_waste(target.feerate, long_term_feerate);
-        match drain_weights {
-            Some((drain_weight, drain_spend_weight)) => {
-                waste += drain_weight as f32 * target.feerate.spwu()
-                    + drain_spend_weight as f32 * long_term_feerate.spwu();
-            }
-            None => waste += self.excess(target, None) as f32,
+
+        if drain.is_none() {
+            waste += self.excess(target, drain) as f32 * excess_discount.max(0.0).min(1.0);
+        } else {
+            waste += drain.weight as f32 * target.feerate.spwu()
+                + drain.spend_weight as f32 * long_term_feerate.spwu();
         }
 
         waste
     }
 
-    pub fn selected(&self) -> impl ExactSizeIterator<Item = (usize, &'a WeightedValue)> + '_ {
+    pub fn selected(&self) -> impl ExactSizeIterator<Item = (usize, WeightedValue)> + '_ {
         self.selected
             .iter()
-            .map(|&index| (index, &self.candidates[index]))
+            .map(|&index| (index, self.candidates[index]))
     }
 
-    pub fn unselected(&self) -> impl Iterator<Item = (usize, &'a WeightedValue)> + '_ {
-        self.unselected_indexes().map(|i| (i, &self.candidates[i]))
+    pub fn unselected(&self) -> impl DoubleEndedIterator<Item = (usize, WeightedValue)> + '_ {
+        self.unselected_indexes().map(|i| (i, self.candidates[i]))
     }
 
     pub fn selected_indexes(&self) -> &BTreeSet<usize> {
         &self.selected
     }
 
-    pub fn unselected_indexes(&self) -> impl Iterator<Item = usize> + '_ {
+    pub fn unselected_indexes(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
         self.candidate_order
             .iter()
-            .filter(|index| !self.selected.contains(index) && !self.banned.contains(index))
+            .filter(|index| !(self.selected.contains(index) || self.banned.contains(index)))
             .map(|index| *index)
     }
 
-    pub fn exhausted(&self) -> bool {
+    pub fn is_exhausted(&self) -> bool {
         self.unselected_indexes().next().is_none()
+    }
+
+    pub fn is_target_met(&self, target: Target, drain: Drain) -> bool {
+        self.excess(target, drain) >= 0
     }
 
     pub fn select_all(&mut self) {
@@ -277,13 +305,18 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
+    pub fn select_all_effective(&mut self, feerate: FeeRate) {
+        // TODO: remove collect here
+        for i in self.unselected_indexes().collect::<Vec<_>>() {
+            if self.candidates[i].effective_value(feerate) > 0 {
+                self.select(i);
+            }
+        }
+    }
+
     #[must_use]
-    pub fn select_until_target_met(
-        &mut self,
-        target: Target,
-        drain_value_and_weight: Option<(u64, u32)>,
-    ) -> Option<()> {
-        self.select_until(|cs| cs.excess(target, drain_value_and_weight) >= 0)
+    pub fn select_until_target_met(&mut self, target: Target, drain: Drain) -> Option<()> {
+        self.select_until(|cs| cs.is_target_met(target, drain))
     }
 
     #[must_use]
@@ -302,14 +335,34 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
-    pub fn branch_and_bound<O, F>(
+    pub fn select_while(
+        &mut self,
+        mut predicate: impl FnMut(&CoinSelector<'a>) -> bool,
+        // TODO: Remove this in favor of being able to reverse sort candidate order
+        reverse: bool,
+    ) {
+        loop {
+            let next = if reverse {
+                self.unselected_indexes().rev().next()
+            } else {
+                self.unselected_indexes().next()
+            };
+            if let Some(next) = next {
+                self.select(next);
+                if !predicate(&*self) {
+                    self.deselect(next);
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+    }
+
+    pub fn branch_and_bound<M: BnBMetric>(
         &self,
-        score_fn: F,
-    ) -> impl Iterator<Item = Option<(CoinSelector<'a>, O)>>
-    where
-        O: Ord + core::fmt::Debug + Clone,
-        F: FnMut(&CoinSelector<'a>, bool) -> Option<O>,
-    {
-        crate::bnb::BnbIter::new(self, score_fn)
+        metric: M,
+    ) -> impl Iterator<Item = Option<(CoinSelector<'a>, M::Score)>> {
+        crate::bnb::BnbIter::new(self.clone(), metric)
     }
 }

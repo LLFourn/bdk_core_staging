@@ -1,5 +1,4 @@
 #[no_std]
-
 #[allow(unused)]
 #[macro_use]
 extern crate alloc;
@@ -14,6 +13,7 @@ pub mod metrics;
 
 mod feerate;
 pub use feerate::*;
+pub mod change_policy;
 pub mod ext;
 
 /// Txin "base" fields include `outpoint` (32+4) and `nSequence` (4). This does not include
