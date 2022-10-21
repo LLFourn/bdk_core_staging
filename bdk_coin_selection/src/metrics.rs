@@ -1,4 +1,4 @@
-use crate::{bnb::BnBMetric, CoinSelector, Drain, FeeRate, Target};
+use crate::{bnb::BnBMetric, ord_float::Ordf32, CoinSelector, Drain, FeeRate, Target};
 
 pub struct Waste<'c, C> {
     target: Target,
@@ -10,17 +10,15 @@ impl<'c, C> BnBMetric for Waste<'c, C>
 where
     for<'a, 'b> C: Fn(&'b CoinSelector<'a>, Target) -> Drain,
 {
-    type Score = i32;
+    type Score = Ordf32;
 
     fn score<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
         let drain = (self.change_policy)(cs, self.target);
         if !cs.is_target_met(self.target, drain) {
             return None;
         }
-        let score = cs
-            .waste(self.target, self.long_term_feerate, drain, 1.0)
-            .round() as i32;
-        Some(score)
+        let score = cs.waste(self.target, self.long_term_feerate, drain, 1.0);
+        Some(Ordf32(score))
     }
     fn bound<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
         let rate_diff = self.target.feerate.spwu() - self.long_term_feerate.spwu();
@@ -39,7 +37,7 @@ where
                 current_change,
                 excess_discount,
             );
-            Some(lower_bound.round() as i32)
+            Some(Ordf32(lower_bound))
         } else {
             let mut lower_bound = None;
             // When long_term_feerate > current feerate each input by itself has negative waste.
@@ -76,7 +74,7 @@ where
                     lower_bound = Some(lower_bound.unwrap_or(f32::MAX).min(changeless_lower_bound))
                 }
             }
-            lower_bound.map(|lb| lb.round() as i32)
+            lower_bound.map(Ordf32)
         }
     }
 
@@ -277,7 +275,7 @@ mod test {
 
                     for (_bench_id, bench) in cmp_benchmarks.enumerate() {
                         let bench_waste = bench.waste(target, long_term_feerate, change_policy(&bench, target), 1.0);
-                        prop_assert!(sol_waste.round() <= bench_waste.round());
+                        prop_assert!(sol_waste <= bench_waste);
                     }
                 },
                 None => {

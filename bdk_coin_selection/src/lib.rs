@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod coin_selector;
+pub mod ord_float;
 pub use coin_selector::*;
 
 // mod bnb;
