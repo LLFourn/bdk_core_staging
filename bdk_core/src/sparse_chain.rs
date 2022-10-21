@@ -114,7 +114,7 @@ impl SparseChain {
         block_id: BlockId,
         transactions: impl IntoIterator<Item = Txid>,
     ) -> ApplyResult {
-        let mut checkpoint = CheckpointCandidate {
+        let mut checkpoint = Update {
             txids: transactions
                 .into_iter()
                 .map(|txid| (txid, Some(block_id.height)))
@@ -129,27 +129,24 @@ impl SparseChain {
             checkpoint.invalidate = matching_checkpoint;
         }
 
-        self.apply_checkpoint(checkpoint)
+        self.apply_update(checkpoint)
     }
 
-    /// Applies a new candidate checkpoint to the tracker.
+    /// Applies a new [`Update`] to the tracker.
     #[must_use]
-    pub fn apply_checkpoint(&mut self, new_checkpoint: CheckpointCandidate) -> ApplyResult {
+    pub fn apply_update(&mut self, update: Update) -> ApplyResult {
         // if there is no `invalidate`, `last_valid` should be the last checkpoint in sparsechain
         // if there is `invalidate`, `last_valid` should be the checkpoint preceding `invalidate`
         let expected_last_valid = {
-            let upper_bound = new_checkpoint
-                .invalidate
-                .map(|b| b.height)
-                .unwrap_or(u32::MAX);
+            let upper_bound = update.invalidate.map(|b| b.height).unwrap_or(u32::MAX);
             self.checkpoints
                 .range(..upper_bound)
                 .last()
                 .map(|(&height, &hash)| BlockId { height, hash })
         };
-        if new_checkpoint.last_valid != expected_last_valid {
+        if update.last_valid != expected_last_valid {
             return ApplyResult::Stale(StaleReason::UnexpectedLastValid {
-                got: new_checkpoint.last_valid,
+                got: update.last_valid,
                 expected: expected_last_valid,
             });
         }
@@ -157,22 +154,22 @@ impl SparseChain {
         // `new_tip.height` should be greater or equal to `last_valid.height`
         // if `new_tip.height` is equal to `last_valid.height`, the hashes should also be the same
         if let Some(last_valid) = expected_last_valid {
-            if new_checkpoint.new_tip.height < last_valid.height
-                || new_checkpoint.new_tip.height == last_valid.height
-                    && new_checkpoint.new_tip.hash != last_valid.hash
+            if update.new_tip.height < last_valid.height
+                || update.new_tip.height == last_valid.height
+                    && update.new_tip.hash != last_valid.hash
             {
                 return ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
-                    new_tip: new_checkpoint.new_tip,
+                    new_tip: update.new_tip,
                     last_valid,
                 });
             }
         }
 
-        for (txid, tx_height) in &new_checkpoint.txids {
+        for (txid, tx_height) in &update.txids {
             // ensure new_height does not surpass latest checkpoint
-            if matches!(tx_height, Some(tx_h) if tx_h > &new_checkpoint.new_tip.height) {
+            if matches!(tx_height, Some(tx_h) if tx_h > &update.new_tip.height) {
                 return ApplyResult::Stale(StaleReason::TxidHeightGreaterThanTip {
-                    new_tip: new_checkpoint.new_tip,
+                    new_tip: update.new_tip,
                     txid: (*txid, tx_height.clone()),
                 });
             }
@@ -182,7 +179,7 @@ impl SparseChain {
             if let Some(&height) = self.txid_to_index.get(txid) {
                 // no need to check consistency if height will be invalidated
                 // tx is consistent if height stays the same
-                if matches!(new_checkpoint.invalidate, Some(invalid) if height >= invalid.height)
+                if matches!(update.invalidate, Some(invalid) if height >= invalid.height)
                     || matches!(tx_height, Some(new_height) if *new_height == height)
                 {
                     continue;
@@ -197,16 +194,16 @@ impl SparseChain {
             }
         }
 
-        if let Some(invalid) = &new_checkpoint.invalidate {
+        if let Some(invalid) = &update.invalidate {
             self.invalidate_checkpoints(invalid.height);
         }
 
         // record latest checkpoint (if any)
         self.checkpoints
-            .entry(new_checkpoint.new_tip.height)
-            .or_insert(new_checkpoint.new_tip.hash);
+            .entry(update.new_tip.height)
+            .or_insert(update.new_tip.hash);
 
-        for (txid, conf) in new_checkpoint.txids {
+        for (txid, conf) in update.txids {
             match conf {
                 Some(height) => {
                     if self.txid_by_height.insert((height, txid)) {
@@ -320,23 +317,29 @@ impl SparseChain {
     }
 }
 
+/// Represents an [`Update`] that could be applied to [`SparseChain`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct CheckpointCandidate {
-    /// List of transactions in this checkpoint. They needs to be consistent with tracker's state
-    /// for the new checkpoint to be included.
+pub struct Update {
+    /// List of transactions in this checkpoint. They needs to be consistent with [`SparseChain`]'s
+    /// state for the [`Update`] to be included.
     pub txids: Vec<(Txid, Option<u32>)>,
-    /// The new checkpoint can be applied upon this tip. A tracker will usually reject updates that
-    /// do not have `last_valid` equal to it's latest valid checkpoint.
+
+    /// This should be the latest valid checkpoint of [`SparseChain`]; used to avoid conflicts.
+    /// If `invalidate == None`, then this would be be the latest checkpoint of [`SparseChain`].
+    /// If `invalidate == Some`, then this would be the checkpoint directly preceding `invalidate`.
+    /// If [`SparseChain`] is empty, `last_valid` should be `None`.
     pub last_valid: Option<BlockId>,
-    /// Invalidates a block before considering this checkpoint.
+
+    /// Invalidates all checkpoints from this checkpoint (inclusive).
     pub invalidate: Option<BlockId>,
-    /// Sets the tip that this checkpoint was created for. All data in this checkpoint must be valid
-    /// with respect to this tip.
+
+    /// The latest tip that this [`Update`] is aware of. Introduced transactions cannot surpass this
+    /// tip.
     pub new_tip: BlockId,
 }
 
-impl CheckpointCandidate {
-    /// Helper function to create a template checkpoint candidate.
+impl Update {
+    /// Helper function to create a template update.
     pub fn new(last_valid: Option<BlockId>, new_tip: BlockId) -> Self {
         Self {
             txids: Vec::new(),

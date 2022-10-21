@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    BlockId, CheckpointCandidate,
+    BlockId, Update,
 };
 pub use ureq;
 use ureq::Agent;
@@ -170,7 +170,7 @@ impl Client {
         mut scripts: impl Iterator<Item = (u32, Script)>,
         stop_gap: usize,
         known_tips: impl Iterator<Item = BlockId>,
-    ) -> Result<(Option<u32>, CheckpointCandidate), UpdateError> {
+    ) -> Result<(Option<u32>, Update), UpdateError> {
         let mut empty_scripts = 0;
         let mut transactions = vec![];
         let mut last_active_index = None;
@@ -244,7 +244,7 @@ impl Client {
             return Err(UpdateError::TipChangeDuringUpdate);
         }
 
-        let update = CheckpointCandidate {
+        let update = Update {
             txids: transactions
                 .iter()
                 .map(|(tx, conf)| (tx.txid(), conf.map(|b| b.height)))

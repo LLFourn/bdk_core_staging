@@ -445,7 +445,7 @@ pub fn fully_sync(
             )
             .context("fetching transactions")?;
 
-        match chain.apply_checkpoint(checkpoint) {
+        match chain.apply_update(checkpoint) {
             ApplyResult::Ok => eprintln!("success! ({}ms)", start.elapsed().as_millis()),
             ApplyResult::Stale(_reason) => {
                 unreachable!("we are the only ones accessing the tracker")
