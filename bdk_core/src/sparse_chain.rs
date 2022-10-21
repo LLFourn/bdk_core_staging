@@ -17,16 +17,7 @@ pub struct SparseChain {
     checkpoint_limit: Option<usize>,
 }
 
-/// The result of attempting to apply a checkpoint
-#[derive(Clone, Debug, PartialEq)]
-pub enum ApplyResult {
-    /// The checkpoint was applied successfully.
-    Ok,
-    /// The checkpoint cannot be applied to the current state because it does not apply to the current
-    /// tip of the tracker, or does not invalidate the right checkpoint, or the candidate is invalid.
-    Stale(StaleReason),
-}
-
+/// Returned when [`SparseChain`] update is stale.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StaleReason {
     LastValidConflictsNewTip {
@@ -96,6 +87,9 @@ impl core::fmt::Display for StaleReason {
     }
 }
 
+#[cfg(feature = "std")]
+impl std::error::Error for StaleReason {}
+
 impl SparseChain {
     /// Get the transaction ids in a particular checkpoint.
     ///
@@ -161,7 +155,7 @@ impl SparseChain {
         &mut self,
         block_id: BlockId,
         transactions: impl IntoIterator<Item = Txid>,
-    ) -> ApplyResult {
+    ) -> Result<(), StaleReason> {
         let mut checkpoint = Update {
             txids: transactions
                 .into_iter()
@@ -182,7 +176,7 @@ impl SparseChain {
 
     /// Applies a new [`Update`] to the tracker.
     #[must_use]
-    pub fn apply_update(&mut self, update: Update) -> ApplyResult {
+    pub fn apply_update(&mut self, update: Update) -> Result<(), StaleReason> {
         // if there is no `invalidate`, `last_valid` should be the last checkpoint in sparsechain
         // if there is `invalidate`, `last_valid` should be the checkpoint preceding `invalidate`
         let expected_last_valid = {
@@ -193,7 +187,7 @@ impl SparseChain {
                 .map(|(&height, &hash)| BlockId { height, hash })
         };
         if update.last_valid != expected_last_valid {
-            return ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+            return Result::Err(StaleReason::UnexpectedLastValid {
                 got: update.last_valid,
                 expected: expected_last_valid,
             });
@@ -206,7 +200,7 @@ impl SparseChain {
                 || update.new_tip.height == last_valid.height
                     && update.new_tip.hash != last_valid.hash
             {
-                return ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
+                return Result::Err(StaleReason::LastValidConflictsNewTip {
                     new_tip: update.new_tip,
                     last_valid,
                 });
@@ -216,7 +210,7 @@ impl SparseChain {
         for (txid, tx_height) in &update.txids {
             // ensure new_height does not surpass latest checkpoint
             if matches!(tx_height, TxHeight::Confirmed(tx_h) if tx_h > &update.new_tip.height) {
-                return ApplyResult::Stale(StaleReason::TxidHeightGreaterThanTip {
+                return Result::Err(StaleReason::TxidHeightGreaterThanTip {
                     new_tip: update.new_tip,
                     txid: (*txid, tx_height.clone()),
                 });
@@ -234,7 +228,7 @@ impl SparseChain {
                 }
 
                 // inconsistent
-                return ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
+                return Result::Err(StaleReason::TxUnexpectedlyMoved {
                     txid: *txid,
                     from: TxHeight::Confirmed(height),
                     to: *tx_height,
@@ -266,7 +260,7 @@ impl SparseChain {
         }
 
         self.prune_checkpoints();
-        ApplyResult::Ok
+        Result::Ok(())
     }
 
     /// Clear the mempool list. Use with caution.

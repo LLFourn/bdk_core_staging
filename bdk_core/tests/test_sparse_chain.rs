@@ -17,21 +17,17 @@ fn gen_block_id(height: u32, hash_n: u64) -> BlockId {
 fn check_last_valid_rules() {
     let mut chain = SparseChain::default();
 
-    assert_eq!(
-        chain.apply_update(Update::new(None, gen_block_id(0, 0))),
-        ApplyResult::Ok,
-        "add first tip should succeed",
-    );
+    chain
+        .apply_update(Update::new(None, gen_block_id(0, 0)))
+        .expect("add first tip should succeed");
 
-    assert_eq!(
-        chain.apply_update(Update::new(Some(gen_block_id(0, 0)), gen_block_id(1, 1))),
-        ApplyResult::Ok,
-        "applying second tip on top of first should succeed",
-    );
+    chain
+        .apply_update(Update::new(Some(gen_block_id(0, 0)), gen_block_id(1, 1)))
+        .expect("applying second tip on top of first should succeed");
 
     assert_eq!(
         chain.apply_update(Update::new(None, gen_block_id(2, 2))),
-        ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+        Result::Err(StaleReason::UnexpectedLastValid {
             got: None,
             expected: Some(gen_block_id(1, 1))
         }),
@@ -40,7 +36,7 @@ fn check_last_valid_rules() {
 
     assert_eq!(
         chain.apply_update(Update::new(Some(gen_block_id(1, 2)), gen_block_id(3, 3),)),
-        ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+        Result::Err(StaleReason::UnexpectedLastValid {
             got: Some(gen_block_id(1, 2)),
             expected: Some(gen_block_id(1, 1)),
         }),
@@ -49,7 +45,7 @@ fn check_last_valid_rules() {
 
     assert_eq!(
         chain.apply_update(Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 3),)),
-        ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
+        Result::Err(StaleReason::LastValidConflictsNewTip {
             last_valid: gen_block_id(1, 1),
             new_tip: gen_block_id(1, 3),
         }),
@@ -58,7 +54,7 @@ fn check_last_valid_rules() {
 
     assert_eq!(
         chain.apply_update(Update::new(Some(gen_block_id(1, 1)), gen_block_id(0, 3),)),
-        ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
+        Result::Err(StaleReason::LastValidConflictsNewTip {
             last_valid: gen_block_id(1, 1),
             new_tip: gen_block_id(0, 3),
         }),
@@ -71,10 +67,9 @@ fn check_invalidate_rules() {
     let mut chain = SparseChain::default();
 
     // add one checkpoint
-    assert_eq!(
-        chain.apply_update(Update::new(None, gen_block_id(1, 1))),
-        ApplyResult::Ok
-    );
+    chain
+        .apply_update(Update::new(None, gen_block_id(1, 1)))
+        .expect("should succeed");
 
     // when we are invalidating the one and only checkpoint, `last_valid` should be `None`
     assert_eq!(
@@ -82,7 +77,7 @@ fn check_invalidate_rules() {
             invalidate: Some(gen_block_id(1, 1)),
             ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 2))
         }),
-        ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+        Result::Err(StaleReason::UnexpectedLastValid {
             got: Some(gen_block_id(1, 1)),
             expected: None,
         }),
@@ -93,18 +88,18 @@ fn check_invalidate_rules() {
             invalidate: Some(gen_block_id(1, 1)),
             ..Update::new(None, gen_block_id(1, 2))
         }),
-        ApplyResult::Ok,
+        Result::Ok(()),
         "invalidate should succeed",
     );
 
     // add two checkpoints
     assert_eq!(
         chain.apply_update(Update::new(Some(gen_block_id(1, 2)), gen_block_id(2, 3))),
-        ApplyResult::Ok
+        Result::Ok(())
     );
     assert_eq!(
         chain.apply_update(Update::new(Some(gen_block_id(2, 3)), gen_block_id(3, 4),)),
-        ApplyResult::Ok
+        Result::Ok(())
     );
 
     // `invalidate` should directly follow `last_valid`
@@ -113,7 +108,7 @@ fn check_invalidate_rules() {
             invalidate: Some(gen_block_id(3, 4)),
             ..Update::new(Some(gen_block_id(1, 2)), gen_block_id(3, 5))
         }),
-        ApplyResult::Stale(StaleReason::UnexpectedLastValid {
+        Result::Err(StaleReason::UnexpectedLastValid {
             got: Some(gen_block_id(1, 2)),
             expected: Some(gen_block_id(2, 3)),
         }),
@@ -124,7 +119,7 @@ fn check_invalidate_rules() {
             invalidate: Some(gen_block_id(3, 4)),
             ..Update::new(Some(gen_block_id(2, 3)), gen_block_id(3, 5))
         }),
-        ApplyResult::Ok,
+        Result::Ok(()),
         "should succeed",
     );
 }
@@ -139,7 +134,7 @@ fn apply_tips() {
         let new_tip = gen_block_id(i, i as _);
         assert_eq!(
             chain.apply_update(Update::new(last_valid, new_tip)),
-            ApplyResult::Ok,
+            Result::Ok(()),
         );
         last_valid = Some(new_tip);
     }
@@ -147,7 +142,7 @@ fn apply_tips() {
     // repeated last tip should succeed
     assert_eq!(
         chain.apply_update(Update::new(last_valid, last_valid.unwrap())),
-        ApplyResult::Ok,
+        Result::Ok(()),
         "repeated last_tip should succeed"
     );
 
@@ -174,7 +169,7 @@ fn checkpoint_limit_is_respected() {
                 txids: [(gen_hash(i as _), TxHeight::Confirmed(i))].into(),
                 ..Update::new(last_valid, new_tip)
             }),
-            ApplyResult::Ok,
+            Result::Ok(()),
         );
         last_valid = Some(new_tip);
     }
@@ -197,7 +192,7 @@ fn add_txids() {
             txids: txids_1,
             ..Update::new(None, gen_block_id(1, 1))
         }),
-        ApplyResult::Ok,
+        Result::Ok(()),
         "add many txs in single checkpoint should succeed"
     );
 
@@ -208,7 +203,7 @@ fn add_txids() {
                 .collect(),
             ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
         }),
-        ApplyResult::Stale(StaleReason::TxidHeightGreaterThanTip {
+        Result::Err(StaleReason::TxidHeightGreaterThanTip {
             new_tip: gen_block_id(2, 2),
             txid: (gen_hash(2), TxHeight::Confirmed(3)),
         }),
@@ -222,10 +217,7 @@ fn add_txs_of_same_height_with_different_updates() {
     let block = gen_block_id(0, 0);
 
     // add one block
-    assert_eq!(
-        chain.apply_update(Update::new(None, block)),
-        ApplyResult::Ok
-    );
+    assert_eq!(chain.apply_update(Update::new(None, block)), Result::Ok(()));
 
     // add txs of same height with different updates
     (0..100).for_each(|i| {
@@ -234,7 +226,7 @@ fn add_txs_of_same_height_with_different_updates() {
                 txids: [(gen_hash(i as _), TxHeight::Confirmed(0))].into(),
                 ..Update::new(Some(block), block)
             }),
-            ApplyResult::Ok,
+            Result::Ok(()),
         );
     });
 
@@ -257,7 +249,7 @@ fn confirm_tx() {
             .into(),
             ..Update::new(None, gen_block_id(1, 1))
         }),
-        ApplyResult::Ok,
+        Result::Ok(()),
         "adding two txs from mempool should succeed"
     );
 
@@ -266,7 +258,7 @@ fn confirm_tx() {
             txids: [(gen_hash(10), TxHeight::Confirmed(0))].into(),
             ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 1))
         }),
-        ApplyResult::Ok,
+        Result::Ok(()),
         "it should be okay to confirm tx into block before last_valid (partial sync)",
     );
     assert_eq!(chain.iter_txids().count(), 2);
@@ -278,7 +270,7 @@ fn confirm_tx() {
             txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
             ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
         }),
-        ApplyResult::Ok,
+        Result::Ok(()),
         "it should be okay to confirm tx into the tip introduced",
     );
     assert_eq!(chain.iter_txids().count(), 2);
@@ -290,7 +282,7 @@ fn confirm_tx() {
             txids: [(gen_hash(10), TxHeight::Unconfirmed)].into(),
             ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(2, 2))
         }),
-        ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
+        Result::Err(StaleReason::TxUnexpectedlyMoved {
             txid: gen_hash(10),
             from: TxHeight::Confirmed(0),
             to: TxHeight::Unconfirmed,
@@ -303,7 +295,7 @@ fn confirm_tx() {
             txids: [(gen_hash(20), TxHeight::Confirmed(3))].into(),
             ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
         }),
-        ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
+        Result::Err(StaleReason::TxUnexpectedlyMoved {
             txid: gen_hash(20),
             from: TxHeight::Confirmed(2),
             to: TxHeight::Confirmed(3),
@@ -316,7 +308,7 @@ fn confirm_tx() {
             txids: [(gen_hash(20), TxHeight::Confirmed(1))].into(),
             ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
         }),
-        ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
+        Result::Err(StaleReason::TxUnexpectedlyMoved {
             txid: gen_hash(20),
             from: TxHeight::Confirmed(2),
             to: TxHeight::Confirmed(1),
@@ -329,7 +321,7 @@ fn confirm_tx() {
             txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
             ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
         }),
-        ApplyResult::Ok,
+        Result::Ok(()),
         "update can introduce already-existing tx"
     );
     assert_eq!(chain.iter_txids().count(), 2);
