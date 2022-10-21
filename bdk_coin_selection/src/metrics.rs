@@ -23,8 +23,9 @@ where
     fn bound<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
         let rate_diff = self.target.feerate.spwu() - self.long_term_feerate.spwu();
         let current_change = change_lower_bound(cs, self.target, &self.change_policy);
-        // 0 excess waste represents the most optimisitc lower bound
-        let excess_discount = 0.0;
+        // 0 excess represents the most optimistic excess for the purposes of producing a
+        // lower bound.
+        let excess_multiplyer = 0.0;
 
         if rate_diff >= 0.0 {
             let mut cs = cs.clone();
@@ -35,7 +36,7 @@ where
                 self.target,
                 self.long_term_feerate,
                 current_change,
-                excess_discount,
+                excess_multiplyer,
             );
             Some(Ordf32(lower_bound))
         } else {
@@ -53,8 +54,12 @@ where
                 cs.select_all();
                 let change = (self.change_policy)(&cs, self.target);
                 if cs.is_target_met(self.target, change) {
-                    lower_bound =
-                        Some(cs.waste(self.target, self.long_term_feerate, change, excess_discount))
+                    lower_bound = Some(cs.waste(
+                        self.target,
+                        self.long_term_feerate,
+                        change,
+                        excess_multiplyer,
+                    ))
                 }
             }
 
@@ -69,7 +74,7 @@ where
                         self.target,
                         self.long_term_feerate,
                         Drain::none(),
-                        excess_discount,
+                        excess_multiplyer,
                     );
                     lower_bound = Some(lower_bound.unwrap_or(f32::MAX).min(changeless_lower_bound))
                 }
@@ -141,6 +146,35 @@ fn change_lower_bound<'a>(
         Drain::none()
     }
 }
+
+macro_rules! impl_for_tuple {
+    ($($a:ident $b:tt)*) => {
+        impl<$($a),*> BnBMetric for ($($a),*)
+            where $($a: BnBMetric),*
+        {
+            type Score=($(<$a>::Score),*);
+
+            #[allow(unused)]
+            fn score<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
+                Some(($(self.$b.score(cs)?),*))
+            }
+            #[allow(unused)]
+            fn bound<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
+                Some(($(self.$b.bound(cs)?),*))
+            }
+            #[allow(unused)]
+            fn requires_ordering_by_descending_effective_value(&self) -> Option<FeeRate> {
+                None$(.or(self.$b.requires_ordering_by_descending_effective_value()))*
+            }
+        }
+    };
+}
+
+impl_for_tuple!();
+impl_for_tuple!(A 0 B 1);
+impl_for_tuple!(A 0 B 1 C 2);
+impl_for_tuple!(A 0 B 1 C 2 D 3);
+impl_for_tuple!(A 0 B 1 C 2 D 3 E 4);
 
 #[cfg(test)]
 mod test {
@@ -235,7 +269,6 @@ mod test {
 
             let best = solutions
                 .enumerate()
-                .take(10_000)
                 .inspect(|(i, _)| if start.elapsed().as_secs() > 1 {
                     // this vaguely means something is wrong and we should check it out
                     panic!("longer than a second elapsed on iteration {}", i);
