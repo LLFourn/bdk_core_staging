@@ -12,6 +12,8 @@ mod descriptor_ext;
 pub use descriptor_ext::*;
 mod sparse_chain;
 pub use sparse_chain::*;
+mod tx_graph;
+pub use tx_graph::*;
 
 #[allow(unused_imports)]
 #[macro_use]

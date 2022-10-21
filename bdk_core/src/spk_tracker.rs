@@ -1,8 +1,8 @@
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    FullTxOut, SparseChain, Vec,
+    SparseChain, TxGraph,
 };
-use bitcoin::{self, hashes::sha256, OutPoint, Script, Transaction, Txid};
+use bitcoin::{self, OutPoint, Script, Transaction, TxOut};
 
 /// A *script pubkey* tracker.
 ///
@@ -27,8 +27,6 @@ pub struct SpkTracker<I> {
     txouts: BTreeMap<OutPoint, I>,
     /// A lookup from script pubkey derivation index to related outpoints
     spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
-    /// A set of previous txid digests the tracker has seen.
-    txid_digests_seen: HashSet<sha256::Hash>,
 }
 
 impl<I> Default for SpkTracker<I> {
@@ -39,97 +37,45 @@ impl<I> Default for SpkTracker<I> {
             spk_indexes: Default::default(),
             spk_txouts: Default::default(),
             unused: Default::default(),
-            txid_digests_seen: Default::default(),
         }
     }
 }
 
 impl<I: Clone + Ord> SpkTracker<I> {
-    pub fn sync(&mut self, chain: &SparseChain) {
-        // by reverse iterating the checkpoints and collecting the transactions until we find a
-        // checkpoint with a txid digest we've seen we avoid having to apply *all* the transactions
-        // in the sparse chain every time.
-        let txids_to_add = chain
-            .iter_checkpoints(..)
-            .rev()
-            .take_while(|checkpoint_id| {
-                !self
-                    .txid_digests_seen
-                    .contains(&chain.txid_digest_at(*checkpoint_id))
-            })
-            .flat_map(|checkpoint_id| chain.checkpoint_txids(checkpoint_id))
-            .chain(chain.unconfirmed().iter().cloned())
-            .collect::<Vec<_>>();
-
-        for txid_to_add in txids_to_add {
-            self.add_tx(txid_to_add, chain);
-        }
-
-        if let Some(latest_checkpoint) = chain.latest_checkpoint() {
-            let latest_txid_digest = chain.txid_digest_at(latest_checkpoint);
-            self.txid_digests_seen.insert(latest_txid_digest);
-        }
+    pub fn sync(&mut self, graph: &TxGraph) {
+        graph
+            .iter_all_txouts()
+            .for_each(|(op, txout)| self.add_txout(&op, txout));
     }
 
-    fn add_tx(&mut self, txid: Txid, chain: &SparseChain) {
-        let tx = &chain.get_tx(txid).expect("must exist").tx;
-        for (i, out) in tx.output.iter().enumerate() {
-            if let Some(index) = self.index_of_spk(&out.script_pubkey) {
-                let outpoint = OutPoint {
-                    txid,
-                    vout: i as u32,
-                };
-
-                self.txouts.insert(outpoint, index.clone());
-
-                let txos_for_script = self.spk_txouts.entry(index.clone()).or_default();
-                txos_for_script.insert(outpoint);
-                self.unused.remove(&index);
-            }
+    fn add_txout(&mut self, op: &OutPoint, txout: &TxOut) {
+        if let Some(spk_i) = self.index_of_spk(&txout.script_pubkey) {
+            self.txouts.insert(op.clone(), spk_i.clone());
+            self.spk_txouts
+                .entry(spk_i.clone())
+                .or_default()
+                .insert(op.clone());
+            self.unused.remove(&spk_i);
         }
     }
 
     /// Iterate over unspent transactions outputs (i.e. UTXOs).
+    /// TODO: Remove when we add `UnspentTracker`.
     pub fn iter_unspent<'a>(
         &'a self,
         chain: &'a SparseChain,
-    ) -> impl Iterator<Item = (I, OutPoint)> + '_ {
-        // TODO: index unspent txouts somewhow
-        self.iter_txout(chain)
-            .filter(|(_, outpoint)| chain.outspend(*outpoint).is_none())
+        graph: &'a TxGraph,
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + '_ {
+        self.iter_txout()
+            .filter(|(_, outpoint)| chain.transaction_height(&outpoint.txid).is_some())
+            .filter(|(_, outpoint)| graph.is_unspent(outpoint).expect("should exist"))
     }
 
-    /// Convience method for retreiving  the same txouts [`iter_unspent`] gives and turning each outpoint into a `FullTxOut`
-    /// using data from `chain`.
-    ///
-    /// [`iter_unspent`]: Self::iter_unspent
-    pub fn iter_unspent_full<'a>(
-        &'a self,
-        chain: &'a SparseChain,
-    ) -> impl Iterator<Item = (I, FullTxOut)> + 'a {
-        self.iter_txout_full(chain)
-            .filter(|(_, txout)| txout.spent_by.is_none())
-    }
-
-    /// Iterate over all the transaction outputs disovered by the tracker along with their
-    /// associated script index.
-    pub fn iter_txout_full<'a>(
-        &'a self,
-        chain: &'a SparseChain,
-    ) -> impl DoubleEndedIterator<Item = (I, FullTxOut)> + 'a {
-        self.txouts.iter().filter_map(|(outpoint, spk_index)| {
-            Some((spk_index.clone(), chain.full_txout(*outpoint)?))
-        })
-    }
-
+    /// Iterate over all known txouts that spend to tracked scriptPubKeys.
     pub fn iter_txout<'a>(
         &'a self,
-        chain: &'a SparseChain,
-    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + 'a {
-        self.txouts
-            .iter()
-            .filter(|(outpoint, _)| chain.get_tx(outpoint.txid).is_some())
-            .map(|(op, index)| (index.clone(), *op))
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + ExactSizeIterator + 'a {
+        self.txouts.iter().map(|(op, index)| (index.clone(), *op))
     }
 
     /// Returns the index of the script pubkey at `outpoint`.
@@ -162,7 +108,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
     }
 
     /// Iterate over the script pubkeys that have been derived but do not have a transaction spending to them.
-    pub fn iter_unused(&self) -> impl Iterator<Item = (I, &Script)> {
+    pub fn iter_unused(&self) -> impl DoubleEndedIterator<Item = (I, &Script)> + ExactSizeIterator {
         self.unused.iter().map(|index| {
             (
                 index.clone(),

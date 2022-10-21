@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    BlockId, CheckpointCandidate, TxAtBlock,
+    BlockId, CheckpointCandidate,
 };
 pub use ureq;
 use ureq::Agent;
@@ -175,11 +175,11 @@ impl Client {
         let mut transactions = vec![];
         let mut last_active_index = None;
         let mut invalidate = None;
-        let mut base_tip = None;
+        let mut last_valid = None;
 
         for tip in known_tips {
             if self.is_block_present(tip)? {
-                base_tip = Some(tip);
+                last_valid = Some(tip);
                 break;
             } else {
                 invalidate = Some(tip);
@@ -231,10 +231,7 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    transactions.push(TxAtBlock {
-                        tx: tx.to_tx(),
-                        confirmation_time: tx.status.to_block_time(),
-                    })
+                    transactions.push((tx.to_tx(), tx.status.to_block_time()))
                 }
             }
 
@@ -248,8 +245,11 @@ impl Client {
         }
 
         let update = CheckpointCandidate {
-            transactions,
-            base_tip,
+            txids: transactions
+                .iter()
+                .map(|(tx, conf)| (tx.txid(), conf.map(|b| b.height)))
+                .collect(),
+            last_valid,
             invalidate,
             new_tip,
         };
