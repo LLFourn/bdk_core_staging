@@ -1,6 +1,6 @@
 use core::{fmt::Display, ops::RangeBounds};
 
-use crate::{collections::*, BlockId, TxGraph, Vec};
+use crate::{alloc::string::String, collections::*, BlockId, TxGraph, Vec};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
@@ -46,6 +46,54 @@ pub enum StaleReason {
         from: Option<u32>,
         to: Option<u32>,
     },
+}
+
+impl core::fmt::Display for StaleReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        fn print_block(id: &BlockId) -> String {
+            format!("{} @ {}", id.hash, id.height)
+        }
+
+        fn print_block_opt(id: &Option<BlockId>) -> String {
+            match id {
+                Some(id) => print_block(id),
+                None => "None".into(),
+            }
+        }
+
+        match self {
+            StaleReason::LastValidConflictsNewTip {
+                new_tip,
+                last_valid,
+            } => write!(
+                f,
+                "last_valid ({}) conflicts with new_tip ({})",
+                print_block(last_valid),
+                print_block(new_tip)
+            ),
+            StaleReason::UnexpectedLastValid { got, expected } => write!(
+                f,
+                "last_valid is ({}), when ({}) is expected",
+                print_block_opt(got),
+                print_block_opt(expected)
+            ),
+            StaleReason::TxidHeightGreaterThanTip {
+                new_tip,
+                txid: (txid, conf),
+            } => write!(
+                f,
+                "updated tx's ({}) confirmation height ({:?}) is greater than new_tip ({})",
+                txid,
+                conf,
+                print_block(new_tip)
+            ),
+            StaleReason::TxUnexpectedlyMoved { txid, from, to } => write!(
+                f,
+                "updated tx ({}) unexpectedly moved from {:?} to {:?}",
+                txid, from, to
+            ),
+        }
+    }
 }
 
 impl SparseChain {
