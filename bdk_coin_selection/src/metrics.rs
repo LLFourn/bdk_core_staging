@@ -14,8 +14,7 @@ where
 
     fn score<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
         let drain = (self.change_policy)(cs, self.target);
-        let excess = cs.excess(self.target, drain);
-        if excess < 0 {
+        if !cs.is_target_met(self.target, drain) {
             return None;
         }
         let score = cs
@@ -174,7 +173,7 @@ mod test {
         long_term_feerate: FeeRate,
         change_policy: &impl Fn(&CoinSelector, Target) -> Drain,
         rng: &mut impl RngCore,
-    ) -> Option<CoinSelector<'a>> {
+    ) -> CoinSelector<'a> {
         let mut cs = cs.clone();
 
         let mut last_waste: Option<f32> = None;
@@ -191,12 +190,7 @@ mod test {
                 last_waste = Some(curr_waste);
             }
         }
-
-        if cs.is_target_met(target, change_policy(&cs, target)) {
-            Some(cs)
-        } else {
-            None
-        }
+        cs
     }
 
     proptest! {
@@ -258,26 +252,37 @@ mod test {
                         {
                             let mut naive_select = cs.clone();
                             naive_select.sort_candidates_by_descending_effective_value(target.feerate);
-                            naive_select.select_until_target_met(target, drain).expect("should be able to reach target");
+                            // we filter out failing onces below
+                            let _ = naive_select.select_until_target_met(target, drain);
                             naive_select
                         },
                         {
+
                             let mut all_selected = cs.clone();
                             all_selected.select_all();
                             all_selected
                         },
+                        {
+                            let mut all_effective_selected = cs.clone();
+                            all_effective_selected.select_all_effective(target.feerate);
+                            all_effective_selected
+                        }
                     ];
 
-                    cmp_benchmarks.extend((0..5).filter_map(|_|randomly_satisfy_target_with_low_waste(&cs, target, long_term_feerate, &change_policy, &mut rng)));
+                    cmp_benchmarks.extend((0..5).map(|_|randomly_satisfy_target_with_low_waste(&cs, target, long_term_feerate, &change_policy, &mut rng)));
+
+                    let cmp_benchmarks = cmp_benchmarks.into_iter().filter(|cs| !cs.is_target_met(target, change_policy(&cs, target)));
 
                     let sol_waste = sol.waste(target, long_term_feerate, change_policy(&sol, target), 1.0);
 
-                    for (_bench_id, bench) in cmp_benchmarks.iter().enumerate() {
+                    for (_bench_id, bench) in cmp_benchmarks.enumerate() {
                         let bench_waste = bench.waste(target, long_term_feerate, change_policy(&bench, target), 1.0);
                         prop_assert!(sol_waste.round() <= bench_waste.round());
                     }
                 },
-                None => prop_assert!(!cs.is_selection_possible(target))
+                None => {
+                    prop_assert!(!cs.is_selection_plausible_with_change_policy(target, &change_policy));
+                }
             }
 
             dbg!(start.elapsed());

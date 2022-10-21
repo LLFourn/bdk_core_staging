@@ -149,10 +149,20 @@ impl<'a> CoinSelector<'a> {
         self.selected.contains(&index)
     }
 
-    pub fn is_selection_possible(&self, target: Target) -> bool {
+    pub fn is_selection_possible(&self, target: Target, drain: Drain) -> bool {
         let mut test = self.clone();
         test.select_all_effective(target.feerate);
-        test.excess(target, Drain::none()) >= 0
+        test.is_target_met(target, drain)
+    }
+
+    pub fn is_selection_plausible_with_change_policy(
+        &self,
+        target: Target,
+        change_policy: &impl Fn(&CoinSelector<'a>, Target) -> Drain,
+    ) -> bool {
+        let mut test = self.clone();
+        test.select_all_effective(target.feerate);
+        test.is_target_met(target, change_policy(&test, target))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -306,7 +316,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     pub fn select_all_effective(&mut self, feerate: FeeRate) {
-        // TODO: remove collect here
+        // TODO: do this without allocating
         for i in self.unselected_indexes().collect::<Vec<_>>() {
             if self.candidates[i].effective_value(feerate) > 0 {
                 self.select(i);
