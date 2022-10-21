@@ -247,7 +247,7 @@ impl Client {
         let update = Update {
             txids: transactions
                 .iter()
-                .map(|(tx, conf)| (tx.txid(), conf.map(|b| b.height)))
+                .map(|(tx, conf)| (tx.txid(), conf.map(|b| b.height).into()))
                 .collect(),
             last_valid,
             invalidate,

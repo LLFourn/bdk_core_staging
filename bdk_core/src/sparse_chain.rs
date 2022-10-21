@@ -39,12 +39,12 @@ pub enum StaleReason {
     },
     TxidHeightGreaterThanTip {
         new_tip: BlockId,
-        txid: (Txid, Option<u32>),
+        txid: (Txid, TxHeight),
     },
     TxUnexpectedlyMoved {
         txid: Txid,
-        from: Option<u32>,
-        to: Option<u32>,
+        from: TxHeight,
+        to: TxHeight,
     },
 }
 
@@ -165,7 +165,7 @@ impl SparseChain {
         let mut checkpoint = Update {
             txids: transactions
                 .into_iter()
-                .map(|txid| (txid, Some(block_id.height)))
+                .map(|txid| (txid, TxHeight::Confirmed(block_id.height)))
                 .collect(),
             last_valid: self.latest_checkpoint(),
             invalidate: None,
@@ -215,7 +215,7 @@ impl SparseChain {
 
         for (txid, tx_height) in &update.txids {
             // ensure new_height does not surpass latest checkpoint
-            if matches!(tx_height, Some(tx_h) if tx_h > &update.new_tip.height) {
+            if matches!(tx_height, TxHeight::Confirmed(tx_h) if tx_h > &update.new_tip.height) {
                 return ApplyResult::Stale(StaleReason::TxidHeightGreaterThanTip {
                     new_tip: update.new_tip,
                     txid: (*txid, tx_height.clone()),
@@ -226,9 +226,9 @@ impl SparseChain {
             // to be invalidated)
             if let Some(&height) = self.txid_to_index.get(txid) {
                 // no need to check consistency if height will be invalidated
-                // tx is consistent if height stays the same
                 if matches!(update.invalidate, Some(invalid) if height >= invalid.height)
-                    || matches!(tx_height, Some(new_height) if *new_height == height)
+                    // tx is consistent if height stays the same
+                    || matches!(tx_height, TxHeight::Confirmed(new_height) if *new_height == height)
                 {
                     continue;
                 }
@@ -236,7 +236,7 @@ impl SparseChain {
                 // inconsistent
                 return ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
                     txid: *txid,
-                    from: Some(height),
+                    from: TxHeight::Confirmed(height),
                     to: *tx_height,
                 });
             }
@@ -253,13 +253,13 @@ impl SparseChain {
 
         for (txid, conf) in update.txids {
             match conf {
-                Some(height) => {
+                TxHeight::Confirmed(height) => {
                     if self.txid_by_height.insert((height, txid)) {
                         self.txid_to_index.insert(txid, height);
                         self.mempool.remove(&txid);
                     }
                 }
-                None => {
+                TxHeight::Unconfirmed => {
                     self.mempool.insert(txid);
                 }
             }
@@ -370,7 +370,7 @@ impl SparseChain {
 pub struct Update {
     /// List of transactions in this checkpoint. They needs to be consistent with [`SparseChain`]'s
     /// state for the [`Update`] to be included.
-    pub txids: Vec<(Txid, Option<u32>)>,
+    pub txids: HashMap<Txid, TxHeight>,
 
     /// This should be the latest valid checkpoint of [`SparseChain`]; used to avoid conflicts.
     /// If `invalidate == None`, then this would be be the latest checkpoint of [`SparseChain`].
@@ -390,7 +390,7 @@ impl Update {
     /// Helper function to create a template update.
     pub fn new(last_valid: Option<BlockId>, new_tip: BlockId) -> Self {
         Self {
-            txids: Vec::new(),
+            txids: HashMap::new(),
             last_valid,
             invalidate: None,
             new_tip,
@@ -410,6 +410,15 @@ impl Display for TxHeight {
         match self {
             Self::Confirmed(h) => core::write!(f, "confirmed_at({})", h),
             Self::Unconfirmed => core::write!(f, "unconfirmed"),
+        }
+    }
+}
+
+impl From<Option<u32>> for TxHeight {
+    fn from(opt: Option<u32>) -> Self {
+        match opt {
+            Some(h) => Self::Confirmed(h),
+            None => Self::Unconfirmed,
         }
     }
 }

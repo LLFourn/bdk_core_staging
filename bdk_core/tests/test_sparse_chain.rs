@@ -171,7 +171,7 @@ fn checkpoint_limit_is_respected() {
         let new_tip = gen_block_id(i, i as _);
         assert_eq!(
             chain.apply_update(Update {
-                txids: vec![(gen_hash(i as _), Some(i)),],
+                txids: [(gen_hash(i as _), TxHeight::Confirmed(i))].into(),
                 ..Update::new(last_valid, new_tip)
             }),
             ApplyResult::Ok,
@@ -189,7 +189,7 @@ fn add_txids() {
 
     let txids_1 = (0..100)
         .map(gen_hash::<Txid>)
-        .map(|txid| (txid, Some(1)))
+        .map(|txid| (txid, TxHeight::Confirmed(1)))
         .collect();
 
     assert_eq!(
@@ -203,12 +203,14 @@ fn add_txids() {
 
     assert_eq!(
         chain.apply_update(Update {
-            txids: vec![(gen_hash(2), Some(3))],
+            txids: [(gen_hash(2), TxHeight::Confirmed(3))]
+                .into_iter()
+                .collect(),
             ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
         }),
         ApplyResult::Stale(StaleReason::TxidHeightGreaterThanTip {
             new_tip: gen_block_id(2, 2),
-            txid: (gen_hash(2), Some(3)),
+            txid: (gen_hash(2), TxHeight::Confirmed(3)),
         }),
         "adding tx with height greater than new tip should fail",
     );
@@ -229,7 +231,7 @@ fn add_txs_of_same_height_with_different_updates() {
     (0..100).for_each(|i| {
         assert_eq!(
             chain.apply_update(Update {
-                txids: vec![(gen_hash(i as _), Some(0))],
+                txids: [(gen_hash(i as _), TxHeight::Confirmed(0))].into(),
                 ..Update::new(Some(block), block)
             }),
             ApplyResult::Ok,
@@ -248,7 +250,11 @@ fn confirm_tx() {
 
     assert_eq!(
         chain.apply_update(Update {
-            txids: vec![(gen_hash(10), None), (gen_hash(20), None)],
+            txids: [
+                (gen_hash(10), TxHeight::Unconfirmed),
+                (gen_hash(20), TxHeight::Unconfirmed)
+            ]
+            .into(),
             ..Update::new(None, gen_block_id(1, 1))
         }),
         ApplyResult::Ok,
@@ -257,7 +263,7 @@ fn confirm_tx() {
 
     assert_eq!(
         chain.apply_update(Update {
-            txids: vec![(gen_hash(10), Some(0))],
+            txids: [(gen_hash(10), TxHeight::Confirmed(0))].into(),
             ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 1))
         }),
         ApplyResult::Ok,
@@ -269,7 +275,7 @@ fn confirm_tx() {
 
     assert_eq!(
         chain.apply_update(Update {
-            txids: vec![(gen_hash(20), Some(2))],
+            txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
             ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
         }),
         ApplyResult::Ok,
@@ -281,46 +287,46 @@ fn confirm_tx() {
 
     assert_eq!(
         chain.apply_update(Update {
-            txids: vec![(gen_hash(10), None)],
+            txids: [(gen_hash(10), TxHeight::Unconfirmed)].into(),
             ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(2, 2))
         }),
         ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
             txid: gen_hash(10),
-            from: Some(0),
-            to: None,
+            from: TxHeight::Confirmed(0),
+            to: TxHeight::Unconfirmed,
         }),
         "tx cannot be unconfirmed without invalidate"
     );
 
     assert_eq!(
         chain.apply_update(Update {
-            txids: vec![(gen_hash(20), Some(3))],
+            txids: [(gen_hash(20), TxHeight::Confirmed(3))].into(),
             ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
         }),
         ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
             txid: gen_hash(20),
-            from: Some(2),
-            to: Some(3),
+            from: TxHeight::Confirmed(2),
+            to: TxHeight::Confirmed(3),
         }),
         "tx cannot move forward in blocks without invalidate"
     );
 
     assert_eq!(
         chain.apply_update(Update {
-            txids: vec![(gen_hash(20), Some(1))],
+            txids: [(gen_hash(20), TxHeight::Confirmed(1))].into(),
             ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
         }),
         ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
             txid: gen_hash(20),
-            from: Some(2),
-            to: Some(1),
+            from: TxHeight::Confirmed(2),
+            to: TxHeight::Confirmed(1),
         }),
         "tx cannot move backwards in blocks without invalidate"
     );
 
     assert_eq!(
         chain.apply_update(Update {
-            txids: vec![(gen_hash(20), Some(2))],
+            txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
             ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
         }),
         ApplyResult::Ok,
