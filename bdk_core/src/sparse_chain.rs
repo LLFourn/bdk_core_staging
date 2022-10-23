@@ -17,29 +17,44 @@ pub struct SparseChain {
     checkpoint_limit: Option<usize>,
 }
 
-/// Returned when [`SparseChain`] update is stale.
+/// Represents an update failure of [`SparseChain`].
 #[derive(Clone, Debug, PartialEq)]
-pub enum StaleReason {
+pub enum UpdateFailure {
+    /// The [`Update`] is total bogus. Cannot be applied to any [`SparseChain`].
+    Bogus(BogusReason),
+
+    /// The [`Update`] cannot be applied to this [`SparseChain`] because the `last_valid` value does
+    /// not match with the current state of the chain.
+    Stale {
+        got_last_valid: Option<BlockId>,
+        expected_last_valid: Option<BlockId>,
+    },
+
+    /// The [`Update`] canot be applied, because there are inconsistent tx states.
+    /// This only reports the first inconsistency.
+    Inconsistent {
+        inconsistent_txid: Txid,
+        original_height: TxHeight,
+        update_height: TxHeight,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BogusReason {
+    /// `last_valid` conflicts with `new_tip`.
     LastValidConflictsNewTip {
         new_tip: BlockId,
         last_valid: BlockId,
     },
-    UnexpectedLastValid {
-        got: Option<BlockId>,
-        expected: Option<BlockId>,
-    },
-    TxidHeightGreaterThanTip {
+
+    /// At least one `txid` has a confirmation height greater than `new_tip`.
+    TxHeightGreaterThanTip {
         new_tip: BlockId,
-        txid: (Txid, TxHeight),
-    },
-    TxUnexpectedlyMoved {
-        txid: Txid,
-        from: TxHeight,
-        to: TxHeight,
+        tx: (Txid, TxHeight),
     },
 }
 
-impl core::fmt::Display for StaleReason {
+impl core::fmt::Display for UpdateFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         fn print_block(id: &BlockId) -> String {
             format!("{} @ {}", id.hash, id.height)
@@ -53,42 +68,31 @@ impl core::fmt::Display for StaleReason {
         }
 
         match self {
-            StaleReason::LastValidConflictsNewTip {
-                new_tip,
-                last_valid,
-            } => write!(
-                f,
-                "last_valid ({}) conflicts with new_tip ({})",
-                print_block(last_valid),
-                print_block(new_tip)
-            ),
-            StaleReason::UnexpectedLastValid { got, expected } => write!(
-                f,
-                "last_valid is ({}), when ({}) is expected",
-                print_block_opt(got),
-                print_block_opt(expected)
-            ),
-            StaleReason::TxidHeightGreaterThanTip {
-                new_tip,
-                txid: (txid, conf),
-            } => write!(
-                f,
-                "updated tx's ({}) confirmation height ({:?}) is greater than new_tip ({})",
-                txid,
-                conf,
-                print_block(new_tip)
-            ),
-            StaleReason::TxUnexpectedlyMoved { txid, from, to } => write!(
-                f,
-                "updated tx ({}) unexpectedly moved from {:?} to {:?}",
-                txid, from, to
-            ),
+            Self::Bogus(reason) => {
+                write!(f, "bogus update: ")?;
+                match reason {
+                    BogusReason::LastValidConflictsNewTip { new_tip, last_valid } =>
+                        write!(f, "last_valid ({}) conflicts new_tip ({})", 
+                            print_block(last_valid), print_block(new_tip)),
+
+                    BogusReason::TxHeightGreaterThanTip { new_tip, tx: txid } =>
+                        write!(f, "tx ({}) confirmation height ({}) is greater than new_tip ({})", 
+                            txid.0, txid.1, print_block(new_tip)),
+                }
+            },
+            Self::Stale { got_last_valid, expected_last_valid } =>
+                write!(f, "stale update: got last_valid ({}) when expecting ({})", 
+                    print_block_opt(got_last_valid), print_block_opt(expected_last_valid)),
+
+            Self::Inconsistent { inconsistent_txid, original_height, update_height } =>
+                write!(f, "inconsistent update: first inconsistent tx is ({}) which had confirmation height ({}), but is ({}) in the update", 
+                    inconsistent_txid, original_height, update_height),
         }
     }
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for StaleReason {}
+impl std::error::Error for UpdateFailure {}
 
 impl SparseChain {
     /// Get the transaction ids in a particular checkpoint.
@@ -155,7 +159,7 @@ impl SparseChain {
         &mut self,
         block_id: BlockId,
         transactions: impl IntoIterator<Item = Txid>,
-    ) -> Result<(), StaleReason> {
+    ) -> Result<(), UpdateFailure> {
         let mut checkpoint = Update {
             txids: transactions
                 .into_iter()
@@ -176,7 +180,7 @@ impl SparseChain {
 
     /// Applies a new [`Update`] to the tracker.
     #[must_use]
-    pub fn apply_update(&mut self, update: Update) -> Result<(), StaleReason> {
+    pub fn apply_update(&mut self, update: Update) -> Result<(), UpdateFailure> {
         // if there is no `invalidate`, `last_valid` should be the last checkpoint in sparsechain
         // if there is `invalidate`, `last_valid` should be the checkpoint preceding `invalidate`
         let expected_last_valid = {
@@ -187,9 +191,9 @@ impl SparseChain {
                 .map(|(&height, &hash)| BlockId { height, hash })
         };
         if update.last_valid != expected_last_valid {
-            return Result::Err(StaleReason::UnexpectedLastValid {
-                got: update.last_valid,
-                expected: expected_last_valid,
+            return Result::Err(UpdateFailure::Stale {
+                got_last_valid: update.last_valid,
+                expected_last_valid: expected_last_valid,
             });
         }
 
@@ -200,20 +204,22 @@ impl SparseChain {
                 || update.new_tip.height == last_valid.height
                     && update.new_tip.hash != last_valid.hash
             {
-                return Result::Err(StaleReason::LastValidConflictsNewTip {
-                    new_tip: update.new_tip,
-                    last_valid,
-                });
+                return Result::Err(UpdateFailure::Bogus(
+                    BogusReason::LastValidConflictsNewTip {
+                        new_tip: update.new_tip,
+                        last_valid,
+                    },
+                ));
             }
         }
 
         for (txid, tx_height) in &update.txids {
             // ensure new_height does not surpass latest checkpoint
             if matches!(tx_height, TxHeight::Confirmed(tx_h) if tx_h > &update.new_tip.height) {
-                return Result::Err(StaleReason::TxidHeightGreaterThanTip {
+                return Result::Err(UpdateFailure::Bogus(BogusReason::TxHeightGreaterThanTip {
                     new_tip: update.new_tip,
-                    txid: (*txid, tx_height.clone()),
-                });
+                    tx: (*txid, tx_height.clone()),
+                }));
             }
 
             // ensure all currently confirmed txs are still at the same height (unless, if they are
@@ -228,10 +234,10 @@ impl SparseChain {
                 }
 
                 // inconsistent
-                return Result::Err(StaleReason::TxUnexpectedlyMoved {
-                    txid: *txid,
-                    from: TxHeight::Confirmed(height),
-                    to: *tx_height,
+                return Result::Err(UpdateFailure::Inconsistent {
+                    inconsistent_txid: *txid,
+                    original_height: TxHeight::Confirmed(height),
+                    update_height: *tx_height,
                 });
             }
         }

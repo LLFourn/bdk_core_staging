@@ -26,39 +26,43 @@ fn check_last_valid_rules() {
         .expect("applying second tip on top of first should succeed");
 
     assert_eq!(
-        chain.apply_update(Update::new(None, gen_block_id(2, 2))),
-        Result::Err(StaleReason::UnexpectedLastValid {
-            got: None,
-            expected: Some(gen_block_id(1, 1))
-        }),
-        "applying third tip on top without specifying last valid should fail",
+        chain
+            .apply_update(Update::new(None, gen_block_id(2, 2)))
+            .expect_err("applying tip without specifying last valid should fail"),
+        UpdateFailure::Stale {
+            got_last_valid: None,
+            expected_last_valid: Some(gen_block_id(1, 1))
+        }
     );
 
     assert_eq!(
-        chain.apply_update(Update::new(Some(gen_block_id(1, 2)), gen_block_id(3, 3),)),
-        Result::Err(StaleReason::UnexpectedLastValid {
-            got: Some(gen_block_id(1, 2)),
-            expected: Some(gen_block_id(1, 1)),
-        }),
-        "applying new tip, in which suppled last_valid is non-existant, should fail",
+        chain
+            .apply_update(Update::new(Some(gen_block_id(1, 2)), gen_block_id(3, 3)))
+            .expect_err("apply tip, while specifying non-existant last_valid should fail"),
+        UpdateFailure::Stale {
+            got_last_valid: Some(gen_block_id(1, 2)),
+            expected_last_valid: Some(gen_block_id(1, 1))
+        },
     );
 
     assert_eq!(
-        chain.apply_update(Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 3),)),
-        Result::Err(StaleReason::LastValidConflictsNewTip {
+        chain
+            .apply_update(Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 3),))
+            .expect_err("applying new_tip which conflicts with last_valid should fail"),
+        UpdateFailure::Bogus(BogusReason::LastValidConflictsNewTip {
             last_valid: gen_block_id(1, 1),
             new_tip: gen_block_id(1, 3),
-        }),
-        "applying new tip, in which new_tip conflicts last_valid, should fail",
+        })
     );
 
     assert_eq!(
-        chain.apply_update(Update::new(Some(gen_block_id(1, 1)), gen_block_id(0, 3),)),
-        Result::Err(StaleReason::LastValidConflictsNewTip {
+        chain
+            .apply_update(Update::new(Some(gen_block_id(1, 1)), gen_block_id(0, 3),))
+            .expect_err("applying new tip that conflicts last_valid should fail (2)"),
+        UpdateFailure::Bogus(BogusReason::LastValidConflictsNewTip {
             last_valid: gen_block_id(1, 1),
             new_tip: gen_block_id(0, 3),
-        }),
-        "applying new tip, in which new_tip conflicts last_valid, should fail (2)",
+        })
     );
 }
 
@@ -73,24 +77,23 @@ fn check_invalidate_rules() {
 
     // when we are invalidating the one and only checkpoint, `last_valid` should be `None`
     assert_eq!(
-        chain.apply_update(Update {
-            invalidate: Some(gen_block_id(1, 1)),
-            ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 2))
-        }),
-        Result::Err(StaleReason::UnexpectedLastValid {
-            got: Some(gen_block_id(1, 1)),
-            expected: None,
-        }),
-        "should fail when invalidate does not directly preceed last_valid",
+        chain
+            .apply_update(Update {
+                invalidate: Some(gen_block_id(1, 1)),
+                ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 2))
+            })
+            .expect_err("update should fail when invalidate does not directly preceed last_valid"),
+        UpdateFailure::Stale {
+            got_last_valid: Some(gen_block_id(1, 1)),
+            expected_last_valid: None,
+        },
     );
-    assert_eq!(
-        chain.apply_update(Update {
+    chain
+        .apply_update(Update {
             invalidate: Some(gen_block_id(1, 1)),
             ..Update::new(None, gen_block_id(1, 2))
-        }),
-        Result::Ok(()),
-        "invalidate should succeed",
-    );
+        })
+        .expect("invalidate should succeed");
 
     // add two checkpoints
     assert_eq!(
@@ -107,12 +110,11 @@ fn check_invalidate_rules() {
         chain.apply_update(Update {
             invalidate: Some(gen_block_id(3, 4)),
             ..Update::new(Some(gen_block_id(1, 2)), gen_block_id(3, 5))
-        }),
-        Result::Err(StaleReason::UnexpectedLastValid {
-            got: Some(gen_block_id(1, 2)),
-            expected: Some(gen_block_id(2, 3)),
-        }),
-        "should fail when checkpoint directly following last_valid is not invalidate",
+        }).expect_err("update should fail when checkpoint directly following last_valid is not invalidate"),
+        UpdateFailure::Stale {
+            got_last_valid: Some(gen_block_id(1, 2)),
+            expected_last_valid: Some(gen_block_id(2, 3)),
+        }
     );
     assert_eq!(
         chain.apply_update(Update {
@@ -197,17 +199,18 @@ fn add_txids() {
     );
 
     assert_eq!(
-        chain.apply_update(Update {
-            txids: [(gen_hash(2), TxHeight::Confirmed(3))]
-                .into_iter()
-                .collect(),
-            ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
-        }),
-        Result::Err(StaleReason::TxidHeightGreaterThanTip {
+        chain
+            .apply_update(Update {
+                txids: [(gen_hash(2), TxHeight::Confirmed(3))]
+                    .into_iter()
+                    .collect(),
+                ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
+            })
+            .expect_err("update that adds tx with height greater than hew tip should fail"),
+        UpdateFailure::Bogus(BogusReason::TxHeightGreaterThanTip {
             new_tip: gen_block_id(2, 2),
-            txid: (gen_hash(2), TxHeight::Confirmed(3)),
-        }),
-        "adding tx with height greater than new tip should fail",
+            tx: (gen_hash(2), TxHeight::Confirmed(3)),
+        })
     );
 }
 
@@ -278,42 +281,45 @@ fn confirm_tx() {
     assert_eq!(chain.iter_mempool_txids().count(), 0);
 
     assert_eq!(
-        chain.apply_update(Update {
-            txids: [(gen_hash(10), TxHeight::Unconfirmed)].into(),
-            ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(2, 2))
-        }),
-        Result::Err(StaleReason::TxUnexpectedlyMoved {
-            txid: gen_hash(10),
-            from: TxHeight::Confirmed(0),
-            to: TxHeight::Unconfirmed,
-        }),
-        "tx cannot be unconfirmed without invalidate"
+        chain
+            .apply_update(Update {
+                txids: [(gen_hash(10), TxHeight::Unconfirmed)].into(),
+                ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(2, 2))
+            })
+            .expect_err("tx cannot be unconfirmed without invalidate"),
+        UpdateFailure::Inconsistent {
+            inconsistent_txid: gen_hash(10),
+            original_height: TxHeight::Confirmed(0),
+            update_height: TxHeight::Unconfirmed,
+        }
     );
 
     assert_eq!(
-        chain.apply_update(Update {
-            txids: [(gen_hash(20), TxHeight::Confirmed(3))].into(),
-            ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
-        }),
-        Result::Err(StaleReason::TxUnexpectedlyMoved {
-            txid: gen_hash(20),
-            from: TxHeight::Confirmed(2),
-            to: TxHeight::Confirmed(3),
-        }),
-        "tx cannot move forward in blocks without invalidate"
+        chain
+            .apply_update(Update {
+                txids: [(gen_hash(20), TxHeight::Confirmed(3))].into(),
+                ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
+            })
+            .expect_err("tx cannot move forward in blocks without invalidate"),
+        UpdateFailure::Inconsistent {
+            inconsistent_txid: gen_hash(20),
+            original_height: TxHeight::Confirmed(2),
+            update_height: TxHeight::Confirmed(3),
+        },
     );
 
     assert_eq!(
-        chain.apply_update(Update {
-            txids: [(gen_hash(20), TxHeight::Confirmed(1))].into(),
-            ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
-        }),
-        Result::Err(StaleReason::TxUnexpectedlyMoved {
-            txid: gen_hash(20),
-            from: TxHeight::Confirmed(2),
-            to: TxHeight::Confirmed(1),
-        }),
-        "tx cannot move backwards in blocks without invalidate"
+        chain
+            .apply_update(Update {
+                txids: [(gen_hash(20), TxHeight::Confirmed(1))].into(),
+                ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
+            })
+            .expect_err("tx cannot move backwards in blocks without invalidate"),
+        UpdateFailure::Inconsistent {
+            inconsistent_txid: gen_hash(20),
+            original_height: TxHeight::Confirmed(2),
+            update_height: TxHeight::Confirmed(1),
+        },
     );
 
     assert_eq!(
