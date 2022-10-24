@@ -96,14 +96,12 @@ fn check_invalidate_rules() {
         .expect("invalidate should succeed");
 
     // add two checkpoints
-    assert_eq!(
-        chain.apply_update(Update::new(Some(gen_block_id(1, 2)), gen_block_id(2, 3))),
-        Result::Ok(())
-    );
-    assert_eq!(
-        chain.apply_update(Update::new(Some(gen_block_id(2, 3)), gen_block_id(3, 4),)),
-        Result::Ok(())
-    );
+    chain
+        .apply_update(Update::new(Some(gen_block_id(1, 2)), gen_block_id(2, 3)))
+        .expect("update should succeed");
+    chain
+        .apply_update(Update::new(Some(gen_block_id(2, 3)), gen_block_id(3, 4)))
+        .expect("update should succeed");
 
     // `invalidate` should directly follow `last_valid`
     assert_eq!(
@@ -116,14 +114,12 @@ fn check_invalidate_rules() {
             expected_last_valid: Some(gen_block_id(2, 3)),
         }
     );
-    assert_eq!(
-        chain.apply_update(Update {
+    chain
+        .apply_update(Update {
             invalidate: Some(gen_block_id(3, 4)),
             ..Update::new(Some(gen_block_id(2, 3)), gen_block_id(3, 5))
-        }),
-        Result::Ok(()),
-        "should succeed",
-    );
+        })
+        .expect("should succeed");
 }
 
 #[test]
@@ -134,19 +130,16 @@ fn apply_tips() {
     let mut last_valid = None;
     for i in 0..10 {
         let new_tip = gen_block_id(i, i as _);
-        assert_eq!(
-            chain.apply_update(Update::new(last_valid, new_tip)),
-            Result::Ok(()),
-        );
+        chain
+            .apply_update(Update::new(last_valid, new_tip))
+            .expect("should succeed");
         last_valid = Some(new_tip);
     }
 
     // repeated last tip should succeed
-    assert_eq!(
-        chain.apply_update(Update::new(last_valid, last_valid.unwrap())),
-        Result::Ok(()),
-        "repeated last_tip should succeed"
-    );
+    chain
+        .apply_update(Update::new(last_valid, last_valid.unwrap()))
+        .expect("repeated last_tip should succeed");
 
     // ensure state of sparsechain is correct
     chain
@@ -166,13 +159,12 @@ fn checkpoint_limit_is_respected() {
     let mut last_valid = None;
     for i in 0..10 {
         let new_tip = gen_block_id(i, i as _);
-        assert_eq!(
-            chain.apply_update(Update {
+        chain
+            .apply_update(Update {
                 txids: [(gen_hash(i as _), TxHeight::Confirmed(i))].into(),
                 ..Update::new(last_valid, new_tip)
-            }),
-            Result::Ok(()),
-        );
+            })
+            .expect("should succeed");
         last_valid = Some(new_tip);
     }
 
@@ -189,14 +181,12 @@ fn add_txids() {
         .map(|txid| (txid, TxHeight::Confirmed(1)))
         .collect();
 
-    assert_eq!(
-        chain.apply_update(Update {
+    chain
+        .apply_update(Update {
             txids: txids_1,
             ..Update::new(None, gen_block_id(1, 1))
-        }),
-        Result::Ok(()),
-        "add many txs in single checkpoint should succeed"
-    );
+        })
+        .expect("add many txs in single checkpoint should succeed");
 
     assert_eq!(
         chain
@@ -220,17 +210,18 @@ fn add_txs_of_same_height_with_different_updates() {
     let block = gen_block_id(0, 0);
 
     // add one block
-    assert_eq!(chain.apply_update(Update::new(None, block)), Result::Ok(()));
+    chain
+        .apply_update(Update::new(None, block))
+        .expect("should succeed");
 
     // add txs of same height with different updates
     (0..100).for_each(|i| {
-        assert_eq!(
-            chain.apply_update(Update {
+        chain
+            .apply_update(Update {
                 txids: [(gen_hash(i as _), TxHeight::Confirmed(0))].into(),
                 ..Update::new(Some(block), block)
-            }),
-            Result::Ok(()),
-        );
+            })
+            .expect("should succeed");
     });
 
     assert_eq!(chain.iter_txids().count(), 100);
@@ -243,39 +234,33 @@ fn add_txs_of_same_height_with_different_updates() {
 fn confirm_tx() {
     let mut chain = SparseChain::default();
 
-    assert_eq!(
-        chain.apply_update(Update {
+    chain
+        .apply_update(Update {
             txids: [
                 (gen_hash(10), TxHeight::Unconfirmed),
-                (gen_hash(20), TxHeight::Unconfirmed)
+                (gen_hash(20), TxHeight::Unconfirmed),
             ]
             .into(),
             ..Update::new(None, gen_block_id(1, 1))
-        }),
-        Result::Ok(()),
-        "adding two txs from mempool should succeed"
-    );
+        })
+        .expect("adding two txs from mempool should succeed");
 
-    assert_eq!(
-        chain.apply_update(Update {
+    chain
+        .apply_update(Update {
             txids: [(gen_hash(10), TxHeight::Confirmed(0))].into(),
             ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 1))
-        }),
-        Result::Ok(()),
-        "it should be okay to confirm tx into block before last_valid (partial sync)",
-    );
+        })
+        .expect("it should be okay to confirm tx into block before last_valid (partial sync)");
     assert_eq!(chain.iter_txids().count(), 2);
     assert_eq!(chain.iter_confirmed_txids().count(), 1);
     assert_eq!(chain.iter_mempool_txids().count(), 1);
 
-    assert_eq!(
-        chain.apply_update(Update {
+    chain
+        .apply_update(Update {
             txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
             ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
-        }),
-        Result::Ok(()),
-        "it should be okay to confirm tx into the tip introduced",
-    );
+        })
+        .expect("it should be okay to confirm tx into the tip introduced");
     assert_eq!(chain.iter_txids().count(), 2);
     assert_eq!(chain.iter_confirmed_txids().count(), 2);
     assert_eq!(chain.iter_mempool_txids().count(), 0);
@@ -322,14 +307,12 @@ fn confirm_tx() {
         },
     );
 
-    assert_eq!(
-        chain.apply_update(Update {
+    chain
+        .apply_update(Update {
             txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
             ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
-        }),
-        Result::Ok(()),
-        "update can introduce already-existing tx"
-    );
+        })
+        .expect("update can introduce already-existing tx");
     assert_eq!(chain.iter_txids().count(), 2);
     assert_eq!(chain.iter_confirmed_txids().count(), 2);
     assert_eq!(chain.iter_mempool_txids().count(), 0);

@@ -159,7 +159,7 @@ impl SparseChain {
         &mut self,
         block_id: BlockId,
         transactions: impl IntoIterator<Item = Txid>,
-    ) -> Result<(), UpdateFailure> {
+    ) -> Result<ChangeSet, UpdateFailure> {
         let mut checkpoint = Update {
             txids: transactions
                 .into_iter()
@@ -180,7 +180,7 @@ impl SparseChain {
 
     /// Applies a new [`Update`] to the tracker.
     #[must_use]
-    pub fn apply_update(&mut self, update: Update) -> Result<(), UpdateFailure> {
+    pub fn apply_update(&mut self, update: Update) -> Result<ChangeSet, UpdateFailure> {
         // if there is no `invalidate`, `last_valid` should be the last checkpoint in sparsechain
         // if there is `invalidate`, `last_valid` should be the checkpoint preceding `invalidate`
         let expected_last_valid = {
@@ -242,63 +242,121 @@ impl SparseChain {
             }
         }
 
-        if let Some(invalid) = &update.invalidate {
-            self.invalidate_checkpoints(invalid.height);
-        }
+        // obtain initial change_set by invalidating checkpoints (if needed)
+        let mut change_set = update
+            .invalidate
+            .map(|invalid| self.invalidate_checkpoints(invalid.height))
+            .unwrap_or_default();
 
         // record latest checkpoint (if any)
-        self.checkpoints
-            .entry(update.new_tip.height)
-            .or_insert(update.new_tip.hash);
+        if !self.checkpoints.contains_key(&update.new_tip.height) {
+            self.checkpoints
+                .insert(update.new_tip.height, update.new_tip.hash);
+            change_set.checkpoints.insert(
+                update.new_tip.height,
+                Change::new_insertion(update.new_tip.hash),
+            );
+        }
 
-        for (txid, conf) in update.txids {
-            match conf {
+        for (txid, new_conf) in update.txids {
+            let original_conf = self
+                .txid_to_index
+                .get(&txid)
+                .map(|&h| TxHeight::Confirmed(h))
+                .unwrap_or(TxHeight::Unconfirmed);
+
+            match new_conf {
                 TxHeight::Confirmed(height) => {
                     if self.txid_by_height.insert((height, txid)) {
                         self.txid_to_index.insert(txid, height);
                         self.mempool.remove(&txid);
+
+                        change_set.txids.insert(
+                            txid,
+                            Change::new(Some(original_conf), Some(TxHeight::Confirmed(height))),
+                        );
                     }
                 }
                 TxHeight::Unconfirmed => {
-                    self.mempool.insert(txid);
+                    if self.mempool.insert(txid) {
+                        change_set
+                            .txids
+                            .insert(txid, Change::new_insertion(TxHeight::Unconfirmed));
+                    }
                 }
             }
         }
 
-        self.prune_checkpoints();
-        Result::Ok(())
+        if let Some(removed_checkpoints) = self.prune_checkpoints() {
+            let changes = ChangeSet {
+                checkpoints: removed_checkpoints
+                    .into_iter()
+                    .map(|(height, hash)| (height, Change::new_removal(hash)))
+                    .collect(),
+                ..Default::default()
+            };
+
+            change_set = change_set.merge(changes).expect("should succeed");
+        }
+
+        Result::Ok(change_set)
     }
 
     /// Clear the mempool list. Use with caution.
-    pub fn clear_mempool(&mut self) {
-        self.mempool.clear()
+    pub fn clear_mempool(&mut self) -> ChangeSet {
+        let txids = self
+            .mempool
+            .iter()
+            .map(|&txid| (txid, Change::new_removal(TxHeight::Unconfirmed)))
+            .collect();
+        self.mempool.clear();
+        ChangeSet {
+            txids,
+            ..Default::default()
+        }
     }
 
     /// Reverse everything of the Block with given hash and height.
-    pub fn disconnect_block(&mut self, block_id: BlockId) {
+    pub fn disconnect_block(&mut self, block_id: BlockId) -> Option<ChangeSet> {
         if let Some(checkpoint_hash) = self.checkpoints.get(&block_id.height) {
             if checkpoint_hash == &block_id.hash {
-                // Can't guarantee that mempool is consistent with chain after we disconnect a block so we
-                // clear it.
-                self.invalidate_checkpoints(block_id.height);
-                self.clear_mempool();
+                return Some(self.invalidate_checkpoints(block_id.height));
             }
         }
+        None
     }
 
     // Invalidate all checkpoints from the given height
-    fn invalidate_checkpoints(&mut self, height: u32) {
-        let _removed_checkpoints = self.checkpoints.split_off(&height);
-        let removed_txids = self.txid_by_height.split_off(&(height, Txid::all_zeros()));
+    fn invalidate_checkpoints(&mut self, height: u32) -> ChangeSet {
+        let checkpoints = self
+            .checkpoints
+            .split_off(&height)
+            .into_iter()
+            .map(|(height, hash)| (height, Change::new_removal(hash)))
+            .collect::<HashMap<_, _>>();
 
-        for (exp_h, txid) in &removed_txids {
-            let h = self.txid_to_index.remove(txid);
-            debug_assert!(matches!(h, Some(h) if h == *exp_h));
-        }
+        // remove both confirmed and mempool txids
+        let txids = self
+            .txid_by_height
+            .split_off(&(height, Txid::all_zeros()))
+            .into_iter()
+            .map(|(h, txid)| (txid, TxHeight::Confirmed(h)))
+            // chain removed mempool txids
+            .chain(
+                self.mempool
+                    .iter()
+                    .map(|&txid| (txid, TxHeight::Unconfirmed)),
+            )
+            // clear txid back references
+            .inspect(|(txid, expected_height)| {
+                let original_height = self.txid_to_index.remove(txid);
+                debug_assert_eq!(*expected_height, original_height.into());
+            })
+            .map(|(txid, height)| (txid, Change::new_removal(height)))
+            .collect::<HashMap<_, _>>();
 
-        if !removed_txids.is_empty() {
-            self.mempool.clear()
-        }
+        self.mempool.clear();
+        ChangeSet { checkpoints, txids }
     }
 
     /// Iterates over confirmed txids, in increasing confirmations.
@@ -397,6 +455,140 @@ impl Update {
         }
     }
 }
+
+/// Represents the set of changes as result of a successful [`Update`].
+#[derive(Debug, Default, PartialEq)]
+pub struct ChangeSet {
+    pub checkpoints: HashMap<u32, Change<BlockHash>>,
+    pub txids: HashMap<Txid, Change<TxHeight>>,
+}
+
+impl ChangeSet {
+    pub fn merge(mut self, other: Self) -> Result<Self, MergeFailure> {
+        for (height, new_change) in other.checkpoints {
+            match self.checkpoints.get_mut(&height) {
+                Some(original_change) => {
+                    if original_change.to != new_change.from {
+                        return Err(MergeFailure::Checkpoint(MergeConflict {
+                            key: height,
+                            original: original_change.clone(),
+                            merge_with: new_change,
+                        }));
+                    }
+                    original_change.to = new_change.to;
+                }
+                None => {
+                    self.checkpoints.insert(height, new_change.clone());
+                }
+            };
+
+            if self.checkpoints.get(&height) == Some(&new_change) {
+                self.checkpoints.remove(&height);
+            }
+        }
+        for (txid, new_change) in other.txids {
+            match self.txids.get_mut(&txid) {
+                Some(original_change) => {
+                    if original_change.to != new_change.from {
+                        return Err(MergeFailure::Txid(MergeConflict {
+                            key: txid,
+                            original: original_change.clone(),
+                            merge_with: new_change,
+                        }));
+                    }
+                    original_change.to = new_change.to;
+                }
+                None => {
+                    self.txids.insert(txid, new_change.clone());
+                }
+            };
+
+            if self.txids.get(&txid) == Some(&new_change) {
+                self.txids.remove(&txid);
+            }
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Change<V> {
+    pub from: Option<V>,
+    pub to: Option<V>,
+}
+
+impl<V> Change<V> {
+    pub fn new(from: Option<V>, to: Option<V>) -> Self {
+        Self { from, to }
+    }
+
+    pub fn new_removal(v: V) -> Self {
+        Self {
+            from: Some(v),
+            to: None,
+        }
+    }
+
+    pub fn new_insertion(v: V) -> Self {
+        Self {
+            from: None,
+            to: Some(v),
+        }
+    }
+}
+
+impl<V: Display> Display for Change<V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        fn fmt_opt<V: Display>(
+            opt: &Option<V>,
+            f: &mut core::fmt::Formatter<'_>,
+        ) -> core::fmt::Result {
+            match opt {
+                Some(v) => v.fmt(f),
+                None => "None".fmt(f),
+            }
+        }
+
+        "(".fmt(f)?;
+        fmt_opt(&self.from, f)?;
+        " => ".fmt(f)?;
+        fmt_opt(&self.to, f)?;
+        ")".fmt(f)
+    }
+}
+
+#[derive(Debug)]
+pub enum MergeFailure {
+    Checkpoint(MergeConflict<u32, BlockHash>),
+    Txid(MergeConflict<Txid, TxHeight>),
+}
+
+#[derive(Debug, Default)]
+pub struct MergeConflict<K, V> {
+    pub key: K,
+    pub original: Change<V>,
+    pub merge_with: Change<V>,
+}
+
+impl Display for MergeFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            MergeFailure::Checkpoint(conflict) => write!(
+                f,
+                "merge conflict (checkpoint): height={}, original_change={}, merge_with={}",
+                conflict.key, conflict.original, conflict.merge_with
+            ),
+            MergeFailure::Txid(conflict) => write!(
+                f,
+                "merge conflict (tx): txid={}, original_change={}, merge_with={}",
+                conflict.key, conflict.original, conflict.merge_with
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for MergeFailure {}
 
 /// Represents the height in which a transaction is confirmed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
