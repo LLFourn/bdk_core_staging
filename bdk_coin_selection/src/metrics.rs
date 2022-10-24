@@ -20,6 +20,7 @@ where
         let score = cs.waste(self.target, self.long_term_feerate, drain, 1.0);
         Some(Ordf32(score))
     }
+
     fn bound<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
         let rate_diff = self.target.feerate.spwu() - self.long_term_feerate.spwu();
         let current_change = change_lower_bound(cs, self.target, &self.change_policy);
@@ -29,57 +30,88 @@ where
 
         if rate_diff >= 0.0 {
             let mut cs = cs.clone();
-            // If feerate >= long_term_feerate then the least waste we can possibly have is the
-            // waste of what is currently selected + whatever we need meet target.
-            cs.select_until_target_met(self.target, current_change)?;
-            let lower_bound = cs.waste(
-                self.target,
-                self.long_term_feerate,
-                current_change,
-                excess_multiplyer,
+            // If feerate >= long_term_feerate, You *might* think that the waste lower bound here is
+            // just the fewest number of inputs we need to meet the target but **no**. Consider if
+            // there is 1 sat remaining to reach target. Should you add all the weight of the next
+            // input for the waste calculation? NO. Our goal is to have the minimum weight to reach
+            // the target so we should only add a tiny fraction of the weight of the next input.
+            //
+            // Step one: select everything up until the input that hits the target.
+            let target_not_met = cs.select_while(
+                |cs, _| !cs.is_target_met(self.target, current_change),
+                false,
             );
-            Some(Ordf32(lower_bound))
+
+            if target_not_met {
+                return None;
+            }
+
+            let weight_fraction = {
+                // Figure out how weight from the next input we'd need to reach the target given its
+                // sats-per-weight-unit value.
+                let remaining = cs.excess(self.target, current_change).abs();
+                let (_, next_wv) = cs.unselected().next().unwrap();
+                (remaining as f32 / next_wv.value as f32) * next_wv.weight as f32
+            };
+            let weight_lower_bound = cs.selected_weight() as f32 + weight_fraction;
+            let mut waste = weight_lower_bound * rate_diff;
+            waste += current_change.waste(self.target.feerate, self.long_term_feerate);
+
+            Some(Ordf32(waste))
         } else {
-            let mut lower_bound = None;
             // When long_term_feerate > current feerate each input by itself has negative waste.
             // This doesn't mean that waste monotonically decreases as you add inputs because
             // somewhere along the line adding an input might cause the change policy to add a
             // change ouput which could increase waste.
             //
             // So we have to try two things and we which one is best to find the lower bound:
-            //
-            // // 1. select everything
-            {
+            // 1. try selecting everything regardless of change
+            let with_change_waste = {
                 let mut cs = cs.clone();
+                // ... but first check that by selecting all effective we can actually reach target
+                cs.select_all_effective(self.target.feerate);
+                if !cs.is_target_met(self.target, Drain::none()) {
+                    return None;
+                }
+                let change_at_value_optimum = (self.change_policy)(&cs, self.target);
                 cs.select_all();
-                let change = (self.change_policy)(&cs, self.target);
-                if cs.is_target_met(self.target, change) {
-                    lower_bound = Some(cs.waste(
-                        self.target,
-                        self.long_term_feerate,
-                        change,
-                        excess_multiplyer,
-                    ))
-                }
-            }
+                // NOTE: we use the change from our "all effective" selection for min waste since
+                // selecting all might not have change but in that case we'll catch it below.
+                cs.waste(
+                    self.target,
+                    self.long_term_feerate,
+                    change_at_value_optimum,
+                    excess_multiplyer,
+                )
+            };
 
-            // 2. select as much as possible without adding change (only try if we don't have change right now).
-            if current_change.is_none() {
-                let mut cs = cs.clone();
-                // select the lowest effective value candidates to minimize excess but maximise weight
-                cs.select_while(|cs| (self.change_policy)(cs, self.target).is_none(), true);
+            // 2. select the highest weight solution with no change
+            let no_change_waste = {
+                let mut cs_ = cs.clone();
 
-                if cs.is_target_met(self.target, Drain::none()) {
-                    let changeless_lower_bound = cs.waste(
-                        self.target,
-                        self.long_term_feerate,
-                        Drain::none(),
-                        excess_multiplyer,
-                    );
-                    lower_bound = Some(lower_bound.unwrap_or(f32::MAX).min(changeless_lower_bound))
+                cs_.select_while(
+                    |_, (_, wv)| wv.effective_value(self.target.feerate).0 < 0.0,
+                    true,
+                );
+                let change_never_found = cs_.select_while(
+                    |cs, _| (self.change_policy)(&cs, self.target).is_none(),
+                    true,
+                );
+                let no_change_waste = cs_.waste(
+                    self.target,
+                    self.long_term_feerate,
+                    Drain::none(),
+                    excess_multiplyer,
+                );
+                if change_never_found {
+                    debug_assert!(cs_.is_exhausted());
                 }
-            }
-            lower_bound.map(Ordf32)
+                no_change_waste
+            };
+
+            let lower_bound = with_change_waste.min(no_change_waste);
+
+            Some(Ordf32(lower_bound))
         }
     }
 
@@ -101,7 +133,7 @@ where
 
     fn score<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score> {
         let drain = (self.change_policy)(cs, self.target);
-        if cs.excess(self.target, drain) > 0 {
+        if cs.is_target_met(self.target, drain) {
             let has_drain = !drain.is_none();
             Some(has_drain)
         } else {
@@ -136,7 +168,7 @@ fn change_lower_bound<'a>(
         let mut least_excess = cs.clone();
         cs.unselected()
             .rev()
-            .take_while(|(_, wv)| wv.effective_value(target.feerate) < 0)
+            .take_while(|(_, wv)| wv.effective_value(target.feerate) < Ordf32(0.0))
             .for_each(|(index, _)| {
                 least_excess.select(index);
             });
@@ -199,6 +231,7 @@ mod test {
     }
 
     // this is probably a useful thing to have on CoinSelector but I don't want to design it yet
+    #[allow(unused)]
     fn randomly_satisfy_target_with_low_waste<'a>(
         cs: &CoinSelector<'a>,
         target: Target,
@@ -225,23 +258,142 @@ mod test {
         cs
     }
 
+    #[test]
+    fn all_selected_except_one_is_optimal_and_awkward() {
+        let num_inputs = 40;
+        let target = 15578;
+        let feerate = 8.190512;
+        let min_fee = 0;
+        let base_weight = 453;
+        let long_term_feerate_diff = 3.630499;
+        let change_weight = 1;
+        let change_spend_weight = 41;
+        let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
+        let long_term_feerate =
+            FeeRate::from_sat_per_vb(feerate + 0.0f32.max(long_term_feerate_diff));
+        let feerate = FeeRate::from_sat_per_vb(feerate);
+        let drain = Drain {
+            weight: change_weight,
+            spend_weight: change_spend_weight,
+            value: 0,
+        };
+
+        let change_policy = crate::change_policy::no_waste(drain, long_term_feerate);
+        let wv = test_wv(&mut rng);
+        let candidates = wv.take(num_inputs).collect::<Vec<_>>();
+
+        let cs = CoinSelector::new(&candidates, base_weight);
+        let target = Target {
+            value: target,
+            feerate,
+            min_fee,
+        };
+
+        let solutions = cs.branch_and_bound(Waste {
+            target,
+            long_term_feerate,
+            change_policy: &change_policy,
+        });
+
+        let (_i, (best, score)) = solutions
+            .enumerate()
+            .filter_map(|(i, sol)| Some((i, sol?)))
+            .last()
+            .expect("it should have found solution");
+
+        let mut all_selected = cs.clone();
+        all_selected.select_all();
+        let target_waste = all_selected.waste(
+            target,
+            long_term_feerate,
+            change_policy(&all_selected, target),
+            1.0,
+        );
+        assert_eq!(best.selected().len(), 39);
+        assert!(score.0 < target_waste);
+    }
+
+    #[test]
+    fn naive_effective_value_shouldnt_be_better() {
+        let num_inputs = 23;
+        let target = 1475;
+        let feerate = 1.0;
+        let min_fee = 989;
+        let base_weight = 0;
+        let long_term_feerate_diff = -3.8413858;
+        let change_weight = 1;
+        let change_spend_weight = 1;
+        let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
+        let long_term_feerate =
+            FeeRate::from_sat_per_vb((0.0f32).max(feerate + long_term_feerate_diff));
+        let feerate = FeeRate::from_sat_per_vb(feerate);
+        let drain = Drain {
+            weight: change_weight,
+            spend_weight: change_spend_weight,
+            value: 0,
+        };
+
+        let change_policy = crate::change_policy::no_waste(drain, long_term_feerate);
+        let wv = test_wv(&mut rng);
+        let candidates = wv.take(num_inputs).collect::<Vec<_>>();
+
+        let cs = CoinSelector::new(&candidates, base_weight);
+
+        let target = Target {
+            value: target,
+            feerate,
+            min_fee,
+        };
+
+        let solutions = cs.branch_and_bound(Waste {
+            target,
+            long_term_feerate,
+            change_policy: &change_policy,
+        });
+
+        let (_i, (_best, score)) = solutions
+            .enumerate()
+            .filter_map(|(i, sol)| Some((i, sol?)))
+            .last()
+            .expect("should find solution");
+
+        let mut naive_select = cs.clone();
+        naive_select.sort_candidates_by_descending_effective_value(target.feerate);
+        // we filter out failing onces below
+        let _ = naive_select.select_until_target_met(target, drain);
+
+        let bench_waste = naive_select.waste(
+            target,
+            long_term_feerate,
+            change_policy(&naive_select, target),
+            1.0,
+        );
+
+        assert!(score < Ordf32(bench_waste));
+    }
+
     proptest! {
-        // #![proptest_config(ProptestConfig::with_cases(20))]
+        #![proptest_config(ProptestConfig {
+            timeout: 3_000,
+            ..Default::default()
+        })]
         #[test]
+        #[cfg(not(debug_assertions))] // too slow if compiling for debug
         fn prop_waste(
             num_inputs in 0usize..50,
             target in 0u64..25_000,
-            feerate in 1.0f32..5.0,
+            feerate in 1.0f32..10.0,
             min_fee in 0u64..1_000,
             base_weight in 0u32..500,
-            long_term_feerate in 1.0f32..5.0,
+            long_term_feerate_diff in -5.0f32..5.0,
             change_weight in 1u32..100,
             change_spend_weight in 1u32..100,
         ) {
+            println!("=======================================");
             let start = std::time::Instant::now();
             let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
+            let long_term_feerate = FeeRate::from_sat_per_vb(0.0f32.max(feerate + long_term_feerate_diff));
             let feerate = FeeRate::from_sat_per_vb(feerate);
-            let long_term_feerate = FeeRate::from_sat_per_vb(long_term_feerate);
             let drain = Drain {
                 weight: change_weight,
                 spend_weight: change_spend_weight,
@@ -269,10 +421,7 @@ mod test {
 
             let best = solutions
                 .enumerate()
-                .inspect(|(i, _)| if start.elapsed().as_secs() > 1 {
-                    // this vaguely means something is wrong and we should check it out
-                    panic!("longer than a second elapsed on iteration {}", i);
-                })
+                .take(300_000)
                 .filter_map(|(i, sol)| Some((i, sol?)))
                 .last();
 
@@ -288,7 +437,6 @@ mod test {
                             naive_select
                         },
                         {
-
                             let mut all_selected = cs.clone();
                             all_selected.select_all();
                             all_selected
@@ -300,18 +448,21 @@ mod test {
                         }
                     ];
 
-                    cmp_benchmarks.extend((0..5).map(|_|randomly_satisfy_target_with_low_waste(&cs, target, long_term_feerate, &change_policy, &mut rng)));
 
-                    let cmp_benchmarks = cmp_benchmarks.into_iter().filter(|cs| !cs.is_target_met(target, change_policy(&cs, target)));
+                    // add some random selections -- technically it's possible that one of these is better but it's very unlikely if our algorithm is working correctly.
+                    cmp_benchmarks.extend((0..10).map(|_|randomly_satisfy_target_with_low_waste(&cs, target, long_term_feerate, &change_policy, &mut rng)));
 
+                    let cmp_benchmarks = cmp_benchmarks.into_iter().filter(|cs| cs.is_target_met(target, change_policy(&cs, target)));
                     let sol_waste = sol.waste(target, long_term_feerate, change_policy(&sol, target), 1.0);
 
                     for (_bench_id, bench) in cmp_benchmarks.enumerate() {
                         let bench_waste = bench.waste(target, long_term_feerate, change_policy(&bench, target), 1.0);
+                        dbg!(_bench_id);
                         prop_assert!(sol_waste <= bench_waste);
                     }
                 },
                 None => {
+                    dbg!(feerate - long_term_feerate);
                     prop_assert!(!cs.is_selection_plausible_with_change_policy(target, &change_policy));
                 }
             }
@@ -319,4 +470,9 @@ mod test {
             dbg!(start.elapsed());
         }
     }
+
+    // #[test]
+    // fn prop_changeless() {
+
+    // }
 }

@@ -16,6 +16,13 @@ impl<'a, M: BnBMetric> Iterator for BnbIter<'a, M> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let branch = self.queue.pop()?;
+
+        // {
+        //     for thing in self.queue.iter() {
+        //         println!("{} {:?}", &thing.selector, thing.lower_bound);
+        //     }
+        //     let _ = std::io::stdin().read_line(&mut String::new());
+        // }
         if let Some(best) = &self.best {
             // If the next thing in queue is worse than our best we're done
             if *best < branch.lower_bound {
@@ -54,11 +61,11 @@ impl<'a, M: BnBMetric> BnbIter<'a, M> {
             metric,
         };
 
-        if let Some(feerate) = iter
+        if let Some(_) = iter
             .metric
             .requires_ordering_by_descending_effective_value()
         {
-            selector.sort_candidates_by_descending_effective_value(feerate);
+            selector.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.spwu()));
         }
 
         iter.consider_adding_to_queue(&selector, false);
@@ -67,10 +74,11 @@ impl<'a, M: BnBMetric> BnbIter<'a, M> {
     }
 
     fn consider_adding_to_queue(&mut self, cs: &CoinSelector<'a>, is_exclusion: bool) {
-        if let Some(heuristic) = self.metric.bound(cs) {
-            if self.best.is_none() || self.best.as_ref().unwrap() > &heuristic {
+        let bound = self.metric.bound(cs);
+        if let Some(bound) = bound {
+            if self.best.is_none() || self.best.as_ref().unwrap() > &bound {
                 self.queue.push(Branch {
-                    lower_bound: heuristic,
+                    lower_bound: bound,
                     selector: cs.clone(),
                     is_exclusion,
                 });
@@ -95,7 +103,7 @@ impl<'a, M: BnBMetric> BnbIter<'a, M> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Branch<'a, O> {
     lower_bound: O,
     selector: CoinSelector<'a>,
@@ -104,8 +112,10 @@ struct Branch<'a, O> {
 
 impl<'a, O: Ord> Ord for Branch<'a, O> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        // NOTE: reverse comparision because we want a min-heap NOTE: Tiebreak equal scores based on
-        // whether it's exlusion or not (preferring inclusion). We do this because early in a BnB
+        // NOTE: Reverse comparision `other.cmp(self)` because we want a min-heap (by default BinaryHeap is a max-heap).
+        // NOTE: We tiebreak equal scores based on whether it's exlusion or not (preferring inclusion).
+        // We do this because we want to try and get to evaluating complete selection returning
+        // actual scores as soon as possible.
         (&other.lower_bound, other.is_exclusion).cmp(&(&self.lower_bound, self.is_exclusion))
     }
 }

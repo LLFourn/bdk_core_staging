@@ -1,5 +1,5 @@
 use super::*;
-use crate::{bnb::BnBMetric, FeeRate};
+use crate::{bnb::BnBMetric, ord_float::Ordf32, FeeRate};
 use alloc::{borrow::Cow, collections::BTreeSet, vec::Vec};
 
 /// A [`WeightedValue`] represents an input candidate for [`CoinSelector`]. This can either be a
@@ -34,11 +34,12 @@ impl WeightedValue {
     }
 
     /// Effective value of this input candidate: `actual_value - input_weight * feerate (sats/wu)`.
-    pub fn effective_value(&self, feerate: FeeRate) -> i64 {
-        // We prefer undershooting the candidate's effective value (so we over estimate the fee of a
-        // candidate). If we overshoot the candidate's effective value, it may be possible to find a
-        // solution which does not meet the target feerate.
-        self.value as i64 - (self.weight as f32 * feerate.spwu()).ceil() as i64
+    pub fn effective_value(&self, feerate: FeeRate) -> Ordf32 {
+        Ordf32(self.value as f32 - (self.weight as f32 * feerate.spwu()))
+    }
+
+    pub fn spwu(&self) -> Ordf32 {
+        Ordf32(self.value as f32 / self.weight as f32)
     }
 }
 
@@ -60,6 +61,10 @@ impl Drain {
 
     pub fn is_some(&self) -> bool {
         !self.is_none()
+    }
+
+    pub fn waste(&self, feerate: FeeRate, long_term_feerate: FeeRate) -> f32 {
+        self.weight as f32 * feerate.spwu() + self.spend_weight as f32 * long_term_feerate.spwu()
     }
 }
 
@@ -269,7 +274,13 @@ impl<'a> CoinSelector<'a> {
         let mut waste = self.selected_waste(target.feerate, long_term_feerate);
 
         if drain.is_none() {
-            waste += self.excess(target, drain) as f32 * excess_discount.max(0.0).min(1.0);
+            // We don't allow negative excess waste since negative excess just means you haven't
+            // satisified target yet in which case you probably shouldn't be calling this function.
+            let mut excess_waste = self.excess(target, drain).max(0) as f32;
+            // we allow caller to discount this waste depending on how wasteful excess actually is
+            // to them.
+            excess_waste *= excess_discount.max(0.0).min(1.0);
+            waste += excess_waste;
         } else {
             waste += drain.weight as f32 * target.feerate.spwu()
                 + drain.spend_weight as f32 * long_term_feerate.spwu();
@@ -318,7 +329,7 @@ impl<'a> CoinSelector<'a> {
     pub fn select_all_effective(&mut self, feerate: FeeRate) {
         // TODO: do this without allocating
         for i in self.unselected_indexes().collect::<Vec<_>>() {
-            if self.candidates[i].effective_value(feerate) > 0 {
+            if self.candidates[i].effective_value(feerate) > Ordf32(0.0) {
                 self.select(i);
             }
         }
@@ -345,12 +356,13 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
+    ///
     pub fn select_while(
         &mut self,
-        mut predicate: impl FnMut(&CoinSelector<'a>) -> bool,
+        mut predicate: impl FnMut(&CoinSelector<'a>, (usize, WeightedValue)) -> bool,
         // TODO: Remove this in favor of being able to reverse sort candidate order
         reverse: bool,
-    ) {
+    ) -> bool {
         loop {
             let next = if reverse {
                 self.unselected_indexes().rev().next()
@@ -359,12 +371,12 @@ impl<'a> CoinSelector<'a> {
             };
             if let Some(next) = next {
                 self.select(next);
-                if !predicate(&*self) {
+                if !predicate(&*self, (next, self.candidates[next])) {
                     self.deselect(next);
-                    return;
+                    return false;
                 }
             } else {
-                return;
+                return true;
             }
         }
     }
@@ -374,5 +386,29 @@ impl<'a> CoinSelector<'a> {
         metric: M,
     ) -> impl Iterator<Item = Option<(CoinSelector<'a>, M::Score)>> {
         crate::bnb::BnbIter::new(self.clone(), metric)
+    }
+}
+
+impl<'a> core::fmt::Display for CoinSelector<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        let mut candidates = self.candidates().peekable();
+
+        while let Some((i, _)) = candidates.next() {
+            write!(f, "{}", i)?;
+            if self.is_selected(i) {
+                write!(f, "✔")?;
+            } else if self.banned().contains(&i) {
+                write!(f, "✘")?
+            } else {
+                write!(f, "☐")?;
+            }
+
+            if candidates.peek().is_some() {
+                write!(f, ", ")?;
+            }
+        }
+
+        write!(f, "]")
     }
 }

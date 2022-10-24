@@ -7,5 +7,6 @@ edition = "2021"
 [dependencies]
 clap = { version = "3.2.5", features = ["derive", "env"] }
 bdk_core = { path = "../bdk_core"  }
+bdk_coin_selection = { path = "../bdk_coin_selection" }
 anyhow = "1"
 bdk_esplora = { path = "../bdk_esplora" }
