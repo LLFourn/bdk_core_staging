@@ -9,7 +9,7 @@ use bdk_core::{
     },
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     miniscript::{Descriptor, DescriptorPublicKey},
-    ApplyResult, DescriptorExt, KeychainTracker, SparseChain, TxGraph,
+    DescriptorExt, KeychainTracker, SparseChain, TxGraph,
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
@@ -445,9 +445,9 @@ pub fn fully_sync(
             )
             .context("fetching transactions")?;
 
-        match chain.apply_checkpoint(checkpoint) {
-            ApplyResult::Ok => eprintln!("success! ({}ms)", start.elapsed().as_millis()),
-            ApplyResult::Stale(_reason) => {
+        match chain.apply_update(checkpoint) {
+            Result::Ok(_) => eprintln!("success! ({}ms)", start.elapsed().as_millis()),
+            Result::Err(_reason) => {
                 unreachable!("we are the only ones accessing the tracker")
             }
         }

@@ -1,6 +1,6 @@
 use core::{fmt::Display, ops::RangeBounds};
 
-use crate::{collections::*, BlockId, TxGraph, Vec};
+use crate::{alloc::string::String, collections::*, BlockId, TxGraph, Vec};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
@@ -17,36 +17,82 @@ pub struct SparseChain {
     checkpoint_limit: Option<usize>,
 }
 
-/// The result of attempting to apply a checkpoint
+/// Represents an update failure of [`SparseChain`].
 #[derive(Clone, Debug, PartialEq)]
-pub enum ApplyResult {
-    /// The checkpoint was applied successfully.
-    Ok,
-    /// The checkpoint cannot be applied to the current state because it does not apply to the current
-    /// tip of the tracker, or does not invalidate the right checkpoint, or the candidate is invalid.
-    Stale(StaleReason),
+pub enum UpdateFailure {
+    /// The [`Update`] is total bogus. Cannot be applied to any [`SparseChain`].
+    Bogus(BogusReason),
+
+    /// The [`Update`] cannot be applied to this [`SparseChain`] because the `last_valid` value does
+    /// not match with the current state of the chain.
+    Stale {
+        got_last_valid: Option<BlockId>,
+        expected_last_valid: Option<BlockId>,
+    },
+
+    /// The [`Update`] canot be applied, because there are inconsistent tx states.
+    /// This only reports the first inconsistency.
+    Inconsistent {
+        inconsistent_txid: Txid,
+        original_height: TxHeight,
+        update_height: TxHeight,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum StaleReason {
+pub enum BogusReason {
+    /// `last_valid` conflicts with `new_tip`.
     LastValidConflictsNewTip {
         new_tip: BlockId,
         last_valid: BlockId,
     },
-    UnexpectedLastValid {
-        got: Option<BlockId>,
-        expected: Option<BlockId>,
-    },
-    TxidHeightGreaterThanTip {
+
+    /// At least one `txid` has a confirmation height greater than `new_tip`.
+    TxHeightGreaterThanTip {
         new_tip: BlockId,
-        txid: (Txid, Option<u32>),
-    },
-    TxUnexpectedlyMoved {
-        txid: Txid,
-        from: Option<u32>,
-        to: Option<u32>,
+        tx: (Txid, TxHeight),
     },
 }
+
+impl core::fmt::Display for UpdateFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        fn print_block(id: &BlockId) -> String {
+            format!("{} @ {}", id.hash, id.height)
+        }
+
+        fn print_block_opt(id: &Option<BlockId>) -> String {
+            match id {
+                Some(id) => print_block(id),
+                None => "None".into(),
+            }
+        }
+
+        match self {
+            Self::Bogus(reason) => {
+                write!(f, "bogus update: ")?;
+                match reason {
+                    BogusReason::LastValidConflictsNewTip { new_tip, last_valid } =>
+                        write!(f, "last_valid ({}) conflicts new_tip ({})", 
+                            print_block(last_valid), print_block(new_tip)),
+
+                    BogusReason::TxHeightGreaterThanTip { new_tip, tx: txid } =>
+                        write!(f, "tx ({}) confirmation height ({}) is greater than new_tip ({})", 
+                            txid.0, txid.1, print_block(new_tip)),
+                }
+            },
+            Self::Stale { got_last_valid, expected_last_valid } =>
+                write!(f, "stale update: got last_valid ({}) when expecting ({})", 
+                    print_block_opt(got_last_valid), print_block_opt(expected_last_valid)),
+
+            Self::Inconsistent { inconsistent_txid, original_height, update_height } =>
+                write!(f, "inconsistent update: first inconsistent tx is ({}) which had confirmation height ({}), but is ({}) in the update", 
+                    inconsistent_txid, original_height, update_height),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for UpdateFailure {}
 
 impl SparseChain {
     /// Get the transaction ids in a particular checkpoint.
@@ -113,11 +159,11 @@ impl SparseChain {
         &mut self,
         block_id: BlockId,
         transactions: impl IntoIterator<Item = Txid>,
-    ) -> ApplyResult {
-        let mut checkpoint = CheckpointCandidate {
+    ) -> Result<(), UpdateFailure> {
+        let mut checkpoint = Update {
             txids: transactions
                 .into_iter()
-                .map(|txid| (txid, Some(block_id.height)))
+                .map(|txid| (txid, TxHeight::Confirmed(block_id.height)))
                 .collect(),
             last_valid: self.latest_checkpoint(),
             invalidate: None,
@@ -129,99 +175,98 @@ impl SparseChain {
             checkpoint.invalidate = matching_checkpoint;
         }
 
-        self.apply_checkpoint(checkpoint)
+        self.apply_update(checkpoint)
     }
 
-    /// Applies a new candidate checkpoint to the tracker.
+    /// Applies a new [`Update`] to the tracker.
     #[must_use]
-    pub fn apply_checkpoint(&mut self, new_checkpoint: CheckpointCandidate) -> ApplyResult {
+    pub fn apply_update(&mut self, update: Update) -> Result<(), UpdateFailure> {
         // if there is no `invalidate`, `last_valid` should be the last checkpoint in sparsechain
         // if there is `invalidate`, `last_valid` should be the checkpoint preceding `invalidate`
         let expected_last_valid = {
-            let upper_bound = new_checkpoint
-                .invalidate
-                .map(|b| b.height)
-                .unwrap_or(u32::MAX);
+            let upper_bound = update.invalidate.map(|b| b.height).unwrap_or(u32::MAX);
             self.checkpoints
                 .range(..upper_bound)
                 .last()
                 .map(|(&height, &hash)| BlockId { height, hash })
         };
-        if new_checkpoint.last_valid != expected_last_valid {
-            return ApplyResult::Stale(StaleReason::UnexpectedLastValid {
-                got: new_checkpoint.last_valid,
-                expected: expected_last_valid,
+        if update.last_valid != expected_last_valid {
+            return Result::Err(UpdateFailure::Stale {
+                got_last_valid: update.last_valid,
+                expected_last_valid: expected_last_valid,
             });
         }
 
         // `new_tip.height` should be greater or equal to `last_valid.height`
         // if `new_tip.height` is equal to `last_valid.height`, the hashes should also be the same
         if let Some(last_valid) = expected_last_valid {
-            if new_checkpoint.new_tip.height < last_valid.height
-                || new_checkpoint.new_tip.height == last_valid.height
-                    && new_checkpoint.new_tip.hash != last_valid.hash
+            if update.new_tip.height < last_valid.height
+                || update.new_tip.height == last_valid.height
+                    && update.new_tip.hash != last_valid.hash
             {
-                return ApplyResult::Stale(StaleReason::LastValidConflictsNewTip {
-                    new_tip: new_checkpoint.new_tip,
-                    last_valid,
-                });
+                return Result::Err(UpdateFailure::Bogus(
+                    BogusReason::LastValidConflictsNewTip {
+                        new_tip: update.new_tip,
+                        last_valid,
+                    },
+                ));
             }
         }
 
-        for (txid, tx_height) in &new_checkpoint.txids {
+        for (txid, tx_height) in &update.txids {
             // ensure new_height does not surpass latest checkpoint
-            if matches!(tx_height, Some(tx_h) if tx_h > &new_checkpoint.new_tip.height) {
-                return ApplyResult::Stale(StaleReason::TxidHeightGreaterThanTip {
-                    new_tip: new_checkpoint.new_tip,
-                    txid: (*txid, tx_height.clone()),
-                });
+            if matches!(tx_height, TxHeight::Confirmed(tx_h) if tx_h > &update.new_tip.height) {
+                return Result::Err(UpdateFailure::Bogus(BogusReason::TxHeightGreaterThanTip {
+                    new_tip: update.new_tip,
+                    tx: (*txid, tx_height.clone()),
+                }));
             }
 
             // ensure all currently confirmed txs are still at the same height (unless, if they are
             // to be invalidated)
             if let Some(&height) = self.txid_to_index.get(txid) {
                 // no need to check consistency if height will be invalidated
-                // tx is consistent if height stays the same
-                if matches!(new_checkpoint.invalidate, Some(invalid) if height >= invalid.height)
-                    || matches!(tx_height, Some(new_height) if *new_height == height)
+                if matches!(update.invalidate, Some(invalid) if height >= invalid.height)
+                    // tx is consistent if height stays the same
+                    || matches!(tx_height, TxHeight::Confirmed(new_height) if *new_height == height)
                 {
                     continue;
                 }
 
                 // inconsistent
-                return ApplyResult::Stale(StaleReason::TxUnexpectedlyMoved {
-                    txid: *txid,
-                    from: Some(height),
-                    to: *tx_height,
+                return Result::Err(UpdateFailure::Inconsistent {
+                    inconsistent_txid: *txid,
+                    original_height: TxHeight::Confirmed(height),
+                    update_height: *tx_height,
                 });
             }
         }
 
-        if let Some(invalid) = &new_checkpoint.invalidate {
+        if let Some(invalid) = &update.invalidate {
             self.invalidate_checkpoints(invalid.height);
         }
 
         // record latest checkpoint (if any)
         self.checkpoints
-            .entry(new_checkpoint.new_tip.height)
-            .or_insert(new_checkpoint.new_tip.hash);
+            .entry(update.new_tip.height)
+            .or_insert(update.new_tip.hash);
 
-        for (txid, conf) in new_checkpoint.txids {
+        for (txid, conf) in update.txids {
             match conf {
-                Some(height) => {
+                TxHeight::Confirmed(height) => {
                     if self.txid_by_height.insert((height, txid)) {
                         self.txid_to_index.insert(txid, height);
                         self.mempool.remove(&txid);
                     }
                 }
-                None => {
+                TxHeight::Unconfirmed => {
                     self.mempool.insert(txid);
                 }
             }
         }
 
         self.prune_checkpoints();
-        ApplyResult::Ok
+        Result::Ok(())
     }
 
     /// Clear the mempool list. Use with caution.
@@ -320,26 +365,32 @@ impl SparseChain {
     }
 }
 
+/// Represents an [`Update`] that could be applied to [`SparseChain`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct CheckpointCandidate {
-    /// List of transactions in this checkpoint. They needs to be consistent with tracker's state
-    /// for the new checkpoint to be included.
-    pub txids: Vec<(Txid, Option<u32>)>,
-    /// The new checkpoint can be applied upon this tip. A tracker will usually reject updates that
-    /// do not have `last_valid` equal to it's latest valid checkpoint.
+pub struct Update {
+    /// List of transactions in this checkpoint. They needs to be consistent with [`SparseChain`]'s
+    /// state for the [`Update`] to be included.
+    pub txids: HashMap<Txid, TxHeight>,
+
+    /// This should be the latest valid checkpoint of [`SparseChain`]; used to avoid conflicts.
+    /// If `invalidate == None`, then this would be be the latest checkpoint of [`SparseChain`].
+    /// If `invalidate == Some`, then this would be the checkpoint directly preceding `invalidate`.
+    /// If [`SparseChain`] is empty, `last_valid` should be `None`.
     pub last_valid: Option<BlockId>,
-    /// Invalidates a block before considering this checkpoint.
+
+    /// Invalidates all checkpoints from this checkpoint (inclusive).
     pub invalidate: Option<BlockId>,
-    /// Sets the tip that this checkpoint was created for. All data in this checkpoint must be valid
-    /// with respect to this tip.
+
+    /// The latest tip that this [`Update`] is aware of. Introduced transactions cannot surpass this
+    /// tip.
     pub new_tip: BlockId,
 }
 
-impl CheckpointCandidate {
-    /// Helper function to create a template checkpoint candidate.
+impl Update {
+    /// Helper function to create a template update.
     pub fn new(last_valid: Option<BlockId>, new_tip: BlockId) -> Self {
         Self {
-            txids: Vec::new(),
+            txids: HashMap::new(),
             last_valid,
             invalidate: None,
             new_tip,
@@ -359,6 +410,15 @@ impl Display for TxHeight {
         match self {
             Self::Confirmed(h) => core::write!(f, "confirmed_at({})", h),
             Self::Unconfirmed => core::write!(f, "unconfirmed"),
+        }
+    }
+}
+
+impl From<Option<u32>> for TxHeight {
+    fn from(opt: Option<u32>) -> Self {
+        match opt {
+            Some(h) => Self::Confirmed(h),
+            None => Self::Unconfirmed,
         }
     }
 }
