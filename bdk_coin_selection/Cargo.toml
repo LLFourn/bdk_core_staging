@@ -3,11 +3,8 @@ name = "bdk_coin_selection"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-bitcoin = { version = "0.29" }
-
+# No dependencies! Don't add any please!
 
 [dev-dependencies]
 rand = "0.8"
