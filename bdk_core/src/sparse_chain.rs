@@ -252,18 +252,19 @@ impl SparseChain {
         if !self.checkpoints.contains_key(&update.new_tip.height) {
             self.checkpoints
                 .insert(update.new_tip.height, update.new_tip.hash);
-            change_set.checkpoints.insert(
-                update.new_tip.height,
-                Change::new_insertion(update.new_tip.hash),
-            );
+
+            change_set
+                .checkpoints
+                .entry(update.new_tip.height)
+                .and_modify(|change| change.to = Some(update.new_tip.hash))
+                .or_insert_with(|| Change::new_insertion(update.new_tip.hash));
         }
 
         for (txid, new_conf) in update.txids {
             let original_conf = self
                 .txid_to_index
                 .get(&txid)
-                .map(|&h| TxHeight::Confirmed(h))
-                .unwrap_or(TxHeight::Unconfirmed);
+                .map(|&h| TxHeight::Confirmed(h));
 
             match new_conf {
                 TxHeight::Confirmed(height) => {
@@ -273,7 +274,7 @@ impl SparseChain {
 
                         change_set.txids.insert(
                             txid,
-                            Change::new(Some(original_conf), Some(TxHeight::Confirmed(height))),
+                            Change::new(original_conf, Some(TxHeight::Confirmed(height))),
                         );
                     }
                 }
@@ -464,48 +465,50 @@ pub struct ChangeSet {
 }
 
 impl ChangeSet {
-    pub fn merge(mut self, other: Self) -> Result<Self, MergeFailure> {
-        for (height, new_change) in other.checkpoints {
-            match self.checkpoints.get_mut(&height) {
-                Some(original_change) => {
-                    if original_change.to != new_change.from {
-                        return Err(MergeFailure::Checkpoint(MergeConflict {
-                            key: height,
-                            original: original_change.clone(),
-                            merge_with: new_change,
-                        }));
-                    }
-                    original_change.to = new_change.to;
+    pub fn merge(mut self, new_set: Self) -> Result<Self, MergeFailure> {
+        for (height, new_change) in new_set.checkpoints {
+            if let Some(change) = self.checkpoints.get(&height) {
+                if change.to != new_change.from {
+                    return Err(MergeFailure::Checkpoint(MergeConflict {
+                        key: height,
+                        change: change.clone(),
+                        new_change,
+                    }));
                 }
-                None => {
-                    self.checkpoints.insert(height, new_change.clone());
-                }
-            };
+            }
 
-            if self.checkpoints.get(&height) == Some(&new_change) {
-                self.checkpoints.remove(&height);
+            let is_inaction = self
+                .checkpoints
+                .entry(height)
+                .and_modify(|change| change.to = new_change.to)
+                .or_insert_with(|| new_change.clone())
+                .is_inaction();
+
+            if is_inaction {
+                self.checkpoints.remove_entry(&height);
             }
         }
 
-        for (txid, new_change) in other.txids {
-            match self.txids.get_mut(&txid) {
-                Some(original_change) => {
-                    if original_change.to != new_change.from {
-                        return Err(MergeFailure::Txid(MergeConflict {
-                            key: txid,
-                            original: original_change.clone(),
-                            merge_with: new_change,
-                        }));
-                    }
-                    original_change.to = new_change.to;
+        for (txid, new_change) in new_set.txids {
+            if let Some(change) = self.txids.get(&txid) {
+                if change.to != new_change.from {
+                    return Err(MergeFailure::Txid(MergeConflict {
+                        key: txid,
+                        change: change.clone(),
+                        new_change,
+                    }));
                 }
-                None => {
-                    self.txids.insert(txid, new_change.clone());
-                }
-            };
+            }
 
-            if self.txids.get(&txid) == Some(&new_change) {
-                self.txids.remove(&txid);
+            let is_inaction = self
+                .txids
+                .entry(txid)
+                .and_modify(|change| change.to = new_change.to)
+                .or_insert_with(|| new_change.clone())
+                .is_inaction();
+
+            if is_inaction {
+                self.txids.remove_entry(&txid);
             }
         }
 
@@ -539,6 +542,12 @@ impl<V> Change<V> {
     }
 }
 
+impl<V: PartialEq> Change<V> {
+    pub fn is_inaction(&self) -> bool {
+        self.from == self.to
+    }
+}
+
 impl<V: Display> Display for Change<V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         fn fmt_opt<V: Display>(
@@ -568,8 +577,8 @@ pub enum MergeFailure {
 #[derive(Debug, Default)]
 pub struct MergeConflict<K, V> {
     pub key: K,
-    pub original: Change<V>,
-    pub merge_with: Change<V>,
+    pub change: Change<V>,
+    pub new_change: Change<V>,
 }
 
 impl Display for MergeFailure {
@@ -578,12 +587,12 @@ impl Display for MergeFailure {
             MergeFailure::Checkpoint(conflict) => write!(
                 f,
                 "merge conflict (checkpoint): height={}, original_change={}, merge_with={}",
-                conflict.key, conflict.original, conflict.merge_with
+                conflict.key, conflict.change, conflict.new_change
             ),
             MergeFailure::Txid(conflict) => write!(
                 f,
                 "merge conflict (tx): txid={}, original_change={}, merge_with={}",
-                conflict.key, conflict.original, conflict.merge_with
+                conflict.key, conflict.change, conflict.new_change
             ),
         }
     }

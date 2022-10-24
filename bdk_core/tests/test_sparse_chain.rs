@@ -17,9 +17,15 @@ fn gen_block_id(height: u32, hash_n: u64) -> BlockId {
 fn check_last_valid_rules() {
     let mut chain = SparseChain::default();
 
-    chain
-        .apply_update(Update::new(None, gen_block_id(0, 0)))
-        .expect("add first tip should succeed");
+    assert_eq!(
+        chain
+            .apply_update(Update::new(None, gen_block_id(0, 0)))
+            .expect("add first tip should succeed"),
+        ChangeSet {
+            checkpoints: [(0, Change::new_insertion(gen_hash(0)))].into(),
+            ..Default::default()
+        },
+    );
 
     chain
         .apply_update(Update::new(Some(gen_block_id(0, 0)), gen_block_id(1, 1)))
@@ -71,9 +77,15 @@ fn check_invalidate_rules() {
     let mut chain = SparseChain::default();
 
     // add one checkpoint
-    chain
-        .apply_update(Update::new(None, gen_block_id(1, 1)))
-        .expect("should succeed");
+    assert_eq!(
+        chain
+            .apply_update(Update::new(None, gen_block_id(1, 1)))
+            .expect("should succeed"),
+        ChangeSet {
+            checkpoints: [(1, Change::new_insertion(gen_hash(1)))].into(),
+            ..Default::default()
+        },
+    );
 
     // when we are invalidating the one and only checkpoint, `last_valid` should be `None`
     assert_eq!(
@@ -88,20 +100,38 @@ fn check_invalidate_rules() {
             expected_last_valid: None,
         },
     );
-    chain
-        .apply_update(Update {
-            invalidate: Some(gen_block_id(1, 1)),
-            ..Update::new(None, gen_block_id(1, 2))
-        })
-        .expect("invalidate should succeed");
+    assert_eq!(
+        chain
+            .apply_update(Update {
+                invalidate: Some(gen_block_id(1, 1)),
+                ..Update::new(None, gen_block_id(1, 2))
+            })
+            .expect("invalidate should succeed"),
+        ChangeSet {
+            checkpoints: [(1, Change::new(Some(gen_hash(1)), Some(gen_hash(2))))].into(),
+            ..Default::default()
+        }
+    );
 
     // add two checkpoints
-    chain
-        .apply_update(Update::new(Some(gen_block_id(1, 2)), gen_block_id(2, 3)))
-        .expect("update should succeed");
-    chain
-        .apply_update(Update::new(Some(gen_block_id(2, 3)), gen_block_id(3, 4)))
-        .expect("update should succeed");
+    assert_eq!(
+        chain
+            .apply_update(Update::new(Some(gen_block_id(1, 2)), gen_block_id(2, 3)))
+            .expect("update should succeed"),
+        ChangeSet {
+            checkpoints: [(2, Change::new_insertion(gen_hash(3)))].into(),
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        chain
+            .apply_update(Update::new(Some(gen_block_id(2, 3)), gen_block_id(3, 4)))
+            .expect("update should succeed"),
+        ChangeSet {
+            checkpoints: [(3, Change::new_insertion(gen_hash(4)))].into(),
+            ..Default::default()
+        },
+    );
 
     // `invalidate` should directly follow `last_valid`
     assert_eq!(
@@ -114,12 +144,18 @@ fn check_invalidate_rules() {
             expected_last_valid: Some(gen_block_id(2, 3)),
         }
     );
-    chain
-        .apply_update(Update {
-            invalidate: Some(gen_block_id(3, 4)),
-            ..Update::new(Some(gen_block_id(2, 3)), gen_block_id(3, 5))
-        })
-        .expect("should succeed");
+    assert_eq!(
+        chain
+            .apply_update(Update {
+                invalidate: Some(gen_block_id(3, 4)),
+                ..Update::new(Some(gen_block_id(2, 3)), gen_block_id(3, 5))
+            })
+            .expect("should succeed"),
+        ChangeSet {
+            checkpoints: [(3, Change::new(Some(gen_hash(4)), Some(gen_hash(5))))].into(),
+            ..Default::default()
+        }
+    );
 }
 
 #[test]
@@ -137,9 +173,12 @@ fn apply_tips() {
     }
 
     // repeated last tip should succeed
-    chain
-        .apply_update(Update::new(last_valid, last_valid.unwrap()))
-        .expect("repeated last_tip should succeed");
+    assert_eq!(
+        chain
+            .apply_update(Update::new(last_valid, last_valid.unwrap()))
+            .expect("repeated last_tip should succeed"),
+        ChangeSet::default(),
+    );
 
     // ensure state of sparsechain is correct
     chain
@@ -159,12 +198,34 @@ fn checkpoint_limit_is_respected() {
     let mut last_valid = None;
     for i in 0..10 {
         let new_tip = gen_block_id(i, i as _);
-        chain
+
+        let changes = chain
             .apply_update(Update {
                 txids: [(gen_hash(i as _), TxHeight::Confirmed(i))].into(),
                 ..Update::new(last_valid, new_tip)
             })
             .expect("should succeed");
+
+        assert_eq!(
+            changes,
+            ChangeSet {
+                checkpoints: if i < 5 {
+                    [(i, Change::new_insertion(gen_hash(i as _)))].into()
+                } else {
+                    [
+                        (i, Change::new_insertion(gen_hash(i as _))),
+                        (i - 5, Change::new_removal(gen_hash((i - 5) as _))),
+                    ]
+                    .into()
+                },
+                txids: [(
+                    gen_hash(i as _),
+                    Change::new_insertion(TxHeight::Confirmed(i))
+                )]
+                .into(),
+            }
+        );
+
         last_valid = Some(new_tip);
     }
 

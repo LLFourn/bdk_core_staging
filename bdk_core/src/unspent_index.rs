@@ -20,6 +20,9 @@ pub struct Unspent {
 }
 
 impl UnspentIndex {
+    /// Given a [`ChangeSet`] and a [`TxGraph`], we sync the [`UnspentIndex`].
+    ///
+    /// TODO: Figure out how to make this cleaner and more efficient.
     pub fn sync(&mut self, graph: &TxGraph, changes: &ChangeSet) -> Result<(), SyncFailure> {
         let txo_changes = changes
             .txids
@@ -31,7 +34,7 @@ impl UnspentIndex {
                         .output
                         .iter()
                         .enumerate()
-                        .map(|(vout, txout)| (OutPoint::new(*txid, vout as _), txout)),
+                        .map(|(vout, txout)| (OutPoint::new(*txid, vout as _), txout, h_delta)),
                     None => return vec![Err(SyncFailure::TxNotInGraph(*txid))],
                 };
 
@@ -39,7 +42,7 @@ impl UnspentIndex {
                 match h_delta.from {
                     // outpoints should all exist
                     Some(exp_height) => txouts
-                        .map(|(op, txout)| -> Result<_, SyncFailure> {
+                        .map(|(op, txout, h_delta)| -> Result<_, SyncFailure> {
                             let (index_txout, height) = self
                                 .utxos
                                 .get(&op)
@@ -59,7 +62,7 @@ impl UnspentIndex {
                         .collect::<Vec<_>>(),
                     // outpoints should all not exist
                     None => txouts
-                        .map(|(op, txout)| -> Result<_, SyncFailure> {
+                        .map(|(op, txout, h_delta)| -> Result<_, SyncFailure> {
                             if let Some((_, tx_height)) = self.utxos.get(&op) {
                                 Err(SyncFailure::TxInconsistent {
                                     txid: *txid,
