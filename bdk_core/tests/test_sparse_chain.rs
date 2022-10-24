@@ -1,3 +1,5 @@
+use crate::collections::HashMap;
+
 use bdk_core::*;
 use bitcoin::{hashes::Hash, Txid};
 
@@ -237,17 +239,26 @@ fn checkpoint_limit_is_respected() {
 fn add_txids() {
     let mut chain = SparseChain::default();
 
-    let txids_1 = (0..100)
+    let txids = (0..100)
         .map(gen_hash::<Txid>)
         .map(|txid| (txid, TxHeight::Confirmed(1)))
-        .collect();
+        .collect::<HashMap<_, _>>();
 
-    chain
-        .apply_update(Update {
-            txids: txids_1,
-            ..Update::new(None, gen_block_id(1, 1))
-        })
-        .expect("add many txs in single checkpoint should succeed");
+    assert_eq!(
+        chain
+            .apply_update(Update {
+                txids: txids.clone(),
+                ..Update::new(None, gen_block_id(1, 1))
+            })
+            .expect("add many txs in single checkpoint should succeed"),
+        ChangeSet {
+            checkpoints: [(1, Change::new_insertion(gen_hash(1)))].into(),
+            txids: txids
+                .iter()
+                .map(|(txid, height)| (*txid, Change::new_insertion(*height)))
+                .collect(),
+        }
+    );
 
     assert_eq!(
         chain
@@ -271,18 +282,34 @@ fn add_txs_of_same_height_with_different_updates() {
     let block = gen_block_id(0, 0);
 
     // add one block
-    chain
-        .apply_update(Update::new(None, block))
-        .expect("should succeed");
+    assert_eq!(
+        chain
+            .apply_update(Update::new(None, block))
+            .expect("should succeed"),
+        ChangeSet {
+            checkpoints: [(0, Change::new_insertion(gen_hash(0)))].into(),
+            ..Default::default()
+        }
+    );
 
     // add txs of same height with different updates
     (0..100).for_each(|i| {
-        chain
-            .apply_update(Update {
-                txids: [(gen_hash(i as _), TxHeight::Confirmed(0))].into(),
-                ..Update::new(Some(block), block)
-            })
-            .expect("should succeed");
+        assert_eq!(
+            chain
+                .apply_update(Update {
+                    txids: [(gen_hash(i as _), TxHeight::Confirmed(0))].into(),
+                    ..Update::new(Some(block), block)
+                })
+                .expect("should succeed"),
+            ChangeSet {
+                txids: [(
+                    gen_hash(i as _),
+                    Change::new_insertion(TxHeight::Confirmed(0))
+                )]
+                .into(),
+                ..Default::default()
+            }
+        );
     });
 
     assert_eq!(chain.iter_txids().count(), 100);
@@ -295,33 +322,63 @@ fn add_txs_of_same_height_with_different_updates() {
 fn confirm_tx() {
     let mut chain = SparseChain::default();
 
-    chain
-        .apply_update(Update {
+    assert_eq!(
+        chain
+            .apply_update(Update {
+                txids: [
+                    (gen_hash(10), TxHeight::Unconfirmed),
+                    (gen_hash(20), TxHeight::Unconfirmed),
+                ]
+                .into(),
+                ..Update::new(None, gen_block_id(1, 1))
+            })
+            .expect("adding two txs from mempool should succeed"),
+        ChangeSet {
+            checkpoints: [(1, Change::new_insertion(gen_hash(1)))].into(),
             txids: [
-                (gen_hash(10), TxHeight::Unconfirmed),
-                (gen_hash(20), TxHeight::Unconfirmed),
+                (gen_hash(10), Change::new_insertion(TxHeight::Unconfirmed)),
+                (gen_hash(20), Change::new_insertion(TxHeight::Unconfirmed))
             ]
-            .into(),
-            ..Update::new(None, gen_block_id(1, 1))
-        })
-        .expect("adding two txs from mempool should succeed");
+            .into()
+        }
+    );
 
-    chain
-        .apply_update(Update {
-            txids: [(gen_hash(10), TxHeight::Confirmed(0))].into(),
-            ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 1))
-        })
-        .expect("it should be okay to confirm tx into block before last_valid (partial sync)");
+    assert_eq!(
+        chain
+            .apply_update(Update {
+                txids: [(gen_hash(10), TxHeight::Confirmed(0))].into(),
+                ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(1, 1))
+            })
+            .expect("it should be okay to confirm tx into block before last_valid (partial sync)"),
+        ChangeSet {
+            txids: [(
+                gen_hash(10),
+                Change::new(Some(TxHeight::Unconfirmed), Some(TxHeight::Confirmed(0)))
+            )]
+            .into(),
+            ..Default::default()
+        }
+    );
     assert_eq!(chain.iter_txids().count(), 2);
     assert_eq!(chain.iter_confirmed_txids().count(), 1);
     assert_eq!(chain.iter_mempool_txids().count(), 1);
 
-    chain
-        .apply_update(Update {
-            txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
-            ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
-        })
-        .expect("it should be okay to confirm tx into the tip introduced");
+    assert_eq!(
+        chain
+            .apply_update(Update {
+                txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
+                ..Update::new(Some(gen_block_id(1, 1)), gen_block_id(2, 2))
+            })
+            .expect("it should be okay to confirm tx into the tip introduced"),
+        ChangeSet {
+            checkpoints: [(2, Change::new_insertion(gen_hash(2)))].into(),
+            txids: [(
+                gen_hash(20),
+                Change::new(Some(TxHeight::Unconfirmed), Some(TxHeight::Confirmed(2)))
+            )]
+            .into(),
+        }
+    );
     assert_eq!(chain.iter_txids().count(), 2);
     assert_eq!(chain.iter_confirmed_txids().count(), 2);
     assert_eq!(chain.iter_mempool_txids().count(), 0);
@@ -368,12 +425,18 @@ fn confirm_tx() {
         },
     );
 
-    chain
-        .apply_update(Update {
-            txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
-            ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
-        })
-        .expect("update can introduce already-existing tx");
+    assert_eq!(
+        chain
+            .apply_update(Update {
+                txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
+                ..Update::new(Some(gen_block_id(2, 2)), gen_block_id(3, 3))
+            })
+            .expect("update can introduce already-existing tx"),
+        ChangeSet {
+            checkpoints: [(3, Change::new_insertion(gen_hash(3)))].into(),
+            ..Default::default()
+        }
+    );
     assert_eq!(chain.iter_txids().count(), 2);
     assert_eq!(chain.iter_confirmed_txids().count(), 2);
     assert_eq!(chain.iter_mempool_txids().count(), 0);

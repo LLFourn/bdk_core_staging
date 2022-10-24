@@ -283,7 +283,8 @@ impl SparseChain {
             let original_conf = self
                 .txid_to_index
                 .get(&txid)
-                .map(|&h| TxHeight::Confirmed(h));
+                .map(|&h| TxHeight::Confirmed(h))
+                .or(self.mempool.get(&txid).map(|_| TxHeight::Unconfirmed));
 
             match new_conf {
                 TxHeight::Confirmed(height) => {
@@ -291,17 +292,24 @@ impl SparseChain {
                         self.txid_to_index.insert(txid, height);
                         self.mempool.remove(&txid);
 
-                        change_set.txids.insert(
-                            txid,
-                            Change::new(original_conf, Some(TxHeight::Confirmed(height))),
-                        );
+                        change_set
+                            .txids
+                            .entry(txid)
+                            .and_modify(|change| change.to = Some(TxHeight::Confirmed(height)))
+                            .or_insert_with(|| {
+                                Change::new(original_conf, Some(TxHeight::Confirmed(height)))
+                            });
                     }
                 }
                 TxHeight::Unconfirmed => {
                     if self.mempool.insert(txid) {
                         change_set
                             .txids
-                            .insert(txid, Change::new_insertion(TxHeight::Unconfirmed));
+                            .entry(txid)
+                            .and_modify(|change| change.to = Some(TxHeight::Unconfirmed))
+                            .or_insert_with(|| {
+                                Change::new(original_conf, Some(TxHeight::Unconfirmed))
+                            });
                     }
                 }
             }

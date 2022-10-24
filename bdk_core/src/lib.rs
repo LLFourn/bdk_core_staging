@@ -70,7 +70,7 @@ impl Default for BlockId {
 
 // When no-std use `alloc`'s Hash collections. This is activated by default
 #[cfg(all(not(feature = "std"), not(feature = "hashbrown")))]
-mod collections {
+pub mod collections {
     #![allow(dead_code)]
     pub type HashSet<K> = alloc::collections::BTreeSet<K>;
     pub type HashMap<K, V> = alloc::collections::BTreeMap<K, V>;
@@ -79,13 +79,13 @@ mod collections {
 
 // When we have std use `std`'s all collections
 #[cfg(all(feature = "std", not(feature = "hashbrown")))]
-mod collections {
+pub mod collections {
     pub use std::collections::*;
 }
 
 // With special feature `hashbrown` use `hashbrown`'s hash collections, and else from `alloc`.
 #[cfg(feature = "hashbrown")]
-mod collections {
+pub mod collections {
     #![allow(dead_code)]
     pub type HashSet<K> = hashbrown::HashSet<K>;
     pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
