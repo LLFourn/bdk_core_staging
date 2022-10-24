@@ -2,7 +2,7 @@ use core::ops::{Bound, RangeBounds};
 
 use bitcoin::{hashes::Hash, OutPoint, TxOut, Txid};
 
-use crate::{collections::*, SparseChain, TxGraph, TxHeight};
+use crate::{collections::*, ChangeSet, SyncFailure, TxGraph, TxHeight, Vec};
 
 #[derive(Clone, Debug, Default)]
 pub struct UnspentIndex {
@@ -20,43 +20,82 @@ pub struct Unspent {
 }
 
 impl UnspentIndex {
-    pub fn sync(&mut self, chain: &SparseChain, graph: &TxGraph) {
-        let utxos = chain
-            .iter_txids()
-            .flat_map(|(h, txid)| {
-                let tx = graph.tx(&txid).expect("tx of txid should exist");
-                debug_assert_eq!(tx.txid(), txid);
-
-                let height = TxHeight::from(h);
-
-                tx.output
-                    .iter()
-                    .enumerate()
-                    .filter_map(move |(vout, txout)| {
-                        let outpoint = OutPoint {
-                            txid,
-                            vout: vout as u32,
-                        };
-
-                        let is_unspent =
-                            graph.is_unspent(&outpoint).expect("outpoint should exist");
-
-                        if is_unspent {
-                            Some((outpoint, (txout.clone(), height)))
-                        } else {
-                            None
-                        }
-                    })
-            })
-            .collect::<HashMap<_, _>>();
-
-        let utxos_by_height = utxos
+    pub fn sync(&mut self, graph: &TxGraph, changes: &ChangeSet) -> Result<(), SyncFailure> {
+        let txo_changes = changes
+            .txids
             .iter()
-            .map(|(op, (_, h))| (*h, *op))
-            .collect::<BTreeSet<_>>();
+            .flat_map(|(txid, h_delta)| -> Vec<_> {
+                // obtain iterator over (outpoint, txouts) of given txid
+                let txouts = match graph.tx(txid) {
+                    Some(tx) => tx
+                        .output
+                        .iter()
+                        .enumerate()
+                        .map(|(vout, txout)| (OutPoint::new(*txid, vout as _), txout)),
+                    None => return vec![Err(SyncFailure::TxNotInGraph(*txid))],
+                };
 
-        self.utxos = utxos;
-        self.ordered_outpoints = utxos_by_height;
+                // ensure `height_change.from` is consistent with index state
+                match h_delta.from {
+                    // outpoints should all exist
+                    Some(exp_height) => txouts
+                        .map(|(op, txout)| -> Result<_, SyncFailure> {
+                            let (index_txout, height) = self
+                                .utxos
+                                .get(&op)
+                                .ok_or_else(|| SyncFailure::TxNotInIndex(*txid))?;
+                            debug_assert_eq!(index_txout, txout);
+
+                            if height != &exp_height {
+                                Err(SyncFailure::TxInconsistent {
+                                    txid: *txid,
+                                    original: Some(*height),
+                                    change: h_delta.clone(),
+                                })
+                            } else {
+                                Ok((op, txout, h_delta))
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                    // outpoints should all not exist
+                    None => txouts
+                        .map(|(op, txout)| -> Result<_, SyncFailure> {
+                            if let Some((_, tx_height)) = self.utxos.get(&op) {
+                                Err(SyncFailure::TxInconsistent {
+                                    txid: *txid,
+                                    original: Some(*tx_height),
+                                    change: h_delta.clone(),
+                                })
+                            } else {
+                                Ok((op, txout, h_delta))
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // apply changes
+        for (op, txout, height_change) in txo_changes {
+            if let Some(from_height) = height_change.from {
+                self.utxos.remove(&op);
+                self.ordered_outpoints.remove(&(from_height, op));
+            }
+
+            match height_change.to {
+                Some(new_height) => {
+                    self.utxos.insert(op, (txout.clone(), new_height));
+                    self.ordered_outpoints.insert((new_height, op));
+                }
+                None => {
+                    if let Some((_, h)) = self.utxos.remove(&op) {
+                        self.ordered_outpoints.remove(&(h, op));
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Obtain [`Unspent`] from given [`OutPoint`].

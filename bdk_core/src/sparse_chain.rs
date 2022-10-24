@@ -486,6 +486,7 @@ impl ChangeSet {
                 self.checkpoints.remove(&height);
             }
         }
+
         for (txid, new_change) in other.txids {
             match self.txids.get_mut(&txid) {
                 Some(original_change) => {
@@ -507,6 +508,7 @@ impl ChangeSet {
                 self.txids.remove(&txid);
             }
         }
+
         Ok(self)
     }
 }
@@ -589,6 +591,24 @@ impl Display for MergeFailure {
 
 #[cfg(feature = "std")]
 impl std::error::Error for MergeFailure {}
+
+#[derive(Debug)]
+pub enum SyncFailure {
+    TxNotInGraph(Txid),
+    TxNotInIndex(Txid),
+    TxInconsistent {
+        txid: Txid,
+        original: Option<TxHeight>,
+        change: Change<TxHeight>,
+    },
+}
+
+impl Display for SyncFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // TODO: Proper error
+        write!(f, "sync failure: {:?}", self)
+    }
+}
 
 /// Represents the height in which a transaction is confirmed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
