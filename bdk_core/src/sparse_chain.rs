@@ -154,6 +154,25 @@ impl SparseChain {
             .map(|(&height, &hash)| BlockId { height, hash })
     }
 
+    /// Derives a [`ChangeSet`] that could be applied to an empty index.
+    pub fn initial_change_set(&self) -> ChangeSet {
+        ChangeSet {
+            checkpoints: self
+                .checkpoints
+                .iter()
+                .map(|(height, hash)| (*height, Change::new_insertion(*hash)))
+                .collect(),
+            txids: self
+                .mempool
+                .iter()
+                .map(|txid| (*txid, Change::new_insertion(TxHeight::Unconfirmed)))
+                .chain(self.txid_by_height.iter().map(|(height, txid)| {
+                    (*txid, Change::new_insertion(TxHeight::Confirmed(*height)))
+                }))
+                .collect(),
+        }
+    }
+
     /// Apply transactions that are all confirmed in a given block
     pub fn apply_block_txs(
         &mut self,
