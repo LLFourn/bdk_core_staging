@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    BlockId, Update,
+    BlockId, TxGraph, Update,
 };
 pub use ureq;
 use ureq::Agent;
@@ -167,12 +167,13 @@ impl Client {
     /// `scripts`.
     pub fn fetch_new_checkpoint(
         &self,
+        graph: &mut TxGraph,
         mut scripts: impl Iterator<Item = (u32, Script)>,
         stop_gap: usize,
         known_tips: impl Iterator<Item = BlockId>,
     ) -> Result<(Option<u32>, Update), UpdateError> {
         let mut empty_scripts = 0;
-        let mut transactions = vec![];
+        let mut txids = vec![];
         let mut last_active_index = None;
         let mut invalidate = None;
         let mut last_valid = None;
@@ -231,7 +232,8 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    transactions.push((tx.to_tx(), tx.status.to_block_time()))
+                    graph.insert_tx(&tx.to_tx());
+                    txids.push((tx.txid, tx.status.to_block_time()))
                 }
             }
 
@@ -245,9 +247,9 @@ impl Client {
         }
 
         let update = Update {
-            txids: transactions
+            txids: txids
                 .iter()
-                .map(|(tx, conf)| (tx.txid(), conf.map(|b| b.height).into()))
+                .map(|(tx, conf)| (*tx, conf.map(|b| b.height).into()))
                 .collect(),
             last_valid,
             invalidate,

@@ -1,6 +1,6 @@
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    SparseChain, TxGraph,
+    ChangeSet, SyncFailure, TxGraph, Vec,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut};
 
@@ -42,10 +42,24 @@ impl<I> Default for SpkTracker<I> {
 }
 
 impl<I: Clone + Ord> SpkTracker<I> {
-    pub fn sync(&mut self, graph: &TxGraph) {
-        graph
-            .iter_all_txouts()
+    pub fn sync(&mut self, graph: &TxGraph, changes: &ChangeSet) -> Result<(), SyncFailure> {
+        let txs = changes
+            .txids
+            .iter()
+            .filter(|(_, change)| change.from.is_none())
+            .map(|(txid, _)| graph.tx(txid).ok_or(SyncFailure::TxNotInGraph(*txid)))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        txs.iter()
+            .flat_map(|tx| {
+                tx.output
+                    .iter()
+                    .enumerate()
+                    .map(|(vout, txout)| (OutPoint::new(tx.txid(), vout as _), txout))
+            })
             .for_each(|(op, txout)| self.add_txout(&op, txout));
+
+        Ok(())
     }
 
     fn add_txout(&mut self, op: &OutPoint, txout: &TxOut) {
@@ -57,18 +71,6 @@ impl<I: Clone + Ord> SpkTracker<I> {
                 .insert(op.clone());
             self.unused.remove(&spk_i);
         }
-    }
-
-    /// Iterate over unspent transactions outputs (i.e. UTXOs).
-    /// TODO: Remove when we add `UnspentTracker`.
-    pub fn iter_unspent<'a>(
-        &'a self,
-        chain: &'a SparseChain,
-        graph: &'a TxGraph,
-    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + '_ {
-        self.iter_txout()
-            .filter(|(_, outpoint)| chain.transaction_height(&outpoint.txid).is_some())
-            .filter(|(_, outpoint)| graph.is_unspent(outpoint).expect("should exist"))
     }
 
     /// Iterate over all known txouts that spend to tracked scriptPubKeys.
