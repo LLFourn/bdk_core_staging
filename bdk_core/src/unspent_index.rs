@@ -2,48 +2,54 @@ use core::ops::{Bound, RangeBounds};
 
 use bitcoin::{hashes::Hash, OutPoint, TxOut, Txid};
 
-use crate::{collections::*, ChangeSet, SyncFailure, TxGraph, TxHeight, Vec};
+use crate::{collections::*, ChangeSet, SpkTracker, SyncFailure, TxHeight, Vec};
 
-#[derive(Clone, Debug, Default)]
-pub struct UnspentIndex {
+#[derive(Clone, Debug)]
+pub struct UnspentIndex<I> {
     /// Map of outpoints to (txout, confirmation height)
-    utxos: HashMap<OutPoint, (TxOut, TxHeight)>,
+    utxos: HashMap<OutPoint, (I, TxOut, TxHeight)>,
     /// Outpoints ordered by confirmation height
     ordered_outpoints: BTreeSet<(TxHeight, OutPoint)>,
 }
 
 #[derive(Clone, Debug)]
-pub struct Unspent {
+pub struct Unspent<I> {
     pub outpoint: OutPoint,
     pub txout: TxOut,
+    pub spk_index: I,
     pub height: TxHeight,
 }
 
-impl UnspentIndex {
+impl<I: Clone + Ord> Default for UnspentIndex<I> {
+    fn default() -> Self {
+        Self {
+            utxos: Default::default(),
+            ordered_outpoints: Default::default(),
+        }
+    }
+}
+
+impl<I: Clone + Ord> UnspentIndex<I> {
     /// Given a [`ChangeSet`] and a [`TxGraph`], we sync the [`UnspentIndex`].
     ///
     /// TODO: Figure out how to make this cleaner and more efficient.
-    pub fn sync(&mut self, graph: &TxGraph, changes: &ChangeSet) -> Result<(), SyncFailure> {
+    pub fn sync(
+        &mut self,
+        spk_tracker: &SpkTracker<I>,
+        changes: &ChangeSet,
+    ) -> Result<(), SyncFailure> {
         let txo_changes = changes
             .txids
             .iter()
             .flat_map(|(txid, h_delta)| -> Vec<_> {
-                // obtain iterator over (outpoint, txouts) of given txid
-                let txouts = match graph.tx(txid) {
-                    Some(tx) => tx
-                        .output
-                        .iter()
-                        .enumerate()
-                        .map(|(vout, txout)| (OutPoint::new(*txid, vout as _), txout, h_delta)),
-                    None => return vec![Err(SyncFailure::TxNotInGraph(*txid))],
-                };
+                let txouts = spk_tracker.range_tx_outputs(*txid);
 
                 // ensure `height_change.from` is consistent with index state
                 match h_delta.from {
                     // outpoints should all exist
                     Some(exp_height) => txouts
-                        .map(|(op, txout, h_delta)| -> Result<_, SyncFailure> {
-                            let (index_txout, height) = self
+                        .map(|(spk_i, op, txout)| -> Result<_, SyncFailure> {
+                            let (_, index_txout, height) = self
                                 .utxos
                                 .get(&op)
                                 .ok_or_else(|| SyncFailure::TxNotInIndex(*txid))?;
@@ -56,21 +62,21 @@ impl UnspentIndex {
                                     change: h_delta.clone(),
                                 })
                             } else {
-                                Ok((op, txout, h_delta))
+                                Ok((spk_i, op, txout, h_delta))
                             }
                         })
                         .collect::<Vec<_>>(),
                     // outpoints should all not exist
                     None => txouts
-                        .map(|(op, txout, h_delta)| -> Result<_, SyncFailure> {
-                            if let Some((_, tx_height)) = self.utxos.get(&op) {
+                        .map(|(spk_i, op, txout)| -> Result<_, SyncFailure> {
+                            if let Some((_, _, tx_height)) = self.utxos.get(&op) {
                                 Err(SyncFailure::TxInconsistent {
                                     txid: *txid,
                                     original: Some(*tx_height),
                                     change: h_delta.clone(),
                                 })
                             } else {
-                                Ok((op, txout, h_delta))
+                                Ok((spk_i, op, txout, h_delta))
                             }
                         })
                         .collect::<Vec<_>>(),
@@ -79,7 +85,7 @@ impl UnspentIndex {
             .collect::<Result<Vec<_>, _>>()?;
 
         // apply changes
-        for (op, txout, height_change) in txo_changes {
+        for (spk_i, op, txout, height_change) in txo_changes {
             if let Some(from_height) = height_change.from {
                 self.utxos.remove(&op);
                 self.ordered_outpoints.remove(&(from_height, op));
@@ -87,11 +93,11 @@ impl UnspentIndex {
 
             match height_change.to {
                 Some(new_height) => {
-                    self.utxos.insert(op, (txout.clone(), new_height));
+                    self.utxos.insert(op, (spk_i, txout.clone(), new_height));
                     self.ordered_outpoints.insert((new_height, op));
                 }
                 None => {
-                    if let Some((_, h)) = self.utxos.remove(&op) {
+                    if let Some((_, _, h)) = self.utxos.remove(&op) {
                         self.ordered_outpoints.remove(&(h, op));
                     }
                 }
@@ -102,27 +108,32 @@ impl UnspentIndex {
     }
 
     /// Obtain [`Unspent`] from given [`OutPoint`].
-    pub fn unspent(&self, outpoint: OutPoint) -> Option<Unspent> {
-        self.utxos.get(&outpoint).map(|(txout, height)| Unspent {
-            outpoint,
-            txout: txout.clone(),
-            height: *height,
-        })
-    }
-
-    /// Iterate all unspent outputs (UTXOs), from most confirmations to least confirmations.
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = Unspent> + ExactSizeIterator + '_ {
-        self.ordered_outpoints
-            .iter()
-            .map(|&(height, outpoint)| Unspent {
+    pub fn unspent(&self, outpoint: OutPoint) -> Option<Unspent<I>> {
+        self.utxos
+            .get(&outpoint)
+            .map(|(spk_index, txout, height)| Unspent {
                 outpoint,
-                txout: self.utxos[&outpoint].0.clone(),
-                height,
+                txout: txout.clone(),
+                spk_index: spk_index.clone(),
+                height: *height,
             })
     }
 
+    /// Iterate all unspent outputs (UTXOs), from most confirmations to least confirmations.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = Unspent<I>> + ExactSizeIterator + '_ {
+        self.ordered_outpoints.iter().map(|&(height, outpoint)| {
+            let (spk_i, txout, _) = &self.utxos[&outpoint];
+            Unspent {
+                outpoint,
+                txout: txout.clone(),
+                spk_index: spk_i.clone(),
+                height,
+            }
+        })
+    }
+
     /// Range unspent outputs (UTXO) by confirmation height ([`TxHeight`]).
-    pub fn range<R>(&self, range: R) -> impl DoubleEndedIterator<Item = Unspent> + '_
+    pub fn range<R>(&self, range: R) -> impl DoubleEndedIterator<Item = Unspent<I>> + '_
     where
         R: RangeBounds<TxHeight>,
     {
@@ -138,10 +149,14 @@ impl UnspentIndex {
         };
         self.ordered_outpoints
             .range((start, end))
-            .map(|&(height, outpoint)| Unspent {
-                outpoint,
-                txout: self.utxos[&outpoint].0.clone(),
-                height,
+            .map(|&(height, outpoint)| {
+                let (spk_i, txout, _) = &self.utxos[&outpoint];
+                Unspent {
+                    outpoint,
+                    txout: txout.clone(),
+                    spk_index: spk_i.clone(),
+                    height,
+                }
             })
     }
 }

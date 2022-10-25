@@ -212,7 +212,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Txo { utxo_cmd } => match utxo_cmd {
             TxoCmd::List => {
-                for (spk_index, txout) in tracker.iter_txout().filter_map(|(spk_i, op)| {
+                for (spk_index, txout) in tracker.iter_txout().filter_map(|(spk_i, op, _txout)| {
                     chain.full_txout(&graph, op).map(|utxo| (spk_i, utxo))
                 }) {
                     let script = tracker.spk_at_index(spk_index).unwrap();
@@ -430,7 +430,7 @@ pub fn fully_sync(
     tracker: &mut KeychainTracker<Keychain>,
     chain: &mut SparseChain,
     graph: &mut TxGraph,
-    unspents: &mut UnspentIndex,
+    unspents: &mut UnspentIndex<(Keychain, u32)>,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut active_indexes = vec![];
@@ -478,7 +478,7 @@ pub fn fully_sync(
         .sync(graph, &changes)
         .expect("failed to sync tracker");
     unspents
-        .sync(graph, &changes)
+        .sync(&tracker, &changes)
         .expect("failed to sync unspent index");
 
     Ok(())

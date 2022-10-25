@@ -2,7 +2,7 @@ use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ChangeSet, SyncFailure, TxGraph, Vec,
 };
-use bitcoin::{self, OutPoint, Script, Transaction, TxOut};
+use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
 /// A *script pubkey* tracker.
 ///
@@ -24,7 +24,7 @@ pub struct SpkTracker<I> {
     /// A set of unused derivation indices.
     unused: BTreeSet<I>,
     /// Index the Outpoints owned by this tracker to the index of script pubkey.
-    txouts: BTreeMap<OutPoint, I>,
+    txouts: BTreeMap<OutPoint, (I, TxOut)>,
     /// A lookup from script pubkey derivation index to related outpoints
     spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
 }
@@ -57,14 +57,14 @@ impl<I: Clone + Ord> SpkTracker<I> {
                     .enumerate()
                     .map(|(vout, txout)| (OutPoint::new(tx.txid(), vout as _), txout))
             })
-            .for_each(|(op, txout)| self.add_txout(&op, txout));
+            .for_each(|(op, txout)| self.add_txout(&op, txout.clone()));
 
         Ok(())
     }
 
-    fn add_txout(&mut self, op: &OutPoint, txout: &TxOut) {
+    fn add_txout(&mut self, op: &OutPoint, txout: TxOut) {
         if let Some(spk_i) = self.index_of_spk(&txout.script_pubkey) {
-            self.txouts.insert(op.clone(), spk_i.clone());
+            self.txouts.insert(op.clone(), (spk_i.clone(), txout));
             self.spk_txouts
                 .entry(spk_i.clone())
                 .or_default()
@@ -74,17 +74,31 @@ impl<I: Clone + Ord> SpkTracker<I> {
     }
 
     /// Iterate over all known txouts that spend to tracked scriptPubKeys.
-    pub fn iter_txout<'a>(
-        &'a self,
-    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + ExactSizeIterator + 'a {
-        self.txouts.iter().map(|(op, index)| (index.clone(), *op))
+    pub fn iter_txout(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint, &TxOut)> + ExactSizeIterator {
+        self.txouts
+            .iter()
+            .map(|(op, (index, txout))| (index.clone(), *op, txout))
+    }
+
+    /// Iterate over txouts of a given txid
+    pub fn range_tx_outputs(
+        &self,
+        txid: Txid,
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint, &TxOut)> {
+        self.txouts
+            .range(OutPoint::new(txid, u32::MIN)..=OutPoint::new(txid, u32::MAX))
+            .map(|(op, (index, txout))| (index.clone(), *op, txout))
     }
 
     /// Returns the index of the script pubkey at `outpoint`.
     ///
     /// This returns `Some(spk_index)` if the txout has been found with a script pubkey in the tracker.
-    pub fn index_of_txout(&self, outpoint: OutPoint) -> Option<I> {
-        self.txouts.get(&outpoint).cloned()
+    pub fn txout(&self, outpoint: OutPoint) -> Option<(I, &TxOut)> {
+        self.txouts
+            .get(&outpoint)
+            .map(|(spk_i, txout)| (spk_i.clone(), txout))
     }
 
     /// Returns the script that has been derived at the index.
@@ -140,7 +154,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
         let input_matches = tx
             .input
             .iter()
-            .find(|input| self.index_of_txout(input.previous_output).is_some())
+            .find(|input| self.txout(input.previous_output).is_some())
             .is_some();
         let output_matches = tx
             .output
