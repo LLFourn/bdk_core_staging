@@ -47,7 +47,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
             .txids
             .iter()
             .filter(|(_, change)| change.from.is_none())
-            .map(|(txid, _)| graph.tx(txid).ok_or(SyncFailure::TxNotInGraph(*txid)))
+            .map(|(txid, _)| graph.tx(*txid).ok_or(SyncFailure::TxNotInGraph(*txid)))
             .collect::<Result<Vec<_>, _>>()?;
 
         txs.iter()

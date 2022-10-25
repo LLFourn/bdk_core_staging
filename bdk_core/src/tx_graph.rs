@@ -30,15 +30,15 @@ impl TxGraph {
     }
 
     /// Get a transaction by txid. This only returns `Some` for full transactions.
-    pub fn tx(&self, txid: &Txid) -> Option<&Transaction> {
-        match self.txs.get(txid)? {
+    pub fn tx(&self, txid: Txid) -> Option<&Transaction> {
+        match self.txs.get(&txid)? {
             TxNode::Whole(tx) => Some(tx),
             TxNode::Partial(_) => None,
         }
     }
 
     /// Obtains a single tx output (if any) at specified outpoint.
-    pub fn txout(&self, outpoint: &OutPoint) -> Option<&TxOut> {
+    pub fn txout(&self, outpoint: OutPoint) -> Option<&TxOut> {
         match self.txs.get(&outpoint.txid)? {
             TxNode::Whole(tx) => tx.output.get(outpoint.vout as usize),
             TxNode::Partial(txouts) => txouts.get(&(outpoint.vout as usize)),
@@ -105,7 +105,7 @@ impl TxGraph {
         let inputs_sum = tx
             .input
             .iter()
-            .map(|txin| self.txout(&txin.previous_output).map(|txout| txout.value))
+            .map(|txin| self.txout(txin.previous_output).map(|txout| txout.value))
             .sum::<Option<u64>>()?;
 
         let outputs_sum = tx.output.iter().map(|txout| txout.value).sum::<u64>();
