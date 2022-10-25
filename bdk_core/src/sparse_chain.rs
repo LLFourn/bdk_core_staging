@@ -136,11 +136,11 @@ impl SparseChain {
     }
 
     /// Return height of tx (if any).
-    pub fn transaction_height(&self, txid: &Txid) -> Option<TxHeight> {
-        Some(if self.mempool.contains(txid) {
+    pub fn transaction_height(&self, txid: Txid) -> Option<TxHeight> {
+        Some(if self.mempool.contains(&txid) {
             TxHeight::Unconfirmed
         } else {
-            TxHeight::Confirmed(*self.txid_to_index.get(txid)?)
+            TxHeight::Confirmed(*self.txid_to_index.get(&txid)?)
         })
     }
 
@@ -406,9 +406,9 @@ impl SparseChain {
     }
 
     pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut> {
-        let height = self.transaction_height(&outpoint.txid)?;
+        let height = self.transaction_height(outpoint.txid)?;
 
-        let txout = graph.txout(&outpoint).cloned()?;
+        let txout = graph.txout(outpoint).cloned()?;
 
         let spent_by = graph
             .outspend(&outpoint)

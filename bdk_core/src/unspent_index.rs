@@ -29,7 +29,7 @@ impl UnspentIndex {
             .iter()
             .flat_map(|(txid, h_delta)| -> Vec<_> {
                 // obtain iterator over (outpoint, txouts) of given txid
-                let txouts = match graph.tx(txid) {
+                let txouts = match graph.tx(*txid) {
                     Some(tx) => tx
                         .output
                         .iter()
