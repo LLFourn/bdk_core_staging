@@ -2,14 +2,8 @@
 pub use alloc::{boxed::Box, vec::Vec};
 pub use bitcoin;
 use bitcoin::{hashes::Hash, BlockHash, TxOut};
-pub use miniscript;
 mod spk_tracker;
 pub use spk_tracker::*;
-mod keychain_tracker;
-pub use keychain_tracker::*;
-pub mod coin_select;
-mod descriptor_ext;
-pub use descriptor_ext::*;
 mod sparse_chain;
 pub use sparse_chain::*;
 mod tx_graph;
