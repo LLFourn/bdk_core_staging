@@ -7,7 +7,6 @@ edition = "2021"
 
 [dependencies]
 bitcoin = { version = "0.29" }
-miniscript = { git =  "https://github.com/llfourn/rust-miniscript", rev = "33ccdd6172110adf7d5ec411cca50d88543f17f7" }
 # miniscript = { path = "../../rust-miniscript" }
 serde_crate = { package = "serde", version = "1", optional = true, features = ["derive"] }
 # Use hashbrown as a feature flag to have HashSet and HashMap from it.
@@ -19,7 +18,7 @@ rand = "0.8.5"
 [features]
 default = ["std"]
 std = []
-serde = ["serde_crate", "miniscript/serde", "bitcoin/serde"]
+serde = ["serde_crate", "bitcoin/serde"]
 
 # [patch.crates-io]
 # miniscript = { git =  "https://github.com/llfourn/rust-miniscript", rev = "2d351c08caca292e8710d74b950bc200f5a539cc" }
