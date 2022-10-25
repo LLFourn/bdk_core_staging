@@ -100,6 +100,23 @@ impl TxGraph {
         self.spends.get(outpoint).map(|txids| txids.is_empty())
     }
 
+    /// Calculates the fee of a given transaction (if we have all relevant data).
+    pub fn calculate_fee(&self, tx: &Transaction) -> Option<u64> {
+        let inputs_sum = tx
+            .input
+            .iter()
+            .map(|txin| self.txout(&txin.previous_output).map(|txout| txout.value))
+            .sum::<Option<u64>>()?;
+
+        let outputs_sum = tx.output.iter().map(|txout| txout.value).sum::<u64>();
+
+        Some(
+            inputs_sum
+                .checked_sub(outputs_sum)
+                .expect("tx graph has invalid data"),
+        )
+    }
+
     /// Iterate over all tx outputs known by [`TxGraph`].
     pub fn iter_all_txouts(&self) -> impl Iterator<Item = (OutPoint, &TxOut)> {
         self.txs.iter().flat_map(|(txid, tx)| match tx {
