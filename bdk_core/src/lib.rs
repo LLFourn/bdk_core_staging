@@ -9,6 +9,7 @@ pub use sparse_chain::*;
 mod tx_graph;
 pub use tx_graph::*;
 pub mod coin_select;
+mod io;
 #[cfg(feature = "miniscript")]
 mod keychain_tracker;
 #[cfg(feature = "miniscript")]

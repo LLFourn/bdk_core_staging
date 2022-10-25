@@ -6,16 +6,17 @@ use core::{
 use crate::{collections::*, BlockId, TxGraph, Vec};
 use bitcoin::{hashes::Hash, Block, BlockHash, OutPoint, Transaction, TxOut, Txid};
 
+
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {
     /// Block height to checkpoint data.
-    checkpoints: BTreeMap<u32, BlockHash>,
+    pub checkpoints: BTreeMap<u32, BlockHash>,
     /// Txids prepended by confirmation height.
-    txid_by_height: BTreeSet<(TxHeight, Txid)>,
+    pub txid_by_height: BTreeSet<(TxHeight, Txid)>,
     /// Confirmation heights of txids.
     txid_to_index: HashMap<Txid, TxHeight>,
     /// Limit number of checkpoints.
-    checkpoint_limit: Option<usize>,
+    pub checkpoint_limit: Option<usize>,
 }
 
 /// Represents an update failure of [`SparseChain`].

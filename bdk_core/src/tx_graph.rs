@@ -1,10 +1,9 @@
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
 use crate::{collections::*, Vec};
-
 #[derive(Clone, Debug, Default)]
 pub struct TxGraph {
-    txs: HashMap<Txid, TxNode>,
+    pub txs: HashMap<Txid, TxNode>,
     spends: BTreeMap<OutPoint, HashSet<Txid>>,
 }
 
@@ -186,7 +185,7 @@ impl TxGraph {
 
 /// Node of a [`TxGraph`]
 #[derive(Clone, Debug)]
-enum TxNode {
+pub enum TxNode {
     Whole(Transaction),
     Partial(BTreeMap<u32, TxOut>),
 }
