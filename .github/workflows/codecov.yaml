@@ -25,13 +25,20 @@ jobs:
           RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off'
           RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off'
         run: cargo test --package bdk_core --all-features
+
       - id: coverage
         name: Generate coverage
         uses: actions-rs/grcov@v0.1.5
-      
+
       # Upload coverage report
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:
           file: ${{ steps.coverage.outputs.report }}
           directory: ./coverage/reports/
+
+      - name: Upload artifact in CI
+        uses: actions/upload-artifact@v2
+        with:
+          name: coverage-report
+          path: ${{ steps.coverage.outputs.report }}
