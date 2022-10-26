@@ -346,15 +346,20 @@ impl SparseChain {
 
     /// Insert an arbitary txid into the mempool. This fails when txid already exists in chain.
     /// Otherwise, it returns the resultant [`ChangeSet`].
-    pub fn insert_into_mempool(&mut self, txid: Txid) -> Option<ChangeSet> {
+    pub fn insert_mempool_tx(&mut self, txid: Txid) -> Option<ChangeSet> {
         if self.txid_to_index.contains_key(&txid) || !self.mempool.insert(txid) {
             return None;
         }
-
         Some(ChangeSet {
             txids: [(txid, Change::new_insertion(TxHeight::Unconfirmed))].into(),
             ..Default::default()
         })
+    }
+
+    /// Inserts an arbitary block into the chain. This fails when the new block conflicts with
+    /// current chain state.
+    pub fn insert_block(&mut self, block: BlockId) -> Result<ChangeSet, UpdateFailure> {
+        self.apply_update(Update::new(self.latest_checkpoint(), block))
     }
 
     /// Reverse everything of the Block with given hash and height.
