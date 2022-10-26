@@ -4,8 +4,7 @@ use bdk_core::*;
 use bitcoin::{hashes::Hash, Txid};
 
 fn gen_hash<H: Hash>(n: u64) -> H {
-    let data = n.to_le_bytes();
-    Hash::hash(&data[..])
+    Hash::hash(&n.to_le_bytes()[..])
 }
 
 fn gen_block_id(height: u32, hash_n: u64) -> BlockId {

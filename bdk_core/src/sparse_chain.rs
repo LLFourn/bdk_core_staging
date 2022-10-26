@@ -671,6 +671,15 @@ impl From<Option<u32>> for TxHeight {
     }
 }
 
+impl From<TxHeight> for Option<u32> {
+    fn from(height: TxHeight) -> Self {
+        match height {
+            TxHeight::Confirmed(h) => Some(h),
+            TxHeight::Unconfirmed => None,
+        }
+    }
+}
+
 impl TxHeight {
     pub fn is_confirmed(&self) -> bool {
         matches!(self, Self::Confirmed(_))
