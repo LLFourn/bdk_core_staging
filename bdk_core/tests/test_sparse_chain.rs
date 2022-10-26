@@ -1,18 +1,11 @@
 use crate::collections::HashMap;
 
 use bdk_core::*;
-use bitcoin::{hashes::Hash, Txid};
+use bitcoin::Txid;
 
-fn gen_hash<H: Hash>(n: u64) -> H {
-    Hash::hash(&n.to_le_bytes()[..])
-}
+use testing::*;
 
-fn gen_block_id(height: u32, hash_n: u64) -> BlockId {
-    BlockId {
-        height,
-        hash: gen_hash(hash_n),
-    }
-}
+pub fn sdfsdsf() {}
 
 #[test]
 fn check_last_valid_rules() {
