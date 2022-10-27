@@ -2,7 +2,9 @@ use core::ops::{Bound, RangeBounds};
 
 use bitcoin::{hashes::Hash, OutPoint, TxOut, Txid};
 
-use crate::{collections::*, ChangeSet, SpkTracker, SyncFailure, TxHeight, Vec};
+use crate::{
+    collections::*, ChangeSet, SparseChain, SpkTracker, SyncFailure, TxGraph, TxHeight, Vec,
+};
 
 #[derive(Clone, Debug)]
 pub struct UnspentIndex<I> {
@@ -12,7 +14,7 @@ pub struct UnspentIndex<I> {
     ordered_outpoints: BTreeSet<(TxHeight, OutPoint)>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unspent<I> {
     pub outpoint: OutPoint,
     pub txout: TxOut,
@@ -35,76 +37,70 @@ impl<I: Clone + Ord> UnspentIndex<I> {
     /// TODO: Figure out how to make this cleaner and more efficient.
     pub fn sync(
         &mut self,
-        spk_tracker: &SpkTracker<I>,
-        changes: &ChangeSet,
+        chain: &SparseChain,
+        graph: &TxGraph,
+        tracker: &SpkTracker<I>,
     ) -> Result<(), SyncFailure> {
-        let txo_changes = changes
-            .txids
-            .iter()
-            .flat_map(|(txid, h_delta)| -> Vec<_> {
-                let txouts = spk_tracker.range_tx_outputs(*txid);
+        // clear all
+        self.utxos.clear();
+        self.ordered_outpoints.clear();
 
-                // ensure `height_change.from` is consistent with index state
-                match h_delta.from {
-                    // outpoints should all exist
-                    Some(exp_height) => txouts
-                        .map(|(spk_i, op, txout)| -> Result<_, SyncFailure> {
-                            let (_, index_txout, height) = self
-                                .utxos
-                                .get(&op)
-                                .ok_or_else(|| SyncFailure::TxNotInIndex(*txid))?;
-                            debug_assert_eq!(index_txout, txout);
+        // txout must:
+        // 1. exist in chain (also get height)
+        // 2. not be spent by txid that still exists in chan
+        tracker
+            .iter_txout()
+            .filter_map(|(spk_i, op, txo)| {
+                // txout must exit in chain
+                let h = chain.transaction_height(op.txid)?;
 
-                            if height != &exp_height {
-                                Err(SyncFailure::TxInconsistent {
-                                    txid: *txid,
-                                    original: Some(*height),
-                                    change: h_delta.clone(),
-                                })
-                            } else {
-                                Ok((spk_i, op, txout, h_delta))
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                    // outpoints should all not exist
-                    None => txouts
-                        .map(|(spk_i, op, txout)| -> Result<_, SyncFailure> {
-                            if let Some((_, _, tx_height)) = self.utxos.get(&op) {
-                                Err(SyncFailure::TxInconsistent {
-                                    txid: *txid,
-                                    original: Some(*tx_height),
-                                    change: h_delta.clone(),
-                                })
-                            } else {
-                                Ok((spk_i, op, txout, h_delta))
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // apply changes
-        for (spk_i, op, txout, height_change) in txo_changes {
-            if let Some(from_height) = height_change.from {
-                self.utxos.remove(&op);
-                self.ordered_outpoints.remove(&(from_height, op));
-            }
-
-            match height_change.to {
-                Some(new_height) => {
-                    self.utxos.insert(op, (spk_i, txout.clone(), new_height));
-                    self.ordered_outpoints.insert((new_height, op));
-                }
-                None => {
-                    if let Some((_, _, h)) = self.utxos.remove(&op) {
-                        self.ordered_outpoints.remove(&(h, op));
+                // txout must not be spent by txid that still exists in chain
+                if let Some(spends) = graph.outspend(&op) {
+                    let is_spent = spends
+                        .iter()
+                        .find(|&&txid| chain.transaction_height(txid).is_some())
+                        .is_some();
+                    if is_spent {
+                        return None;
                     }
                 }
-            }
-        }
+
+                Some((spk_i, op, txo, h))
+            })
+            .for_each(|(spk_i, op, txo, h)| {
+                self.insert_unspent(spk_i, op, txo.clone(), h);
+            });
 
         Ok(())
+    }
+
+    /// Inserts or replaces a single UTXO. Returns true when UTXO is changed or replaced.
+    fn insert_unspent(
+        &mut self,
+        spk_index: I,
+        outpoint: OutPoint,
+        txout: TxOut,
+        height: TxHeight,
+    ) -> bool {
+        let (_, _, new_height) = &*self
+            .utxos
+            .entry(outpoint)
+            .or_insert((spk_index, txout, height));
+
+        if *new_height != height {
+            let removed = self.ordered_outpoints.remove(&(*new_height, outpoint));
+            debug_assert!(removed, "inconsistent unspent index");
+        }
+
+        self.ordered_outpoints.insert((*new_height, outpoint))
+    }
+
+    /// Removes a single UTXO (if any).
+    fn remove_unspent(&mut self, outpoint: OutPoint) -> Option<(I, TxOut, TxHeight)> {
+        let (spk_i, txout, height) = self.utxos.remove(&outpoint)?;
+        let removed = self.ordered_outpoints.remove(&(height, outpoint));
+        debug_assert!(removed, "inconsistent unspent_index fields");
+        Some((spk_i, txout, height))
     }
 
     /// Obtain [`Unspent`] from given [`OutPoint`].

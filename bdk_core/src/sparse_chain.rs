@@ -583,7 +583,7 @@ impl ChangeSet {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Change<V> {
     pub from: Option<V>,
     pub to: Option<V>,
@@ -605,6 +605,13 @@ impl<V> Change<V> {
         Self {
             from: None,
             to: Some(v),
+        }
+    }
+
+    pub fn new_alteration(from: V, to: V) -> Self {
+        Self {
+            from: Some(from),
+            to: Some(to),
         }
     }
 }
