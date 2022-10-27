@@ -1,7 +1,7 @@
 use core::{fmt::Display, ops::RangeBounds};
 
 use crate::{alloc::string::String, collections::*, BlockId, TxGraph, Vec};
-use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
+use bitcoin::{hashes::Hash, Block, BlockHash, OutPoint, Transaction, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {
@@ -171,30 +171,6 @@ impl SparseChain {
                 }))
                 .collect(),
         }
-    }
-
-    /// Apply transactions that are all confirmed in a given block
-    pub fn apply_block_txs(
-        &mut self,
-        block_id: BlockId,
-        transactions: impl IntoIterator<Item = Txid>,
-    ) -> Result<ChangeSet, UpdateFailure> {
-        let mut checkpoint = Update {
-            txids: transactions
-                .into_iter()
-                .map(|txid| (txid, TxHeight::Confirmed(block_id.height)))
-                .collect(),
-            last_valid: self.latest_checkpoint(),
-            invalidate: None,
-            new_tip: block_id,
-        };
-
-        let matching_checkpoint = self.checkpoint_at(block_id.height);
-        if matches!(matching_checkpoint, Some(id) if id != block_id) {
-            checkpoint.invalidate = matching_checkpoint;
-        }
-
-        self.apply_update(checkpoint)
     }
 
     /// Applies a new [`Update`] to the tracker.
@@ -378,10 +354,80 @@ impl SparseChain {
         }
     }
 
-    /// Inserts an arbitary block into the chain. This fails when the new block conflicts with
-    /// current chain state.
-    pub fn insert_block(&mut self, block: BlockId) -> Result<ChangeSet, UpdateFailure> {
-        self.apply_update(Update::new(self.latest_checkpoint(), block))
+    /// Inserts a checkpoint at any height in the chain. If it conflicts with an exisitng checkpoint
+    /// the existing one will be invalidated and removed.
+    pub fn apply_checkpoint(&mut self, checkpoint: BlockId) -> ChangeSet {
+        self.apply_block_txs(checkpoint, core::iter::empty())
+            .expect("cannot fail")
+    }
+
+    /// Apply a block with a caller provided height.
+    pub fn apply_block_with_height(
+        &mut self,
+        block: &Block,
+        height: u32,
+        mut filter: impl FnMut(&Transaction) -> bool,
+    ) -> Result<ChangeSet, UpdateFailure> {
+        self.apply_block_txs(
+            BlockId {
+                height,
+                hash: block.block_hash(),
+            },
+            block
+                .txdata
+                .iter()
+                .filter(|tx| filter(tx))
+                .map(|tx| tx.txid()),
+        )
+    }
+
+    /// Apply a bitcoin block bip34 compliant block
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the block is not a bip34 compliant block
+    pub fn apply_block(
+        &mut self,
+        block: &Block,
+        filter: impl FnMut(&Transaction) -> bool,
+    ) -> Result<ChangeSet, UpdateFailure> {
+        self.apply_block_with_height(
+            block,
+            block.bip34_block_height().expect("valid bip34 block") as u32,
+            filter,
+        )
+    }
+
+    /// Apply transactions that are all confirmed in a given block
+    pub fn apply_block_txs(
+        &mut self,
+        checkpoint: BlockId,
+        txs: impl IntoIterator<Item = Txid>,
+    ) -> Result<ChangeSet, UpdateFailure> {
+        let mut update = Update {
+            txids: txs
+                .into_iter()
+                .map(|txid| (txid, TxHeight::Confirmed(checkpoint.height)))
+                .collect(),
+            last_valid: self.latest_checkpoint(),
+            invalidate: None,
+            new_tip: checkpoint,
+        };
+
+        let matching_checkpoint = self.checkpoint_at(checkpoint.height);
+        if matches!(matching_checkpoint, Some(id) if id != checkpoint) {
+            update.invalidate = matching_checkpoint;
+            update.last_valid =
+                self.checkpoints
+                    .range(..checkpoint.height)
+                    .last()
+                    .map(|(height, hash)| BlockId {
+                        height: *height,
+                        hash: *hash,
+                    });
+        }
+
+        self.apply_update(update)
     }
 
     /// Reverse everything of the Block with given hash and height.
