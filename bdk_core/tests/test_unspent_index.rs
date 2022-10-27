@@ -61,17 +61,13 @@ fn single_spends() {
 
         let op = OutPoint::new(tx.txid(), 0);
 
-        tracker
-            .sync(&graph, &change_set)
-            .expect("sync spk tracker should succeed");
-
+        tracker.sync(&chain, &graph);
         assert_eq!(tracker.iter_txout().len(), (i + 1) as _);
         assert_eq!(tracker.txout(op), Some(((), &tx.output[0])));
 
         index
             .sync(&chain, &graph, &tracker)
             .expect("sync unspent index should succeed");
-
         assert_eq!(index.iter().len(), 1, "failed in round {}", i);
         assert_eq!(
             index.unspent(op),

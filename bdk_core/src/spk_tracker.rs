@@ -1,6 +1,6 @@
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    ChangeSet, SyncFailure, TxGraph, Vec,
+    SparseChain, TxGraph, Vec,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
@@ -42,27 +42,21 @@ impl<I> Default for SpkTracker<I> {
 }
 
 impl<I: Clone + Ord> SpkTracker<I> {
-    pub fn sync(&mut self, graph: &TxGraph, changes: &ChangeSet) -> Result<(), SyncFailure> {
-        let txs = changes
-            .txids
-            .iter()
-            .filter(|(_, change)| change.from.is_none())
-            .map(|(txid, _)| graph.tx(*txid).ok_or(SyncFailure::TxNotInGraph(*txid)))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        txs.iter()
-            .flat_map(|tx| {
-                tx.output
+    pub fn sync(&mut self, chain: &SparseChain, graph: &TxGraph) {
+        chain
+            .iter_txids()
+            .flat_map(|(_, txid)| {
+                graph
+                    .txouts(&txid)
+                    .expect("tx should be in graph")
                     .iter()
-                    .enumerate()
-                    .map(|(vout, txout)| (OutPoint::new(tx.txid(), vout as _), txout))
+                    .map(|(&vout, &txo)| (OutPoint::new(txid, vout as _), txo))
+                    .collect::<Vec<_>>()
             })
-            .for_each(|(op, txout)| self.add_txout(&op, txout.clone()));
-
-        Ok(())
+            .for_each(|(op, txo)| self.add_txout(op, txo.clone()))
     }
 
-    fn add_txout(&mut self, op: &OutPoint, txout: TxOut) {
+    fn add_txout(&mut self, op: OutPoint, txout: TxOut) {
         if let Some(spk_i) = self.index_of_spk(&txout.script_pubkey) {
             self.txouts.insert(op.clone(), (spk_i.clone(), txout));
             self.spk_txouts

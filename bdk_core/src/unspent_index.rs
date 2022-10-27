@@ -2,9 +2,7 @@ use core::ops::{Bound, RangeBounds};
 
 use bitcoin::{hashes::Hash, OutPoint, TxOut, Txid};
 
-use crate::{
-    collections::*, ChangeSet, SparseChain, SpkTracker, SyncFailure, TxGraph, TxHeight, Vec,
-};
+use crate::{collections::*, SparseChain, SpkTracker, SyncFailure, TxGraph, TxHeight};
 
 #[derive(Clone, Debug)]
 pub struct UnspentIndex<I> {
@@ -96,7 +94,7 @@ impl<I: Clone + Ord> UnspentIndex<I> {
     }
 
     /// Removes a single UTXO (if any).
-    fn remove_unspent(&mut self, outpoint: OutPoint) -> Option<(I, TxOut, TxHeight)> {
+    fn _remove_unspent(&mut self, outpoint: OutPoint) -> Option<(I, TxOut, TxHeight)> {
         let (spk_i, txout, height) = self.utxos.remove(&outpoint)?;
         let removed = self.ordered_outpoints.remove(&(height, outpoint));
         debug_assert!(removed, "inconsistent unspent_index fields");
