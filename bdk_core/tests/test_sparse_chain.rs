@@ -176,7 +176,7 @@ fn apply_tips() {
 
     // ensure state of sparsechain is correct
     chain
-        .iter_checkpoints(..)
+        .range_checkpoints(..)
         .zip(0..)
         .for_each(|(block_id, exp_height)| {
             assert_eq!(block_id, gen_block_id(exp_height, exp_height as _))
@@ -224,7 +224,7 @@ fn checkpoint_limit_is_respected() {
     }
 
     assert_eq!(chain.iter_confirmed_txids().count(), 10);
-    assert_eq!(chain.iter_checkpoints(..).count(), 5);
+    assert_eq!(chain.range_checkpoints(..).count(), 5);
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn add_txs_of_same_height_with_different_updates() {
     assert_eq!(chain.iter_txids().count(), 100);
     assert_eq!(chain.iter_confirmed_txids().count(), 100);
     assert_eq!(chain.iter_mempool_txids().count(), 0);
-    assert_eq!(chain.iter_checkpoints(..).count(), 1);
+    assert_eq!(chain.range_checkpoints(..).count(), 1);
 }
 
 #[test]

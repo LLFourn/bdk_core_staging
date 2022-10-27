@@ -144,8 +144,17 @@ impl SparseChain {
         })
     }
 
-    /// Return an iterator over the checkpoint locations in a height range.
+    /// Return an iterator over all checkpoints, in ascending height order.
     pub fn iter_checkpoints(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = BlockId> + ExactSizeIterator + '_ {
+        self.checkpoints
+            .iter()
+            .map(|(&height, &hash)| BlockId { height, hash })
+    }
+
+    /// Return an iterator over the checkpoint locations in a height range, in ascending height order.
+    pub fn range_checkpoints(
         &self,
         range: impl RangeBounds<u32>,
     ) -> impl DoubleEndedIterator<Item = BlockId> + '_ {
