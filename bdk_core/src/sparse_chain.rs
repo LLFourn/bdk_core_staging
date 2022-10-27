@@ -367,7 +367,7 @@ impl SparseChain {
 
     /// Insert an arbitary txid into the mempool. Returns [`None`] when tx already exists in
     /// [`SparseChain`], otherwise it returns the [`ChangeSet`].
-    pub fn insert_mempool_tx(&mut self, txid: Txid) -> Option<ChangeSet> {
+    pub fn insert_unconfirmed_tx(&mut self, txid: Txid) -> Option<ChangeSet> {
         if self.txid_to_index.contains_key(&txid) || !self.mempool.insert(txid) {
             None
         } else {
