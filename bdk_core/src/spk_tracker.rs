@@ -1,3 +1,5 @@
+use core::ops::RangeBounds;
+
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     SparseChain, TxGraph, Vec,
@@ -144,17 +146,37 @@ impl<I: Clone + Ord> SpkTracker<I> {
 
     /// Whether any of the inputs of this transaction spend a txout tracked or whether any output
     /// matches one of our script pubkeys.
-    pub fn is_relevant(&self, tx: &Transaction) -> bool {
+    pub fn is_relevant(&self, graph: &TxGraph, tx: &Transaction) -> bool {
         let input_matches = tx
             .input
             .iter()
-            .find(|input| self.txout(input.previous_output).is_some())
+            .find(|input| matches!(graph.txout(input.previous_output), Some(txo) if self.spk_indexes.contains_key(&txo.script_pubkey)))
             .is_some();
         let output_matches = tx
             .output
             .iter()
-            .find(|output| self.index_of_spk(&output.script_pubkey).is_some())
+            .find(|output| self.spk_indexes.contains_key(&output.script_pubkey))
             .is_some();
         input_matches || output_matches
+    }
+
+    /// Returns the highest referenced spk index of a given tx.
+    /// This is useful for syncing mechanisms that require enforcement of a "stop gap".
+    pub fn highest_spk_index<R>(&self, graph: &TxGraph, tx: &Transaction, range: R) -> Option<I>
+    where
+        R: RangeBounds<I>,
+    {
+        tx.input
+            .iter()
+            // obtain prev txouts
+            .filter_map(|txin| graph.txout(txin.previous_output))
+            // chain with current txouts
+            .chain(&tx.output)
+            // filter out relevant txouts
+            .filter_map(|txo| self.spk_indexes.get(&txo.script_pubkey))
+            // enforce spk index range
+            .filter(|&spk_i| range.contains(spk_i))
+            .cloned()
+            .max()
     }
 }

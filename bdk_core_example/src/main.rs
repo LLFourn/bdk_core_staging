@@ -451,7 +451,7 @@ pub fn fully_sync(
                         let _ = io::stdout().flush();
                     }),
                 2,
-                chain.iter_checkpoints(..).rev(),
+                chain.range_checkpoints(..).rev(),
             )
             .context("fetching transactions")?;
 
