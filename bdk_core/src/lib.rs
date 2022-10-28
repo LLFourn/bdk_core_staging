@@ -38,7 +38,7 @@ pub struct BlockTime {
 }
 
 /// A reference to a block in the cannonical chain.
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Deserialize, serde::Serialize),
@@ -57,6 +57,12 @@ impl Default for BlockId {
             height: Default::default(),
             hash: BlockHash::from_inner([0u8; 32]),
         }
+    }
+}
+
+impl From<(u32, BlockHash)> for BlockId {
+    fn from((height, hash): (u32, BlockHash)) -> Self {
+        Self { height, hash }
     }
 }
 
