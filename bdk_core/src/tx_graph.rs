@@ -94,12 +94,6 @@ impl TxGraph {
         }
     }
 
-    /// Determines whether outpoint is spent or not. Returns `None` when outpoint does not exist in
-    /// graph.
-    pub fn is_unspent(&self, outpoint: &OutPoint) -> Option<bool> {
-        self.spends.get(outpoint).map(|txids| txids.is_empty())
-    }
-
     /// Calculates the fee of a given transaction (if we have all relevant data).
     pub fn calculate_fee(&self, tx: &Transaction) -> Option<u64> {
         let inputs_sum = tx

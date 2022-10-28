@@ -8,8 +8,6 @@ mod sparse_chain;
 pub use sparse_chain::*;
 mod tx_graph;
 pub use tx_graph::*;
-mod unspent_index;
-pub use unspent_index::*;
 
 #[allow(unused_imports)]
 #[macro_use]

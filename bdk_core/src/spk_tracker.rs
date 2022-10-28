@@ -78,6 +78,15 @@ impl<I: Clone + Ord> SpkTracker<I> {
             .map(|(op, (index, txout))| (index.clone(), *op, txout))
     }
 
+    pub fn iter_unspent<'a>(
+        &'a self,
+        chain: &'a SparseChain,
+        graph: &'a TxGraph,
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint, &TxOut)> + '_ {
+        self.iter_txout()
+            .filter(|(_, op, _)| chain.is_unspent(graph, op).expect("should be in graph"))
+    }
+
     /// Iterate over txouts of a given txid
     pub fn range_tx_outputs(
         &self,

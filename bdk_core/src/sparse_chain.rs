@@ -544,6 +544,17 @@ impl SparseChain {
 
         Some(split)
     }
+
+    /// Determines whether outpoint is spent or not. Returns `None` when outpoint does not exist in
+    /// graph.
+    pub fn is_unspent(&self, graph: &TxGraph, outpoint: &OutPoint) -> Option<bool> {
+        let txids = graph.outspend(outpoint)?;
+        Some(
+            txids
+                .iter()
+                .all(|&txid| self.transaction_height(txid).is_none()),
+        )
+    }
 }
 
 /// Represents an [`Update`] that could be applied to [`SparseChain`].
