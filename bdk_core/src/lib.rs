@@ -66,6 +66,15 @@ impl From<(u32, BlockHash)> for BlockId {
     }
 }
 
+impl From<(&u32, &BlockHash)> for BlockId {
+    fn from((height, hash): (&u32, &BlockHash)) -> Self {
+        Self {
+            height: *height,
+            hash: *hash,
+        }
+    }
+}
+
 // When no-std use `alloc`'s Hash collections. This is activated by default
 #[cfg(all(not(feature = "std"), not(feature = "hashbrown")))]
 pub mod collections {

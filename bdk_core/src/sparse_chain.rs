@@ -1,4 +1,7 @@
-use core::{fmt::Display, ops::RangeBounds};
+use core::{
+    fmt::Display,
+    ops::{Bound, RangeBounds},
+};
 
 use crate::{collections::*, BlockId, TxGraph, Vec};
 use bitcoin::{hashes::Hash, Block, BlockHash, OutPoint, Transaction, TxOut, Txid};
@@ -23,6 +26,7 @@ pub enum UpdateFailure {
 
     /// The [`Update`] cannot be applied to this [`SparseChain`] because the chain suffix it
     /// represents did not connect to the existing chain.
+    /// TODO: Add last_valid and invalid_from?
     NotConnected,
     /// The [`Update`] canot be applied, because there are inconsistent tx states.
     /// This only reports the first inconsistency.
@@ -37,8 +41,9 @@ pub enum UpdateFailure {
 pub enum BogusReason {
     /// At least one `txid` has a confirmation height greater than `new_tip`.
     TxHeightGreaterThanTip {
-        new_tip_height: u32,
-        tx: (Txid, TxHeight),
+        txid: Txid,
+        tx_height: u32,
+        tip_height: u32,
     },
     /// There were no checkpoints in the update
     EmptyCheckpoints,
@@ -51,9 +56,9 @@ impl core::fmt::Display for UpdateFailure {
                 write!(f, "bogus update: ")?;
                 match reason {
                     BogusReason::EmptyCheckpoints => write!(f, "the checkpoints in the update were empty"),
-                    BogusReason::TxHeightGreaterThanTip { new_tip_height, tx: txid } =>
+                    BogusReason::TxHeightGreaterThanTip { txid, tx_height, tip_height, } =>
                         write!(f, "tx ({}) confirmation height ({}) is greater than new_tip height ({})",
-                            txid.0, txid.1, new_tip_height),
+                            txid, tx_height, tip_height),
                 }
             },
             Self::NotConnected  => write!(f, "the checkpoints in the update could not be connected to the checkpoints in the chain"),
@@ -122,110 +127,108 @@ impl SparseChain {
         }
     }
 
-    pub fn determine_chageset(&self, update: Update) -> Result<ChangeSet, UpdateFailure> {
+    pub fn determine_changeset(&self, update: Update) -> Result<ChangeSet, UpdateFailure> {
         let last_valid = update
             .checkpoints
             .iter()
             .rev()
-            .find(|(cp_height, cp_hash)| {
-                if let Some(existing) = self.checkpoint_at(**cp_height) {
-                    existing.hash == **cp_hash
-                } else {
-                    false
-                }
-            })
-            .map(|(height, hash)| BlockId {
-                height: *height,
-                hash: *hash,
-            });
+            .find(|&(height, hash)| self.checkpoints.get(height) == Some(hash))
+            .map(|(&h, _)| h);
 
-        let invalidation_range = last_valid
-            .map(|last_valid| last_valid.height + 1)
-            .unwrap_or(0);
+        // checkpoints of this height and after are to be invalidated
+        let invalid_from = match update.checkpoints.is_empty() {
+            true => u32::MAX,
+            false => last_valid.map(|h| h + 1).unwrap_or(0),
+        };
 
-        if !self.checkpoints.is_empty() {
-            if let Some((height, _)) = self.checkpoints.range(invalidation_range..).next() {
-                if !update.checkpoints.contains_key(height) {
-                    return Err(UpdateFailure::NotConnected);
-                }
+        // the first checkpoint of the sparsechain to invalidate (if any)
+        let first_invalid = self
+            .checkpoints
+            .range(invalid_from..)
+            .next()
+            .map(|(&h, _)| h);
+
+        // the first checkpoint to invalidate (if any) should be represented in the update
+        if let Some(first_invalid) = first_invalid {
+            if !update.checkpoints.contains_key(&first_invalid) {
+                return Err(UpdateFailure::NotConnected);
             }
         }
 
-        let new_tip_height = update
-            .checkpoints
-            .iter()
-            .last()
-            .map(|(height, _)| *height)
-            .ok_or(UpdateFailure::Bogus(BogusReason::EmptyCheckpoints))?;
-        let new_checkpoints = update
-            .checkpoints
-            .range(invalidation_range..)
-            .map(|(height, hash)| BlockId::from((*height, *hash)));
+        // the new checkpoint tip introduced by the update (if any)
+        let new_tip = update.checkpoints.iter().last().map(|(&h, _)| h);
 
-        for (txid, tx_height) in &update.txids {
-            // ensure new_height does not surpass latest checkpoint
-            if matches!(tx_height, TxHeight::Confirmed(tx_h) if *tx_h > new_tip_height) {
-                return Result::Err(UpdateFailure::Bogus(BogusReason::TxHeightGreaterThanTip {
-                    new_tip_height,
-                    tx: (*txid, tx_height.clone()),
-                }));
+        for (&txid, &tx_height) in &update.txids {
+            // ensure tx height does not surpass update's tip
+            // the exception is that unconfirmed transactions are always allowed
+            if let (Some(tip_height), TxHeight::Confirmed(tx_height)) = (new_tip, tx_height) {
+                if tip_height < tx_height {
+                    return Err(UpdateFailure::Bogus(BogusReason::TxHeightGreaterThanTip {
+                        txid,
+                        tx_height,
+                        tip_height,
+                    }));
+                }
             }
 
             // ensure all currently confirmed txs are still at the same height (unless, if they are
-            // to be invalidated)
-            if let Some(&old_height) = self.txid_to_index.get(txid) {
-                if old_height < TxHeight::Confirmed(invalidation_range) {
-                    if *tx_height != old_height {
-                        // inconsistent
-                        return Result::Err(UpdateFailure::Inconsistent {
-                            inconsistent_txid: *txid,
-                            original_height: old_height,
-                            update_height: *tx_height,
-                        });
-                    }
+            // to be invalidated, or originally unconfirmed)
+            if let Some(&old_height) = self.txid_to_index.get(&txid) {
+                if old_height < TxHeight::Confirmed(invalid_from) && tx_height != old_height {
+                    return Err(UpdateFailure::Inconsistent {
+                        inconsistent_txid: txid,
+                        original_height: old_height,
+                        update_height: tx_height,
+                    });
                 }
             }
         }
 
-        let mut change_set = {
-            let cp_changes = self
+        // create initial change-set, based on checkpoints and txids that are to be invalidated
+        let mut change_set = ChangeSet {
+            checkpoints: self
                 .checkpoints
-                .range(invalidation_range..)
+                .range(invalid_from..)
                 .map(|(height, hash)| (*height, Change::new_removal(*hash)))
-                .collect();
-
-            let txid_changes = self
+                .collect(),
+            txids: self
                 .txid_by_height
-                .range(&(TxHeight::Confirmed(invalidation_range), Txid::all_zeros())..)
+                // avoid invalidating mempool txids for initial change-set
+                .range(
+                    &(TxHeight::Confirmed(invalid_from), Txid::all_zeros())
+                        ..&(TxHeight::Unconfirmed, Txid::all_zeros()),
+                )
                 .map(|(height, txid)| (*txid, Change::new_removal(*height)))
-                .collect();
-
-            ChangeSet {
-                checkpoints: cp_changes,
-                txids: txid_changes,
-            }
+                .collect(),
         };
 
-        for checkpoint in new_checkpoints {
-            change_set
+        for (&height, &new_hash) in update.checkpoints.iter() {
+            let original_hash = self.checkpoints.get(&height).cloned();
+
+            let is_inaction = change_set
                 .checkpoints
-                .entry(checkpoint.height)
-                .and_modify(|change| change.to = Some(checkpoint.hash))
-                .or_insert_with(|| Change::new_insertion(checkpoint.hash));
+                .entry(height)
+                .and_modify(|change| change.to = Some(new_hash))
+                .or_insert_with(|| Change::new(original_hash, Some(new_hash)))
+                .is_inaction();
+
+            if is_inaction {
+                change_set.checkpoints.remove(&height);
+            }
         }
 
         for (txid, new_conf) in update.txids {
             let original_conf = self.txid_to_index.get(&txid).cloned();
 
-            if !self.txid_by_height.contains(&(new_conf, txid)) {
-                // self.txid_to_index.insert(txid, height);
-                // self.mempool.remove(&txid);
+            let is_inaction = change_set
+                .txids
+                .entry(txid)
+                .and_modify(|change| change.to = Some(new_conf))
+                .or_insert_with(|| Change::new(original_conf, Some(new_conf)))
+                .is_inaction();
 
-                change_set
-                    .txids
-                    .entry(txid)
-                    .and_modify(|change| change.to = Some(new_conf))
-                    .or_insert_with(|| Change::new(original_conf, Some(new_conf)));
+            if is_inaction {
+                change_set.txids.remove(&txid);
             }
         }
 
@@ -235,21 +238,39 @@ impl SparseChain {
     /// Applies a new [`Update`] to the tracker.
     #[must_use]
     pub fn apply_update(&mut self, update: Update) -> Result<ChangeSet, UpdateFailure> {
-        let changeset = self.determine_chageset(update)?;
+        let changeset = self.determine_changeset(update)?;
         self.apply_changeset(&changeset);
         Ok(changeset)
     }
 
     pub fn apply_changeset(&mut self, changeset: &ChangeSet) {
         for (&height, change) in &changeset.checkpoints {
-            match change.to {
-                Some(to) => {
-                    self.checkpoints.insert(height, to);
-                }
-                None => {
-                    self.checkpoints.remove(&height);
-                }
-            }
+            let original_hash = match change.to {
+                Some(to) => self.checkpoints.insert(height, to),
+                None => self.checkpoints.remove(&height),
+            };
+            debug_assert_eq!(original_hash, change.from);
+        }
+
+        for (&txid, change) in &changeset.txids {
+            let (changed, original_height) = match (change.from, change.to) {
+                (None, None) => panic!("should not happen"),
+                (None, Some(to)) => (
+                    self.txid_by_height.insert((to, txid)),
+                    self.txid_to_index.insert(txid, to),
+                ),
+                (Some(from), None) => (
+                    self.txid_by_height.remove(&(from, txid)),
+                    self.txid_to_index.remove(&txid),
+                ),
+                (Some(from), Some(to)) => (
+                    self.txid_by_height.insert((to, txid))
+                        && self.txid_by_height.remove(&(from, txid)),
+                    self.txid_to_index.insert(txid, to),
+                ),
+            };
+            debug_assert!(changed);
+            debug_assert_eq!(original_height, change.from);
         }
 
         self.prune_checkpoints();
@@ -369,7 +390,6 @@ impl SparseChain {
         &self,
         range: R,
     ) -> impl DoubleEndedIterator + '_ {
-        use core::ops::Bound;
         fn map_bound(bound: Bound<&TxHeight>) -> Bound<(TxHeight, Txid)> {
             match bound {
                 Bound::Unbounded => Bound::Unbounded,
