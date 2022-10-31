@@ -247,13 +247,14 @@ impl Client {
         }
 
         let update = Update {
-            txids: txids
+            txs: txids
                 .iter()
-                .map(|(tx, conf)| (*tx, conf.map(|b| b.height).into()))
+                .map(|(tx, conf)| ((*tx).into(), conf.map(|b| b.height).into()))
                 .collect(),
-            last_valid,
-            invalidate,
-            new_tip,
+            checkpoints: todo!(),
+            // last_valid,
+            // invalidate,
+            // new_tip,
         };
 
         Ok((last_active_index, update))

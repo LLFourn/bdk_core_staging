@@ -2,7 +2,7 @@ use core::ops::RangeBounds;
 
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    SparseChain, TxGraph, Vec,
+    SparseChain, TxGraph,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
@@ -44,17 +44,9 @@ impl<I> Default for SpkTracker<I> {
 }
 
 impl<I: Clone + Ord> SpkTracker<I> {
-    pub fn sync(&mut self, chain: &SparseChain, graph: &TxGraph) {
-        chain
-            .iter_txids()
-            .flat_map(|(_, txid)| {
-                graph
-                    .txouts(&txid)
-                    .expect("tx should be in graph")
-                    .iter()
-                    .map(|(&vout, &txo)| (OutPoint::new(txid, vout as _), txo))
-                    .collect::<Vec<_>>()
-            })
+    pub fn scan(&mut self, graph: &TxGraph) {
+        graph
+            .iter_all_txouts()
             .for_each(|(op, txo)| self.add_txout(op, txo.clone()))
     }
 

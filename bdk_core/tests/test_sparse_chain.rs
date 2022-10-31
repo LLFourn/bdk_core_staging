@@ -8,7 +8,7 @@ fn gen_update(checkpoints: impl IntoIterator<Item = BlockId>) -> Update {
             .into_iter()
             .map(|cp| (cp.height, cp.hash))
             .collect(),
-        txids: [].into(),
+        txs: [].into(),
     }
 }
 
@@ -179,7 +179,7 @@ fn checkpoint_limit_is_respected() {
 
         let changes = chain
             .apply_update(Update {
-                txids: [(gen_hash(i as _), TxHeight::Confirmed(i))].into(),
+                txs: [(gen_txid(i as _).into(), TxHeight::Confirmed(i))].into(),
                 ..gen_update(last_valid.iter().chain(core::iter::once(&new_tip)).cloned())
             })
             .expect("should succeed");
@@ -217,9 +217,9 @@ fn add_txids() {
     let mut chain = SparseChain::default();
 
     let update = Update {
-        txids: (0..100)
+        txs: (0..100)
             .map(gen_hash::<Txid>)
-            .map(|txid| (txid, TxHeight::Confirmed(1)))
+            .map(|txid| (txid.into(), TxHeight::Confirmed(1)))
             .collect(),
         ..gen_update([gen_block_id(1, 1)])
     };
@@ -229,9 +229,9 @@ fn add_txids() {
         Ok(ChangeSet {
             checkpoints: [(1, Change::new_insertion(gen_hash(1)))].into(),
             txids: update
-                .txids
+                .txs
                 .iter()
-                .map(|(txid, height)| (*txid, Change::new_insertion(*height)))
+                .map(|(txid, height)| (txid.txid(), Change::new_insertion(*height)))
                 .collect(),
         }),
         "add many txs in single checkpoint should succeed",
@@ -240,7 +240,7 @@ fn add_txids() {
     assert_eq!(
         chain
             .apply_update(Update {
-                txids: [(gen_hash(2), TxHeight::Confirmed(3))].into(),
+                txs: [(gen_txid(2).into(), TxHeight::Confirmed(3))].into(),
                 ..gen_update([gen_block_id(1, 1), gen_block_id(2, 2)])
             })
             .expect_err("update that adds tx with height greater than hew tip should fail"),
@@ -272,7 +272,7 @@ fn add_txs_of_same_height_with_different_updates() {
         assert_eq!(
             chain
                 .apply_update(Update {
-                    txids: [(gen_hash(i as _), TxHeight::Confirmed(0))].into(),
+                    txs: [(gen_txid(i as _).into(), TxHeight::Confirmed(0))].into(),
                     ..gen_update([block])
                 })
                 .expect("should succeed"),
@@ -298,9 +298,9 @@ fn confirm_tx() {
     assert_eq!(
         chain
             .apply_update(Update {
-                txids: [
-                    (gen_hash(10), TxHeight::Unconfirmed),
-                    (gen_hash(20), TxHeight::Unconfirmed),
+                txs: [
+                    (gen_txid(10).into(), TxHeight::Unconfirmed),
+                    (gen_txid(20).into(), TxHeight::Unconfirmed),
                 ]
                 .into(),
                 ..gen_update([gen_block_id(1, 1)])
@@ -319,7 +319,7 @@ fn confirm_tx() {
     assert_eq!(
         chain
             .apply_update(Update {
-                txids: [(gen_hash(10), TxHeight::Confirmed(0))].into(),
+                txs: [(gen_txid(10).into(), TxHeight::Confirmed(0))].into(),
                 ..gen_update([gen_block_id(1, 1), gen_block_id(1, 1)])
             })
             .expect("it should be okay to confirm tx into block before last_valid (partial sync)"),
@@ -339,7 +339,7 @@ fn confirm_tx() {
     assert_eq!(
         chain
             .apply_update(Update {
-                txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
+                txs: [(gen_txid(20).into(), TxHeight::Confirmed(2))].into(),
                 ..gen_update([gen_block_id(1, 1), gen_block_id(2, 2)])
             })
             .expect("it should be okay to confirm tx into the tip introduced"),
@@ -359,7 +359,7 @@ fn confirm_tx() {
     assert_eq!(
         chain
             .apply_update(Update {
-                txids: [(gen_hash(10), TxHeight::Unconfirmed)].into(),
+                txs: [(gen_txid(10).into(), TxHeight::Unconfirmed)].into(),
                 ..gen_update([gen_block_id(2, 2), gen_block_id(2, 2)])
             })
             .expect_err("tx cannot be unconfirmed without invalidate"),
@@ -373,7 +373,7 @@ fn confirm_tx() {
     assert_eq!(
         chain
             .apply_update(Update {
-                txids: [(gen_hash(20), TxHeight::Confirmed(3))].into(),
+                txs: [(gen_txid(20).into(), TxHeight::Confirmed(3))].into(),
                 ..gen_update([gen_block_id(2, 2), gen_block_id(3, 3)])
             })
             .expect_err("tx cannot move forward in blocks without invalidate"),
@@ -387,7 +387,7 @@ fn confirm_tx() {
     assert_eq!(
         chain
             .apply_update(Update {
-                txids: [(gen_hash(20), TxHeight::Confirmed(1))].into(),
+                txs: [(gen_txid(20).into(), TxHeight::Confirmed(1))].into(),
                 ..gen_update([gen_block_id(2, 2), gen_block_id(3, 3)])
             })
             .expect_err("tx cannot move backwards in blocks without invalidate"),
@@ -401,7 +401,7 @@ fn confirm_tx() {
     assert_eq!(
         chain
             .apply_update(Update {
-                txids: [(gen_hash(20), TxHeight::Confirmed(2))].into(),
+                txs: [(gen_txid(20).into(), TxHeight::Confirmed(2))].into(),
                 ..gen_update([gen_block_id(2, 2), gen_block_id(3, 3)])
             })
             .expect("update can introduce already-existing tx"),

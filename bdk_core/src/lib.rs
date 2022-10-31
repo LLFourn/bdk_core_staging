@@ -106,12 +106,16 @@ pub enum PrevOuts {
 }
 
 pub mod testing {
-    use bitcoin::hashes::Hash;
+    use bitcoin::{hashes::Hash, Txid};
 
     use crate::BlockId;
 
     pub fn gen_hash<H: Hash>(n: u64) -> H {
         Hash::hash(&n.to_le_bytes()[..])
+    }
+
+    pub fn gen_txid(n: u64) -> Txid {
+        gen_hash(n)
     }
 
     pub fn gen_block_id(height: u32, hash_n: u64) -> BlockId {
