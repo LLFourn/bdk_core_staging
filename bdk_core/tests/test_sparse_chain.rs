@@ -24,7 +24,7 @@ fn check_last_valid_rules() {
     let mut chain = SparseChain::default();
 
     assert_eq!(
-        chain.apply_update(gen_update([gen_block_id(0, 0)])),
+        chain.apply_update(&gen_update([gen_block_id(0, 0)])),
         Ok(ChangeSet {
             checkpoints: [(0, Change::new_insertion(gen_hash(0)))].into(),
             ..Default::default()
@@ -33,7 +33,7 @@ fn check_last_valid_rules() {
     );
 
     assert_eq!(
-        chain.apply_update(gen_update([gen_block_id(0, 0), gen_block_id(1, 1)])),
+        chain.apply_update(&gen_update([gen_block_id(0, 0), gen_block_id(1, 1)])),
         Ok(ChangeSet {
             checkpoints: [(1, Change::new_insertion(gen_hash(1)))].into(),
             ..Default::default()
@@ -42,19 +42,19 @@ fn check_last_valid_rules() {
     );
 
     assert_eq!(
-        chain.apply_update(gen_update([gen_block_id(2, 2)])),
+        chain.apply_update(&gen_update([gen_block_id(2, 2)])),
         Err(UpdateFailure::NotConnected),
         "applying tip without specifying last valid should fail",
     );
 
     assert_eq!(
-        chain.apply_update(gen_update([gen_block_id(1, 2), gen_block_id(3, 3,)])),
+        chain.apply_update(&gen_update([gen_block_id(1, 2), gen_block_id(3, 3,)])),
         Err(UpdateFailure::NotConnected),
         "apply tip, while specifying non-existant last_valid should fail",
     );
 
     assert_eq!(
-        chain.apply_update(gen_update([
+        chain.apply_update(&gen_update([
             gen_block_id(0, 100),
             gen_block_id(1, 101),
             gen_block_id(10, 10)
@@ -72,7 +72,7 @@ fn check_last_valid_rules() {
     );
 
     assert_eq!(
-        chain.apply_update(gen_update([
+        chain.apply_update(&gen_update([
             gen_block_id(10, 10), // last valid
             gen_block_id(4, 4),
             gen_block_id(3, 3)
@@ -89,13 +89,13 @@ fn check_last_valid_rules() {
     );
 
     assert_eq!(
-        chain.apply_update(gen_update([gen_block_id(5, 5), gen_block_id(9, 9)])),
+        chain.apply_update(&gen_update([gen_block_id(5, 5), gen_block_id(9, 9)])),
         Err(UpdateFailure::NotConnected),
         "arbitary blocks cannot be introduced with no connection",
     );
 
     assert_eq!(
-        chain.apply_update(gen_update([gen_block_id(5, 5), gen_block_id(11, 11)])),
+        chain.apply_update(&gen_update([gen_block_id(5, 5), gen_block_id(11, 11)])),
         Err(UpdateFailure::NotConnected),
         "arbitary blocks cannot be introduced with no connection (2)",
     );
@@ -113,7 +113,7 @@ fn update_and_chain_does_not_connect() {
     let mut chain = SparseChain::default();
 
     assert_eq!(
-        chain.apply_update(gen_update([gen_block_id(1, 1), gen_block_id(2, 2)])),
+        chain.apply_update(&gen_update([gen_block_id(1, 1), gen_block_id(2, 2)])),
         Ok(ChangeSet {
             checkpoints: [
                 (1, Change::new_insertion(gen_hash(1))),
@@ -125,7 +125,7 @@ fn update_and_chain_does_not_connect() {
     );
 
     assert_eq!(
-        chain.apply_update(gen_update([
+        chain.apply_update(&gen_update([
             gen_block_id(0, 0),
             gen_block_id(1, 1),
             gen_block_id(3, 3)
@@ -143,7 +143,7 @@ fn apply_tips() {
     for i in 0..10 {
         let new_tip = gen_block_id(i, i as _);
         chain
-            .apply_update(gen_update(
+            .apply_update(&gen_update(
                 last_valid.iter().chain(core::iter::once(&new_tip)).cloned(),
             ))
             .expect("should succeed");
@@ -153,7 +153,7 @@ fn apply_tips() {
     // repeated last tip should succeed
     assert_eq!(
         chain
-            .apply_update(gen_update(last_valid))
+            .apply_update(&gen_update(last_valid))
             .expect("repeated last_tip should succeed"),
         ChangeSet::default(),
     );
@@ -178,7 +178,7 @@ fn checkpoint_limit_is_respected() {
         let new_tip = gen_block_id(i, i as _);
 
         let changes = chain
-            .apply_update(Update {
+            .apply_update(&Update {
                 txs: [(gen_txid(i as _).into(), TxHeight::Confirmed(i))].into(),
                 ..gen_update(last_valid.iter().chain(core::iter::once(&new_tip)).cloned())
             })
@@ -225,7 +225,7 @@ fn add_txids() {
     };
 
     assert_eq!(
-        chain.apply_update(update.clone()),
+        chain.apply_update(&update),
         Ok(ChangeSet {
             checkpoints: [(1, Change::new_insertion(gen_hash(1)))].into(),
             txids: update
@@ -239,7 +239,7 @@ fn add_txids() {
 
     assert_eq!(
         chain
-            .apply_update(Update {
+            .apply_update(&Update {
                 txs: [(gen_txid(2).into(), TxHeight::Confirmed(3))].into(),
                 ..gen_update([gen_block_id(1, 1), gen_block_id(2, 2)])
             })
@@ -259,7 +259,7 @@ fn add_txs_of_same_height_with_different_updates() {
 
     // add one block
     assert_eq!(
-        chain.apply_update(gen_update([block])),
+        chain.apply_update(&gen_update([block])),
         Ok(ChangeSet {
             checkpoints: [(0, Change::new_insertion(gen_hash(0)))].into(),
             ..Default::default()
@@ -271,7 +271,7 @@ fn add_txs_of_same_height_with_different_updates() {
     (0..100).for_each(|i| {
         assert_eq!(
             chain
-                .apply_update(Update {
+                .apply_update(&Update {
                     txs: [(gen_txid(i as _).into(), TxHeight::Confirmed(0))].into(),
                     ..gen_update([block])
                 })
@@ -297,7 +297,7 @@ fn confirm_tx() {
 
     assert_eq!(
         chain
-            .apply_update(Update {
+            .apply_update(&Update {
                 txs: [
                     (gen_txid(10).into(), TxHeight::Unconfirmed),
                     (gen_txid(20).into(), TxHeight::Unconfirmed),
@@ -318,7 +318,7 @@ fn confirm_tx() {
 
     assert_eq!(
         chain
-            .apply_update(Update {
+            .apply_update(&Update {
                 txs: [(gen_txid(10).into(), TxHeight::Confirmed(0))].into(),
                 ..gen_update([gen_block_id(1, 1), gen_block_id(1, 1)])
             })
@@ -338,7 +338,7 @@ fn confirm_tx() {
 
     assert_eq!(
         chain
-            .apply_update(Update {
+            .apply_update(&Update {
                 txs: [(gen_txid(20).into(), TxHeight::Confirmed(2))].into(),
                 ..gen_update([gen_block_id(1, 1), gen_block_id(2, 2)])
             })
@@ -358,7 +358,7 @@ fn confirm_tx() {
 
     assert_eq!(
         chain
-            .apply_update(Update {
+            .apply_update(&Update {
                 txs: [(gen_txid(10).into(), TxHeight::Unconfirmed)].into(),
                 ..gen_update([gen_block_id(2, 2), gen_block_id(2, 2)])
             })
@@ -372,7 +372,7 @@ fn confirm_tx() {
 
     assert_eq!(
         chain
-            .apply_update(Update {
+            .apply_update(&Update {
                 txs: [(gen_txid(20).into(), TxHeight::Confirmed(3))].into(),
                 ..gen_update([gen_block_id(2, 2), gen_block_id(3, 3)])
             })
@@ -386,7 +386,7 @@ fn confirm_tx() {
 
     assert_eq!(
         chain
-            .apply_update(Update {
+            .apply_update(&Update {
                 txs: [(gen_txid(20).into(), TxHeight::Confirmed(1))].into(),
                 ..gen_update([gen_block_id(2, 2), gen_block_id(3, 3)])
             })
@@ -400,7 +400,7 @@ fn confirm_tx() {
 
     assert_eq!(
         chain
-            .apply_update(Update {
+            .apply_update(&Update {
                 txs: [(gen_txid(20).into(), TxHeight::Confirmed(2))].into(),
                 ..gen_update([gen_block_id(2, 2), gen_block_id(3, 3)])
             })

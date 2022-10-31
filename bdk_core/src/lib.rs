@@ -8,6 +8,17 @@ mod sparse_chain;
 pub use sparse_chain::*;
 mod tx_graph;
 pub use tx_graph::*;
+pub mod coin_select;
+#[cfg(feature = "miniscript")]
+mod keychain_tracker;
+#[cfg(feature = "miniscript")]
+pub use keychain_tracker::*;
+#[cfg(feature = "miniscript")]
+pub use miniscript;
+#[cfg(feature = "miniscript")]
+mod descriptor_ext;
+#[cfg(feature = "miniscript")]
+pub use descriptor_ext::*;
 
 #[allow(unused_imports)]
 #[macro_use]

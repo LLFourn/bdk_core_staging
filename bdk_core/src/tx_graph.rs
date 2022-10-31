@@ -10,8 +10,8 @@ pub struct TxGraph {
 
 impl TxGraph {
     /// The outputs from the transaction with id `txid` that have been spent.
-    pub fn outspend(&self, outpoint: &OutPoint) -> Option<&HashSet<Txid>> {
-        self.spends.get(outpoint)
+    pub fn outspend(&self, outpoint: OutPoint) -> Option<&HashSet<Txid>> {
+        self.spends.get(&outpoint)
     }
 
     /// Each item contains the output index and the txid that spent that output.

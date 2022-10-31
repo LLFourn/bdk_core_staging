@@ -3,9 +3,10 @@
 //! see: <https://github.com/Blockstream/esplora/blob/master/API.md>
 use bdk_core::{
     bitcoin::{
-        OutPoint, PackedLockTime, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        BlockHash, OutPoint, PackedLockTime, Script, Sequence, Transaction, TxIn, TxOut, Txid,
+        Witness,
     },
-    BlockTime, PrevOuts,
+    BlockId, BlockTime, PrevOuts,
 };
 
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -117,6 +118,21 @@ impl Tx {
                 })
                 .collect(),
         )
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Block {
+    pub id: BlockHash,
+    pub height: u32,
+}
+
+impl Block {
+    pub fn block_id(&self) -> BlockId {
+        BlockId {
+            hash: self.id,
+            height: self.height,
+        }
     }
 }
 

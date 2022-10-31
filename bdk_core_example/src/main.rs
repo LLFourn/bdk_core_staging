@@ -8,8 +8,9 @@ use bdk_core::{
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
+    descriptor_into_script_iter,
     miniscript::{Descriptor, DescriptorPublicKey},
-    ChangeSet, DescriptorExt, KeychainTracker, SparseChain, TxGraph, UnspentIndex,
+    DescriptorExt, KeychainTracker, SparseChain, TxGraph, Update,
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
@@ -130,7 +131,6 @@ fn main() -> anyhow::Result<()> {
     let mut tracker = KeychainTracker::default();
     let mut chain = SparseChain::default();
     let mut graph = TxGraph::default();
-    let mut unspents = UnspentIndex::default();
     tracker.add_keychain(Keychain::External, descriptor);
 
     let internal = args
@@ -156,7 +156,7 @@ fn main() -> anyhow::Result<()> {
     let mut client = Client::new(ureq::Agent::new(), esplora_url);
     client.parallel_requests = 5;
 
-    fully_sync(&client, &mut tracker, &mut chain, &mut graph, &mut unspents)?;
+    fully_sync(&client, &mut tracker, &mut chain, &mut graph)?;
 
     match args.command {
         Commands::Address { addr_cmd } => {
@@ -191,21 +191,16 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Balance => {
-            let (confirmed, unconfirmed) =
-                unspents
-                    .iter()
-                    .fold((0, 0), |(confirmed, unconfirmed), utxo| {
-                        if utxo.height.is_confirmed()
-                            || matches!(
-                                tracker.index_of_spk(&utxo.txout.script_pubkey),
-                                Some((Keychain::Internal, _))
-                            )
-                        {
-                            (confirmed + utxo.txout.value, unconfirmed)
-                        } else {
-                            (confirmed, unconfirmed + utxo.txout.value)
-                        }
-                    });
+            let (confirmed, unconfirmed) = tracker.iter_unspent(&chain, &graph).fold(
+                (0, 0),
+                |(confirmed, unconfirmed), ((keychain, _), utxo)| {
+                    if utxo.height.is_confirmed() || keychain == Keychain::Internal {
+                        (confirmed + utxo.txout.value, unconfirmed)
+                    } else {
+                        (confirmed, unconfirmed + utxo.txout.value)
+                    }
+                },
+            );
 
             println!("confirmed: {}", confirmed);
             println!("unconfirmed: {}", unconfirmed);
@@ -236,9 +231,11 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             };
 
-            let mut candidates = unspents
-                .iter()
-                .filter_map(|utxo| Some((tracker.index_of_spk(&utxo.txout.script_pubkey)?, utxo)))
+            let mut candidates = tracker
+                .iter_unspent(&chain, &graph)
+                .filter_map(|(_, utxo)| {
+                    Some((tracker.index_of_spk(&utxo.txout.script_pubkey)?, utxo))
+                })
                 .filter_map(|((keychain, index), utxo)| {
                     Some((
                         tracker
@@ -430,19 +427,16 @@ pub fn fully_sync(
     tracker: &mut KeychainTracker<Keychain>,
     chain: &mut SparseChain,
     graph: &mut TxGraph,
-    unspents: &mut UnspentIndex<(Keychain, u32)>,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut active_indexes = vec![];
-    let mut changes = ChangeSet::default();
+    let mut update = Update::default();
 
     for (keychain, descriptor) in tracker.iter_keychains(..) {
         eprint!("scanning {:?} addresses indexes ", keychain);
-        let (last_active_index, checkpoint) = client
+        let (last_active_index, keychain_update) = client
             .fetch_new_checkpoint(
-                graph,
-                descriptor
-                    .iter_all_scripts()
+                descriptor_into_script_iter(descriptor.clone())
                     .enumerate()
                     .map(|(i, script)| (i as u32, script))
                     .inspect(|(i, _)| {
@@ -451,35 +445,37 @@ pub fn fully_sync(
                         let _ = io::stdout().flush();
                     }),
                 2,
-                chain.range_checkpoints(..).rev(),
+                chain.checkpoints(),
             )
             .context("fetching transactions")?;
 
-        match chain.apply_update(checkpoint) {
-            Result::Ok(new_changes) => {
-                eprintln!("success! ({}ms)", start.elapsed().as_millis());
-                changes = changes.merge(new_changes).expect("failed to merge changes");
-            }
-            Result::Err(_reason) => {
-                unreachable!("we are the only ones accessing the tracker");
-            }
-        }
+        update
+            .merge(keychain_update)
+            .map_err(|_| anyhow!("the updates for the two keychains were incompatible"))?;
 
         if let Some(last_active_index) = last_active_index {
             active_indexes.push((keychain, last_active_index));
         }
+
+        eprintln!("success! ({}ms)", start.elapsed().as_millis())
+    }
+
+    match chain.apply_update(&update) {
+        Result::Ok(_changes) => { /* TODO: print out the changes nicely */ }
+        Result::Err(_reason) => {
+            unreachable!("we are the only ones accessing the tracker");
+        }
+    }
+
+    for tx in update.iter_full_txs() {
+        graph.insert_tx(tx);
     }
 
     for (keychain, active_index) in active_indexes {
         tracker.derive_spks(keychain, active_index);
     }
 
-    tracker
-        .sync(graph, &changes)
-        .expect("failed to sync tracker");
-    unspents
-        .sync(&tracker, &changes)
-        .expect("failed to sync unspent index");
+    tracker.scan(graph);
 
     Ok(())
 }
