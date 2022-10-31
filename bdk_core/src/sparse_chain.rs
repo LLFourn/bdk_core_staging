@@ -485,6 +485,15 @@ impl From<Transaction> for TxKey {
     }
 }
 
+impl From<TxKey> for Option<Transaction> {
+    fn from(k: TxKey) -> Self {
+        match k {
+            TxKey::Txid(_) => None,
+            TxKey::Tx(tx) => Some(tx),
+        }
+    }
+}
+
 impl PartialEq for TxKey {
     fn eq(&self, other: &Self) -> bool {
         self.txid() == other.txid()
@@ -542,6 +551,11 @@ impl Update {
     /// Insert a checkpoint.
     pub fn insert_checkpoint(&mut self, block_id: BlockId) {
         self.checkpoints.insert(block_id.height, block_id.hash);
+    }
+
+    /// Iterates all full transactions.
+    pub fn iter_txs(&self) -> impl Iterator<Item = Transaction> + '_ {
+        self.txs.keys().filter_map(|k| k.clone().into())
     }
 }
 
