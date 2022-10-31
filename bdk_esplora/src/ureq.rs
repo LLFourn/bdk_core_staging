@@ -251,10 +251,12 @@ impl Client {
                 .iter()
                 .map(|(tx, conf)| ((*tx).into(), conf.map(|b| b.height).into()))
                 .collect(),
-            checkpoints: todo!(),
-            // last_valid,
-            // invalidate,
-            // new_tip,
+            checkpoints: last_valid
+                .iter()
+                .chain(&invalidate)
+                .chain(core::iter::once(&new_tip))
+                .map(|b| (b.height, b.hash))
+                .collect(),
         };
 
         Ok((last_active_index, update))
