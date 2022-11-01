@@ -1,8 +1,10 @@
+use core::ops::RangeBounds;
+
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    SparseChain, TxGraph,
+    FullTxOut, SparseChain, TxGraph,
 };
-use bitcoin::{self, OutPoint, Script, Transaction, TxOut};
+use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
 /// A *script pubkey* tracker.
 ///
@@ -24,7 +26,7 @@ pub struct SpkTracker<I> {
     /// A set of unused derivation indices.
     unused: BTreeSet<I>,
     /// Index the Outpoints owned by this tracker to the index of script pubkey.
-    txouts: BTreeMap<OutPoint, I>,
+    txouts: BTreeMap<OutPoint, (I, TxOut)>,
     /// A lookup from script pubkey derivation index to related outpoints
     spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
 }
@@ -42,15 +44,15 @@ impl<I> Default for SpkTracker<I> {
 }
 
 impl<I: Clone + Ord> SpkTracker<I> {
-    pub fn sync(&mut self, graph: &TxGraph) {
+    pub fn scan(&mut self, graph: &TxGraph) {
         graph
             .iter_all_txouts()
-            .for_each(|(op, txout)| self.add_txout(&op, txout));
+            .for_each(|(op, txo)| self.add_txout(op, txo.clone()))
     }
 
-    fn add_txout(&mut self, op: &OutPoint, txout: &TxOut) {
+    fn add_txout(&mut self, op: OutPoint, txout: TxOut) {
         if let Some(spk_i) = self.index_of_spk(&txout.script_pubkey) {
-            self.txouts.insert(op.clone(), spk_i.clone());
+            self.txouts.insert(op.clone(), (spk_i.clone(), txout));
             self.spk_txouts
                 .entry(spk_i.clone())
                 .or_default()
@@ -59,30 +61,53 @@ impl<I: Clone + Ord> SpkTracker<I> {
         }
     }
 
-    /// Iterate over unspent transactions outputs (i.e. UTXOs).
-    /// TODO: Remove when we add `UnspentTracker`.
+    /// Iterate over all known txouts that spend to tracked scriptPubKeys.
+    pub fn iter_txout(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint, &TxOut)> + ExactSizeIterator {
+        self.txouts
+            .iter()
+            .map(|(op, (index, txout))| (index.clone(), *op, txout))
+    }
+
     pub fn iter_unspent<'a>(
         &'a self,
         chain: &'a SparseChain,
         graph: &'a TxGraph,
-    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + '_ {
-        self.iter_txout()
-            .filter(|(_, outpoint)| chain.transaction_height(&outpoint.txid).is_some())
-            .filter(|(_, outpoint)| graph.is_unspent(outpoint).expect("should exist"))
+    ) -> impl DoubleEndedIterator<Item = (I, FullTxOut)> + '_ {
+        self.iter_txout().filter_map(|(index, outpoint, txout)| {
+            if !chain.is_unspent(graph, outpoint)? {
+                return None;
+            }
+            Some((
+                index,
+                FullTxOut {
+                    outpoint,
+                    txout: txout.clone(),
+                    height: chain.transaction_height(outpoint.txid)?,
+                    spent_by: Default::default(),
+                },
+            ))
+        })
     }
 
-    /// Iterate over all known txouts that spend to tracked scriptPubKeys.
-    pub fn iter_txout<'a>(
-        &'a self,
-    ) -> impl DoubleEndedIterator<Item = (I, OutPoint)> + ExactSizeIterator + 'a {
-        self.txouts.iter().map(|(op, index)| (index.clone(), *op))
+    /// Iterate over txouts of a given txid
+    pub fn range_tx_outputs(
+        &self,
+        txid: Txid,
+    ) -> impl DoubleEndedIterator<Item = (I, OutPoint, &TxOut)> {
+        self.txouts
+            .range(OutPoint::new(txid, u32::MIN)..=OutPoint::new(txid, u32::MAX))
+            .map(|(op, (index, txout))| (index.clone(), *op, txout))
     }
 
     /// Returns the index of the script pubkey at `outpoint`.
     ///
     /// This returns `Some(spk_index)` if the txout has been found with a script pubkey in the tracker.
-    pub fn index_of_txout(&self, outpoint: OutPoint) -> Option<I> {
-        self.txouts.get(&outpoint).cloned()
+    pub fn txout(&self, outpoint: OutPoint) -> Option<(I, &TxOut)> {
+        self.txouts
+            .get(&outpoint)
+            .map(|(spk_i, txout)| (spk_i.clone(), txout))
     }
 
     /// Returns the script that has been derived at the index.
@@ -134,17 +159,37 @@ impl<I: Clone + Ord> SpkTracker<I> {
 
     /// Whether any of the inputs of this transaction spend a txout tracked or whether any output
     /// matches one of our script pubkeys.
-    pub fn is_relevant(&self, tx: &Transaction) -> bool {
+    pub fn is_relevant(&self, graph: &TxGraph, tx: &Transaction) -> bool {
         let input_matches = tx
             .input
             .iter()
-            .find(|input| self.index_of_txout(input.previous_output).is_some())
+            .find(|input| matches!(graph.txout(input.previous_output), Some(txo) if self.spk_indexes.contains_key(&txo.script_pubkey)))
             .is_some();
         let output_matches = tx
             .output
             .iter()
-            .find(|output| self.index_of_spk(&output.script_pubkey).is_some())
+            .find(|output| self.spk_indexes.contains_key(&output.script_pubkey))
             .is_some();
         input_matches || output_matches
+    }
+
+    /// Returns the highest referenced spk index of a given tx.
+    /// This is useful for syncing mechanisms that require enforcement of a "stop gap".
+    pub fn highest_spk_index<R>(&self, graph: &TxGraph, tx: &Transaction, range: R) -> Option<I>
+    where
+        R: RangeBounds<I>,
+    {
+        tx.input
+            .iter()
+            // obtain prev txouts
+            .filter_map(|txin| graph.txout(txin.previous_output))
+            // chain with current txouts
+            .chain(&tx.output)
+            // filter out relevant txouts
+            .filter_map(|txo| self.spk_indexes.get(&txo.script_pubkey))
+            // enforce spk index range
+            .filter(|&spk_i| range.contains(spk_i))
+            .cloned()
+            .max()
     }
 }

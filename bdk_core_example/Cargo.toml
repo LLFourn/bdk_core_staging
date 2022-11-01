@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 clap = { version = "3.2.5", features = ["derive", "env"] }
-bdk_core = { path = "../bdk_core"  }
+bdk_core = { path = "../bdk_core", features = ["miniscript"]  }
 anyhow = "1"
 bdk_esplora = { path = "../bdk_esplora" }
+

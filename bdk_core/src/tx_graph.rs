@@ -10,8 +10,8 @@ pub struct TxGraph {
 
 impl TxGraph {
     /// The outputs from the transaction with id `txid` that have been spent.
-    pub fn outspend(&self, outpoint: &OutPoint) -> Option<&HashSet<Txid>> {
-        self.spends.get(outpoint)
+    pub fn outspend(&self, outpoint: OutPoint) -> Option<&HashSet<Txid>> {
+        self.spends.get(&outpoint)
     }
 
     /// Each item contains the output index and the txid that spent that output.
@@ -30,15 +30,15 @@ impl TxGraph {
     }
 
     /// Get a transaction by txid. This only returns `Some` for full transactions.
-    pub fn tx(&self, txid: &Txid) -> Option<&Transaction> {
-        match self.txs.get(txid)? {
+    pub fn tx(&self, txid: Txid) -> Option<&Transaction> {
+        match self.txs.get(&txid)? {
             TxNode::Whole(tx) => Some(tx),
             TxNode::Partial(_) => None,
         }
     }
 
     /// Obtains a single tx output (if any) at specified outpoint.
-    pub fn txout(&self, outpoint: &OutPoint) -> Option<&TxOut> {
+    pub fn txout(&self, outpoint: OutPoint) -> Option<&TxOut> {
         match self.txs.get(&outpoint.txid)? {
             TxNode::Whole(tx) => tx.output.get(outpoint.vout as usize),
             TxNode::Partial(txouts) => txouts.get(&(outpoint.vout as usize)),
@@ -94,10 +94,21 @@ impl TxGraph {
         }
     }
 
-    /// Determines whether outpoint is spent or not. Returns `None` when outpoint does not exist in
-    /// graph.
-    pub fn is_unspent(&self, outpoint: &OutPoint) -> Option<bool> {
-        self.spends.get(outpoint).map(|txids| txids.is_empty())
+    /// Calculates the fee of a given transaction (if we have all relevant data).
+    pub fn calculate_fee(&self, tx: &Transaction) -> Option<u64> {
+        let inputs_sum = tx
+            .input
+            .iter()
+            .map(|txin| self.txout(txin.previous_output).map(|txout| txout.value))
+            .sum::<Option<u64>>()?;
+
+        let outputs_sum = tx.output.iter().map(|txout| txout.value).sum::<u64>();
+
+        Some(
+            inputs_sum
+                .checked_sub(outputs_sum)
+                .expect("tx graph has invalid data"),
+        )
     }
 
     /// Iterate over all tx outputs known by [`TxGraph`].

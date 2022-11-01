@@ -1,4 +1,4 @@
-use crate::api::Tx;
+use crate::api;
 use bdk_core::{
     bitcoin::{
         consensus,
@@ -7,6 +7,7 @@ use bdk_core::{
     },
     BlockId, Update,
 };
+use std::collections::{BTreeMap, BTreeSet};
 pub use ureq;
 use ureq::Agent;
 
@@ -20,7 +21,6 @@ pub struct Client {
 #[derive(Debug)]
 pub enum UpdateError {
     Ureq(ureq::Error),
-    TipChangeDuringUpdate,
     Deserialization { url: String },
 }
 
@@ -43,9 +43,6 @@ impl core::fmt::Display for UpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UpdateError::Ureq(e) => write!(f, "{}", e),
-            UpdateError::TipChangeDuringUpdate => {
-                write!(f, "The blockchain tip changed during the update")
-            }
             UpdateError::Deserialization { url } => {
                 write!(f, "Failed to deserialize response from {}", url)
             }
@@ -99,7 +96,7 @@ impl Client {
         &self,
         script: &Script,
         last_seen: Option<Txid>,
-    ) -> Result<Vec<Tx>, ureq::Error> {
+    ) -> Result<Vec<api::Tx>, ureq::Error> {
         let script_hash = sha256::Hash::hash(script.as_bytes()).into_inner().to_hex();
         let url = match last_seen {
             Some(last_seen) => format!(
@@ -142,11 +139,26 @@ impl Client {
         Ok(BlockId { height, hash })
     }
 
-    fn is_block_present(&self, block: BlockId) -> Result<bool, ureq::Error> {
-        use core::str::FromStr;
-        let url = format!("{}/block-height/{}", self.base_url, block.height);
+    fn recent_blocks(&self) -> Result<BTreeSet<BlockId>, ureq::Error> {
+        let url = format!("{}/blocks", self.base_url);
         let response = self.agent.get(&url).call()?;
-        Ok(BlockHash::from_str(&response.into_string()?) == Ok(block.hash))
+        let blocks: Vec<api::Block> = response.into_json()?;
+        Ok(blocks
+            .into_iter()
+            .map(|block| BlockId {
+                hash: block.id,
+                height: block.height,
+            })
+            .collect())
+    }
+
+    fn block_hash_at_height(&self, height: u32) -> Result<BlockHash, Error> {
+        let url = format!("{}/block-height/{}", self.base_url, height);
+        let response = self.agent.get(&url).call()?;
+        response
+            .into_string()?
+            .parse()
+            .map_err(|_| Error::Deserialization { url })
     }
 
     pub fn broadcast(&self, tx: &Transaction) -> Result<(), ureq::Error> {
@@ -167,26 +179,24 @@ impl Client {
     /// `scripts`.
     pub fn fetch_new_checkpoint(
         &self,
-        mut scripts: impl Iterator<Item = (u32, Script)>,
+        mut scripts: impl Iterator<Item = (u32, Script)> + Clone,
         stop_gap: usize,
-        known_tips: impl Iterator<Item = BlockId>,
+        existing_chain: &BTreeMap<u32, BlockHash>,
     ) -> Result<(Option<u32>, Update), UpdateError> {
         let mut empty_scripts = 0;
-        let mut transactions = vec![];
+        let mut update = Update::default();
         let mut last_active_index = None;
-        let mut invalidate = None;
-        let mut last_valid = None;
+        // need to clone ihe iterator in case we need to start from the beggining again
+        let backup_scripts = scripts.clone();
 
-        for tip in known_tips {
-            if self.is_block_present(tip)? {
-                last_valid = Some(tip);
+        for (&existing_height, &existing_hash) in existing_chain.iter().rev() {
+            update.insert_checkpoint(existing_height, existing_hash);
+            if self.block_hash_at_height(existing_height)? == existing_hash {
                 break;
-            } else {
-                invalidate = Some(tip);
             }
         }
 
-        let new_tip = self.tip()?;
+        let tip_at_start = self.tip()?;
 
         loop {
             let handles = (0..self.parallel_requests)
@@ -194,7 +204,8 @@ impl Client {
                     let (index, script) = scripts.next()?;
                     let client = self.clone();
                     Some(std::thread::spawn(move || {
-                        let mut related_txs: Vec<Tx> = client._scripthash_txs(&script, None)?;
+                        let mut related_txs: Vec<api::Tx> =
+                            client._scripthash_txs(&script, None)?;
 
                         let n_confirmed =
                             related_txs.iter().filter(|tx| tx.status.confirmed).count();
@@ -202,7 +213,7 @@ impl Client {
                         // keep requesting to see if there's more.
                         if n_confirmed >= 25 {
                             loop {
-                                let new_related_txs: Vec<Tx> = client._scripthash_txs(
+                                let new_related_txs: Vec<api::Tx> = client._scripthash_txs(
                                     &script,
                                     Some(related_txs.last().unwrap().txid),
                                 )?;
@@ -231,7 +242,7 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    transactions.push((tx.to_tx(), tx.status.to_block_time()))
+                    update.insert_tx(tx.to_tx(), tx.status.block_height.into());
                 }
             }
 
@@ -240,19 +251,15 @@ impl Client {
             }
         }
 
-        if self.tip_hash()? != new_tip.hash {
-            return Err(UpdateError::TipChangeDuringUpdate);
+        let blocks_at_end = self.recent_blocks()?;
+
+        if !blocks_at_end.contains(&tip_at_start) {
+            return self.fetch_new_checkpoint(backup_scripts, stop_gap, existing_chain);
         }
 
-        let update = Update {
-            txids: transactions
-                .iter()
-                .map(|(tx, conf)| (tx.txid(), conf.map(|b| b.height).into()))
-                .collect(),
-            last_valid,
-            invalidate,
-            new_tip,
-        };
+        for block in blocks_at_end {
+            update.insert_checkpoint(block.height, block.hash);
+        }
 
         Ok((last_active_index, update))
     }
