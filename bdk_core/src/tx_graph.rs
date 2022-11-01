@@ -41,14 +41,19 @@ impl TxGraph {
     pub fn txout(&self, outpoint: OutPoint) -> Option<&TxOut> {
         match self.txs.get(&outpoint.txid)? {
             TxNode::Whole(tx) => tx.output.get(outpoint.vout as usize),
-            TxNode::Partial(txouts) => txouts.get(&(outpoint.vout as usize)),
+            TxNode::Partial(txouts) => txouts.get(&outpoint.vout),
         }
     }
 
     /// Returns a [`BTreeMap`] of outputs of a given txid.
-    pub fn txouts(&self, txid: &Txid) -> Option<BTreeMap<usize, &TxOut>> {
+    pub fn txouts(&self, txid: &Txid) -> Option<BTreeMap<u32, &TxOut>> {
         Some(match self.txs.get(txid)? {
-            TxNode::Whole(tx) => tx.output.iter().enumerate().collect::<BTreeMap<_, _>>(),
+            TxNode::Whole(tx) => tx
+                .output
+                .iter()
+                .enumerate()
+                .map(|(vout, txout)| (vout as u32, txout))
+                .collect::<BTreeMap<_, _>>(),
             TxNode::Partial(txouts) => txouts
                 .iter()
                 .map(|(vout, txout)| (*vout, txout))
@@ -127,6 +132,21 @@ impl TxGraph {
         })
     }
 
+    /// Iterate over all full transactions in the graph
+    pub fn iter_full_transactions(&self) -> impl Iterator<Item = &Transaction> {
+        self.txs.iter().filter_map(|(_, tx)| match tx {
+            TxNode::Whole(tx) => Some(tx),
+            TxNode::Partial(_) => None,
+        })
+    }
+
+    pub fn iter_partial_transactions(&self) -> impl Iterator<Item = (Txid, &BTreeMap<u32, TxOut>)> {
+        self.txs.iter().filter_map(|(txid, tx)| match tx {
+            TxNode::Whole(_) => None,
+            TxNode::Partial(partial) => Some((*txid, partial)),
+        })
+    }
+
     /// Return an iterator of conflicting txids, where the first field of the tuple is the vin of
     /// the original tx in which the txid conflicts.
     pub fn conflicting_txids<'g>(
@@ -145,13 +165,30 @@ impl TxGraph {
             })
             .filter(move |(_, spend_txid)| spend_txid != &tx.txid())
     }
+
+    /// Extends this graph with another so that `self` becomes the union of the two sets of
+    /// transactions.
+    pub fn extend(&mut self, other: TxGraph) {
+        for (txid, tx) in other.txs {
+            match tx {
+                TxNode::Whole(tx) => {
+                    self.insert_tx(&tx);
+                }
+                TxNode::Partial(partial) => {
+                    for (vout, txout) in partial {
+                        self.insert_txout(OutPoint { txid, vout }, txout);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Node of a [`TxGraph`]
 #[derive(Clone, Debug)]
 enum TxNode {
     Whole(Transaction),
-    Partial(BTreeMap<usize, TxOut>),
+    Partial(BTreeMap<u32, TxOut>),
 }
 
 impl Default for TxNode {
