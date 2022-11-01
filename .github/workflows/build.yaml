@@ -39,7 +39,7 @@ jobs:
       - name: Update toolchain
         run: rustup update
       - name: Build
-        run: cargo build --package bdk_core --features ${{ matrix.features }} --no-default-features
+        run: cargo build --features bdk_core/${{ matrix.features }} --no-default-features
       # Uncomment clippy check after failures are removed
       # - name: Clippy
       #   run: cargo clippy --all-targets --features ${{ matrix.features }} --no-default-features -- -D warnings

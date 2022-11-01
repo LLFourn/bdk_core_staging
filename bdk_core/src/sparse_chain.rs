@@ -636,6 +636,15 @@ impl ChangeSet {
 
         Ok(self)
     }
+
+    pub fn tx_additions(&self) -> impl Iterator<Item = Txid> + '_ {
+        self.txids
+            .iter()
+            .filter_map(|(txid, change)| match (change.from, change.to) {
+                (None, Some(_)) => Some(*txid),
+                _ => None,
+            })
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
