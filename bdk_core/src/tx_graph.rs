@@ -1,6 +1,5 @@
-use bitcoin::{OutPoint, Transaction, TxOut, Txid};
-
 use crate::{collections::*, Vec};
+use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
 pub struct TxGraph {
@@ -132,19 +131,9 @@ impl TxGraph {
         })
     }
 
-    /// Iterate over all full transactions in the graph
-    pub fn iter_full_transactions(&self) -> impl Iterator<Item = &Transaction> {
-        self.txs.iter().filter_map(|(_, tx)| match tx {
-            TxNode::Whole(tx) => Some(tx),
-            TxNode::Partial(_) => None,
-        })
-    }
-
-    pub fn iter_partial_transactions(&self) -> impl Iterator<Item = (Txid, &BTreeMap<u32, TxOut>)> {
-        self.txs.iter().filter_map(|(txid, tx)| match tx {
-            TxNode::Whole(_) => None,
-            TxNode::Partial(partial) => Some((*txid, partial)),
-        })
+    /// All the nodes in the graph
+    pub fn nodes(&self) -> &HashMap<Txid, TxNode> {
+        &self.txs
     }
 
     /// Return an iterator of conflicting txids, where the first field of the tuple is the vin of
@@ -186,7 +175,7 @@ impl TxGraph {
 
 /// Node of a [`TxGraph`]
 #[derive(Clone, Debug)]
-enum TxNode {
+pub enum TxNode {
     Whole(Transaction),
     Partial(BTreeMap<u32, TxOut>),
 }
