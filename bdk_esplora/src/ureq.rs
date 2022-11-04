@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    BlockId, Update,
+    BlockId, ChainGraph, InsertCheckpointErr, InsertTxErr,
 };
 use std::collections::{BTreeMap, BTreeSet};
 pub use ureq;
@@ -182,21 +182,35 @@ impl Client {
         mut scripts: impl Iterator<Item = (u32, Script)> + Clone,
         stop_gap: usize,
         existing_chain: &BTreeMap<u32, BlockHash>,
-    ) -> Result<(Option<u32>, Update), UpdateError> {
+    ) -> Result<(Option<u32>, ChainGraph), UpdateError> {
         let mut empty_scripts = 0;
-        let mut update = Update::default();
+        let mut update = ChainGraph::default();
         let mut last_active_index = None;
-        // need to clone ihe iterator in case we need to start from the beggining again
+        // need to clone the iterator in case we need to start from the beggining again
         let backup_scripts = scripts.clone();
 
         for (&existing_height, &existing_hash) in existing_chain.iter().rev() {
-            update.insert_checkpoint(existing_height, existing_hash);
-            if self.block_hash_at_height(existing_height)? == existing_hash {
+            let current_hash = self.block_hash_at_height(existing_height)?;
+            update
+                .insert_checkpoint(BlockId {
+                    height: existing_height,
+                    hash: current_hash,
+                })
+                .expect("should not collide");
+
+            if current_hash == existing_hash {
                 break;
             }
         }
 
         let tip_at_start = self.tip()?;
+        if let Err(err) = update.insert_checkpoint(tip_at_start) {
+            match err {
+                InsertCheckpointErr::HashNotMatching => {
+                    /* There has been a reorg since the line of code above, we will catch this later on */
+                }
+            }
+        }
 
         loop {
             let handles = (0..self.parallel_requests)
@@ -242,7 +256,16 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    update.insert_tx(tx.to_tx(), tx.status.block_height.into());
+                    if let Err(err) = update.insert_tx(tx.to_tx(), tx.status.block_height.into()) {
+                        match err {
+                            InsertTxErr::TxTooHigh => {
+                                /* Don't care about new transactions confirmed while syncing */
+                            }
+                            InsertTxErr::TxMoved => {
+                                /* This means there is a reorg, we will catch that below */
+                            }
+                        }
+                    }
                 }
             }
 
@@ -253,12 +276,10 @@ impl Client {
 
         let blocks_at_end = self.recent_blocks()?;
 
-        if !blocks_at_end.contains(&tip_at_start) {
-            return self.fetch_new_checkpoint(backup_scripts, stop_gap, existing_chain);
-        }
-
         for block in blocks_at_end {
-            update.insert_checkpoint(block.height, block.hash);
+            if update.insert_checkpoint(block).is_err() {
+                return self.fetch_new_checkpoint(backup_scripts, stop_gap, existing_chain);
+            }
         }
 
         Ok((last_active_index, update))

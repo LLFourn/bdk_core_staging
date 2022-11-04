@@ -4,7 +4,7 @@ use core::{
 };
 
 use crate::{collections::*, BlockId, TxGraph, Vec};
-use bitcoin::{hashes::Hash, Block, BlockHash, OutPoint, Transaction, TxOut, Txid};
+use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
 pub struct SparseChain {
@@ -18,12 +18,38 @@ pub struct SparseChain {
     checkpoint_limit: Option<usize>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum InsertTxErr {
+    TxTooHigh,
+    TxMoved,
+}
+
+impl Display for InsertTxErr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for InsertTxErr {}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InsertCheckpointErr {
+    HashNotMatching,
+}
+
+impl Display for InsertCheckpointErr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for InsertCheckpointErr {}
+
 /// Represents an update failure of [`SparseChain`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateFailure {
-    /// The [`Update`] is total bogus. Cannot be applied to any [`SparseChain`].
-    Bogus(BogusReason),
-
     /// The [`Update`] cannot be applied to this [`SparseChain`] because the chain suffix it
     /// represents did not connect to the existing chain.
     /// TODO: Add last_valid and invalid_from?
@@ -37,30 +63,9 @@ pub enum UpdateFailure {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum BogusReason {
-    /// At least one `txid` has a confirmation height greater than `new_tip`.
-    TxHeightGreaterThanTip {
-        txid: Txid,
-        tx_height: u32,
-        tip_height: u32,
-    },
-    /// There were no checkpoints in the update
-    EmptyCheckpoints,
-}
-
 impl core::fmt::Display for UpdateFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Bogus(reason) => {
-                write!(f, "bogus update: ")?;
-                match reason {
-                    BogusReason::EmptyCheckpoints => write!(f, "the checkpoints in the update were empty"),
-                    BogusReason::TxHeightGreaterThanTip { txid, tx_height, tip_height, } =>
-                        write!(f, "tx ({}) confirmation height ({}) is greater than new_tip height ({})",
-                            txid, tx_height, tip_height),
-                }
-            },
             Self::NotConnected  => write!(f, "the checkpoints in the update could not be connected to the checkpoints in the chain"),
             Self::Inconsistent { inconsistent_txid, original_height, update_height } =>
                 write!(f, "inconsistent update: first inconsistent tx is ({}) which had confirmation height ({}), but is ({}) in the update", 
@@ -124,7 +129,7 @@ impl SparseChain {
         }
     }
 
-    pub fn determine_changeset(&self, update: &Update) -> Result<ChangeSet, UpdateFailure> {
+    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet, UpdateFailure> {
         let last_valid = update
             .checkpoints
             .iter()
@@ -152,30 +157,15 @@ impl SparseChain {
             }
         }
 
-        // the new checkpoint tip introduced by the update (if any)
-        let new_tip = update.checkpoints.iter().last().map(|(&h, _)| h);
-
-        for (tx_key, &tx_height) in &update.txs {
-            // ensure tx height does not surpass update's tip
-            // the exception is that unconfirmed transactions are always allowed
-            if let (Some(tip_height), TxHeight::Confirmed(tx_height)) = (new_tip, tx_height) {
-                if tip_height < tx_height {
-                    return Err(UpdateFailure::Bogus(BogusReason::TxHeightGreaterThanTip {
-                        txid: tx_key.txid(),
-                        tx_height,
-                        tip_height,
-                    }));
-                }
-            }
-
+        for (tx_height, txid) in &update.txid_by_height {
             // ensure all currently confirmed txs are still at the same height (unless, if they are
             // to be invalidated, or originally unconfirmed)
-            if let Some(&old_height) = self.txid_to_index.get(&tx_key.txid()) {
-                if old_height < TxHeight::Confirmed(invalid_from) && tx_height != old_height {
+            if let Some(&old_height) = self.txid_to_index.get(txid) {
+                if old_height < TxHeight::Confirmed(invalid_from) && tx_height != &old_height {
                     return Err(UpdateFailure::Inconsistent {
-                        inconsistent_txid: tx_key.txid(),
+                        inconsistent_txid: *txid,
                         original_height: old_height,
-                        update_height: tx_height,
+                        update_height: *tx_height,
                     });
                 }
             }
@@ -214,18 +204,18 @@ impl SparseChain {
             }
         }
 
-        for (tx_key, &new_conf) in &update.txs {
-            let original_conf = self.txid_to_index.get(&tx_key.txid()).cloned();
+        for (new_conf, txid) in &update.txid_by_height {
+            let original_conf = self.txid_to_index.get(txid).cloned();
 
             let is_inaction = change_set
                 .txids
-                .entry(tx_key.txid())
-                .and_modify(|change| change.to = Some(new_conf))
-                .or_insert_with(|| Change::new(original_conf, Some(new_conf)))
+                .entry(*txid)
+                .and_modify(|change| change.to = Some(*new_conf))
+                .or_insert_with(|| Change::new(original_conf, Some(*new_conf)))
                 .is_inaction();
 
             if is_inaction {
-                change_set.txids.remove(&tx_key.txid());
+                change_set.txids.remove(txid);
             }
         }
 
@@ -234,7 +224,7 @@ impl SparseChain {
 
     /// Applies a new [`Update`] to the tracker.
     #[must_use]
-    pub fn apply_update(&mut self, update: &Update) -> Result<ChangeSet, UpdateFailure> {
+    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet, UpdateFailure> {
         let changeset = self.determine_changeset(update)?;
         self.apply_changeset(&changeset);
         Ok(changeset)
@@ -292,89 +282,38 @@ impl SparseChain {
 
     /// Insert an arbitary txid. This assumes that we have at least one checkpoint and the tx does
     /// not already exist in [`SparseChain`]. Returns a [`ChangeSet`] on success.
-    /// TODO: Fix the error case!!
-    pub fn insert_tx(&mut self, txid: Txid, height: TxHeight) -> Result<ChangeSet, UpdateFailure> {
-        let update = Update {
-            txs: [(txid.into(), height)].into(),
-            checkpoints: self
-                .latest_checkpoint()
-                .iter()
-                .map(|cp| (cp.height, cp.hash))
-                .collect(),
-        };
+    pub fn insert_tx(&mut self, txid: Txid, height: TxHeight) -> Result<bool, InsertTxErr> {
+        let latest: TxHeight = self.checkpoints.keys().last().cloned().into();
 
-        self.apply_update(&update)
+        if height.is_confirmed() && height > latest {
+            return Err(InsertTxErr::TxTooHigh);
+        }
+
+        if let Some(&old_height) = self.txid_to_index.get(&txid) {
+            if old_height.is_confirmed() && old_height != height {
+                return Err(InsertTxErr::TxMoved);
+            }
+
+            return Ok(false);
+        }
+
+        self.txid_to_index.insert(txid, height);
+        self.txid_by_height.insert((height, txid));
+
+        Ok(true)
     }
 
-    /// Inserts a checkpoint at any height in the chain. If it conflicts with an exisitng checkpoint
-    /// the existing one will be invalidated and removed.
-    pub fn apply_checkpoint(&mut self, checkpoint: BlockId) -> ChangeSet {
-        self.apply_block_txs(checkpoint, core::iter::empty())
-            .expect("cannot fail")
-    }
+    pub fn insert_checkpoint(&mut self, block_id: BlockId) -> Result<bool, InsertCheckpointErr> {
+        if let Some(&old_hash) = self.checkpoints.get(&block_id.height) {
+            if old_hash != block_id.hash {
+                return Err(InsertCheckpointErr::HashNotMatching);
+            }
 
-    /// Apply a block with a caller provided height.
-    pub fn apply_block_with_height(
-        &mut self,
-        block: &Block,
-        height: u32,
-        mut filter: impl FnMut(&Transaction) -> bool,
-    ) -> Result<ChangeSet, UpdateFailure> {
-        self.apply_block_txs(
-            BlockId {
-                height,
-                hash: block.block_hash(),
-            },
-            block
-                .txdata
-                .iter()
-                .filter(|tx| filter(tx))
-                .map(|tx| tx.txid()),
-        )
-    }
+            return Ok(false);
+        }
 
-    /// Apply a bitcoin block bip34 compliant block
-    ///
-    /// ## Panics
-    ///
-    /// Panics if the block is not a bip34 compliant block
-    pub fn apply_block(
-        &mut self,
-        block: &Block,
-        filter: impl FnMut(&Transaction) -> bool,
-    ) -> Result<ChangeSet, UpdateFailure> {
-        self.apply_block_with_height(
-            block,
-            block.bip34_block_height().expect("valid bip34 block") as u32,
-            filter,
-        )
-    }
-
-    /// Apply transactions that are all confirmed in a given block
-    pub fn apply_block_txs(
-        &mut self,
-        checkpoint: BlockId,
-        txs: impl IntoIterator<Item = Txid>,
-    ) -> Result<ChangeSet, UpdateFailure> {
-        let mut checkpoints = self
-            .checkpoints
-            .iter()
-            .rev()
-            .take(2)
-            .map(|(k, v)| (*k, *v))
-            .collect::<BTreeMap<_, _>>();
-
-        checkpoints.insert(checkpoint.height, checkpoint.hash);
-
-        let update = Update {
-            txs: txs
-                .into_iter()
-                .map(|txid| (txid.into(), TxHeight::Confirmed(checkpoint.height)))
-                .collect(),
-            checkpoints,
-        };
-
-        self.apply_update(&update)
+        self.checkpoints.insert(block_id.height, block_id.hash);
+        Ok(true)
     }
 
     pub fn iter_txids(
@@ -505,77 +444,6 @@ impl Ord for TxKey {
 impl core::hash::Hash for TxKey {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.txid().hash(state)
-    }
-}
-/// Represents an [`Update`] that could be applied to [`SparseChain`].
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Update {
-    /// List of transactions in this checkpoint. They needs to be consistent with [`SparseChain`]'s
-    /// state for the [`Update`] to be included.
-    pub txs: HashMap<TxKey, TxHeight>,
-    /// The chain represented by checkpoints *must* connect to the existing sparse chain or to the
-    /// empty chain. That it is it must have a `BlockId` that matches one of the existing
-    /// checkpoints or it is connects to the empty chain. To connect to the empty chain, the
-    /// existing chain must be empty OR one of the checkpoints must be at the same height as the
-    /// first checkpoint in the sparse chain.
-    pub checkpoints: BTreeMap<u32, BlockHash>,
-}
-
-impl Update {
-    /// Insert transaction into the update, at a given height, replacing the previous entry.
-    pub fn insert_tx(&mut self, tx: Transaction, height: TxHeight) {
-        self.txs.remove(&tx.txid().into());
-        self.txs.insert(TxKey::Tx(tx), height);
-    }
-
-    /// Insert txid into the update. If the entry is already a full tx, we will not remove the full
-    /// tx, and just change the height.
-    pub fn insert_txid(&mut self, txid: Txid, height: TxHeight) {
-        self.txs.insert(txid.into(), height);
-    }
-
-    /// Insert a checkpoint.
-    pub fn insert_checkpoint(&mut self, height: u32, hash: BlockHash) {
-        self.checkpoints.insert(height, hash);
-    }
-
-    /// Iterates all full transactions.
-    pub fn iter_full_txs(&self) -> impl Iterator<Item = &Transaction> + '_ {
-        self.txs.keys().filter_map(|k| match k {
-            TxKey::Txid(_) => None,
-            TxKey::Tx(tx) => Some(tx),
-        })
-    }
-
-    /// Merges another update into this one if their checkpoints are compatible.
-    pub fn merge(&mut self, other: Self) -> Result<(), Self> {
-        for (height, hash) in &self.checkpoints {
-            if let Some(other_hash) = other.checkpoints.get(height) {
-                if hash != other_hash {
-                    return Err(other);
-                }
-            }
-        }
-
-        if let (Some((k, _)), Some((other_k, _))) = (
-            self.checkpoints.iter().last(),
-            other.checkpoints.iter().last(),
-        ) {
-            if !(other.checkpoints.contains_key(k) || self.checkpoints.contains_key(other_k)) {
-                return Err(other);
-            }
-        }
-
-        self.checkpoints.extend(other.checkpoints);
-
-        for (key, height) in other.txs {
-            match key {
-                TxKey::Txid(txid) => self.insert_txid(txid, height),
-                TxKey::Tx(tx) => self.insert_tx(tx, height),
-            }
-        }
-
-        Ok(())
     }
 }
 

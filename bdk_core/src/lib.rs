@@ -2,6 +2,8 @@
 pub use alloc::{boxed::Box, vec::Vec};
 pub use bitcoin;
 use bitcoin::{hashes::Hash, BlockHash, TxOut};
+mod chain_graph;
+pub use chain_graph::*;
 mod spk_tracker;
 pub use spk_tracker::*;
 mod sparse_chain;
