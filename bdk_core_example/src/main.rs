@@ -10,11 +10,11 @@ use bdk_core::{
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     descriptor_into_script_iter,
     miniscript::{Descriptor, DescriptorPublicKey},
-    DescriptorExt, KeychainTracker, SparseChain, TxGraph, Update,
+    ChainGraph, DescriptorExt, KeychainTracker,
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
-use std::{cmp::Reverse, time::Duration};
+use std::{borrow::Borrow, cmp::Reverse, time::Duration};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -129,8 +129,7 @@ fn main() -> anyhow::Result<()> {
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
 
     let mut tracker = KeychainTracker::default();
-    let mut chain = SparseChain::default();
-    let mut graph = TxGraph::default();
+    let mut chain = ChainGraph::default();
     tracker.add_keychain(Keychain::External, descriptor);
 
     let internal = args
@@ -156,7 +155,7 @@ fn main() -> anyhow::Result<()> {
     let mut client = Client::new(ureq::Agent::new(), esplora_url);
     client.parallel_requests = 5;
 
-    fully_sync(&client, &mut tracker, &mut chain, &mut graph)?;
+    fully_sync(&client, &mut tracker, &mut chain)?;
 
     match args.command {
         Commands::Address { addr_cmd } => {
@@ -191,16 +190,15 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Balance => {
-            let (confirmed, unconfirmed) = tracker.iter_unspent(&chain, &graph).fold(
-                (0, 0),
-                |(confirmed, unconfirmed), ((keychain, _), utxo)| {
+            let (confirmed, unconfirmed) = tracker
+                .iter_unspent(chain.borrow(), chain.borrow())
+                .fold((0, 0), |(confirmed, unconfirmed), ((keychain, _), utxo)| {
                     if utxo.height.is_confirmed() || keychain == Keychain::Internal {
                         (confirmed + utxo.txout.value, unconfirmed)
                     } else {
                         (confirmed, unconfirmed + utxo.txout.value)
                     }
-                },
-            );
+                });
 
             println!("confirmed: {}", confirmed);
             println!("unconfirmed: {}", unconfirmed);
@@ -208,7 +206,10 @@ fn main() -> anyhow::Result<()> {
         Commands::Txo { utxo_cmd } => match utxo_cmd {
             TxoCmd::List => {
                 for (spk_index, txout) in tracker.iter_txout().filter_map(|(spk_i, op, _txout)| {
-                    chain.full_txout(&graph, op).map(|utxo| (spk_i, utxo))
+                    chain
+                        .chain()
+                        .full_txout(chain.graph(), op)
+                        .map(|utxo| (spk_i, utxo))
                 }) {
                     let script = tracker.spk_at_index(spk_index).unwrap();
                     let address = Address::from_script(script, args.network).unwrap();
@@ -232,7 +233,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             let mut candidates = tracker
-                .iter_unspent(&chain, &graph)
+                .iter_unspent(chain.chain(), chain.graph())
                 .filter_map(|(_, utxo)| {
                     Some((tracker.index_of_spk(&utxo.txout.script_pubkey)?, utxo))
                 })
@@ -331,6 +332,7 @@ fn main() -> anyhow::Result<()> {
             let mut transaction = Transaction {
                 version: 0x02,
                 lock_time: chain
+                    .chain()
                     .latest_checkpoint()
                     .and_then(|block_id| LockTime::from_height(block_id.height).ok())
                     .unwrap_or(LockTime::ZERO)
@@ -425,12 +427,11 @@ fn main() -> anyhow::Result<()> {
 pub fn fully_sync(
     client: &Client,
     tracker: &mut KeychainTracker<Keychain>,
-    chain: &mut SparseChain,
-    graph: &mut TxGraph,
+    chain: &mut ChainGraph,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut active_indexes = vec![];
-    let mut update = Update::default();
+    let mut update = ChainGraph::default();
 
     for (keychain, descriptor) in tracker.iter_keychains(..) {
         eprint!("scanning {:?} addresses indexes ", keychain);
@@ -445,12 +446,12 @@ pub fn fully_sync(
                         let _ = io::stdout().flush();
                     }),
                 2,
-                chain.checkpoints(),
+                chain.chain().checkpoints(),
             )
             .context("fetching transactions")?;
 
         update
-            .merge(keychain_update)
+            .apply_update(&keychain_update)
             .map_err(|_| anyhow!("the updates for the two keychains were incompatible"))?;
 
         if let Some(last_active_index) = last_active_index {
@@ -467,15 +468,15 @@ pub fn fully_sync(
         }
     }
 
-    for tx in update.iter_full_txs() {
-        graph.insert_tx(tx);
-    }
+    // for tx in update.graph().iter_full_txs() {
+    //     graph.insert_tx(tx);
+    // }
 
     for (keychain, active_index) in active_indexes {
         tracker.derive_spks(keychain, active_index);
     }
 
-    tracker.scan(graph);
+    tracker.scan(chain.graph());
 
     Ok(())
 }

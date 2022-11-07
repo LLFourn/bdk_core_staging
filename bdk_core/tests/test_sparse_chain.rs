@@ -1,103 +1,339 @@
 use bdk_core::*;
-use bitcoin::Txid;
-use testing::*;
+macro_rules! chain {
+    ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
+    (checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
+        #[allow(unused_mut)]
+        let mut chain = SparseChain::from_checkpoints(vec![$(($height, $block_hash).into()),*]);
 
-fn gen_update(checkpoints: impl IntoIterator<Item = BlockId>) -> Update {
-    Update {
-        checkpoints: checkpoints
-            .into_iter()
-            .map(|cp| (cp.height, cp.hash))
-            .collect(),
-        txs: [].into(),
-    }
+        $(
+            $(
+                chain.insert_tx($txid, $tx_height).unwrap();
+            )*
+        )?
+
+        chain
+    }};
 }
 
-fn chain_txs(chain: &SparseChain) -> (Vec<(TxHeight, Txid)>, Vec<(TxHeight, Txid)>) {
-    chain
-        .iter_txids()
-        .partition::<Vec<_>, _>(|(h, _)| h.is_confirmed())
+macro_rules! h {
+    ($index:literal) => {{
+        use bitcoin::hashes::Hash;
+        Hash::hash($index.as_bytes())
+    }};
 }
 
-/// TODO: Split into separate tests
+macro_rules! changeset {
+    (
+        checkpoints: [ $(( $height:expr, $cp_from:expr => $cp_to:expr )),* ]
+        $(,txids: [ $(( $txid:expr, $tx_from:expr => $tx_to:expr )),* ])?
+
+    ) => {{
+        use bdk_core::collections::HashMap;
+        #[allow(unused_mut)]
+        ChangeSet {
+            checkpoints: {
+                let mut changes = HashMap::default();
+                $(changes.insert($height, Change { from: $cp_from, to: $cp_to });)*
+                changes
+            },
+            txids: {
+                let mut changes = HashMap::default();
+                $($(changes.insert($txid, Change { from: $tx_from, to: $tx_to });)*)?
+                changes
+            }
+        }
+    }};
+}
+
 #[test]
-fn check_last_valid_rules() {
+fn add_first_checkpoint() {
+    let chain = SparseChain::default();
+    assert_eq!(
+        chain.determine_changeset(&chain!([0, h!("A")])),
+        Ok(changeset! {
+            checkpoints: [(0, None => Some(h!("A")))],
+            txids: []
+        }),
+        "add first tip"
+    );
+}
+
+#[test]
+fn add_second_tip() {
+    let chain = chain!([0, h!("A")]);
+    assert_eq!(
+        chain.determine_changeset(&chain!([0, h!("A")], [1, h!("B")])),
+        Ok(changeset! {
+            checkpoints: [(1, None => Some(h!("B")))],
+            txids: []
+        }),
+        "extend tip by one"
+    );
+}
+
+#[test]
+fn two_disjoint_chains_cannot_merge() {
+    let chain1 = chain!([0, h!("A")]);
+    let chain2 = chain!([1, h!("B")]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Err(UpdateFailure::NotConnected(0))
+    );
+}
+
+#[test]
+fn duplicate_chains_should_merge() {
+    let chain1 = chain!([0, h!("A")]);
+    let chain2 = chain!([0, h!("A")]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(ChangeSet::default())
+    );
+}
+
+#[test]
+fn duplicate_chains_with_txs_should_merge() {
+    let chain1 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    let chain2 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(ChangeSet::default())
+    );
+}
+
+#[test]
+fn duplicate_chains_with_different_txs_should_merge() {
+    let chain1 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    let chain2 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx1"), TxHeight::Confirmed(0))]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [],
+            txids: [(h!("tx1"), None => Some(TxHeight::Confirmed(0)))]
+        })
+    );
+}
+
+#[test]
+fn invalidate_first_and_only_checkpoint_without_tx_changes() {
+    let chain1 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    let chain2 = chain!(checkpoints: [[0,h!("A'")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(0, Some(h!("A")) => Some(h!("A'")))],
+            txids: []
+        })
+    );
+}
+
+#[test]
+fn invalidate_first_and_only_checkpoint_with_tx_move_forward() {
+    let chain1 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    let chain2 = chain!(checkpoints: [[0,h!("A'")],[1, h!("B")]], txids: [(h!("tx0"), TxHeight::Confirmed(1))]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(0, Some(h!("A")) => Some(h!("A'"))), (1, None => Some(h!("B")))],
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(0)) => Some(TxHeight::Confirmed(1)))]
+        })
+    );
+}
+
+#[test]
+fn invalidate_first_and_only_checkpoint_with_tx_move_backward() {
+    let chain1 = chain!(checkpoints: [[1,h!("B")]], txids: [(h!("tx0"), TxHeight::Confirmed(1))]);
+    let chain2 = chain!(checkpoints: [[0,h!("A")],[1, h!("B'")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(0, None => Some(h!("A"))), (1, Some(h!("B")) => Some(h!("B'")))],
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(1)) => Some(TxHeight::Confirmed(0)))]
+        })
+    );
+}
+
+#[test]
+fn invalidate_a_checkpoint_and_try_and_move_tx_when_it_wasnt_within_invalidation() {
+    let chain1 = chain!(checkpoints: [[0, h!("A")], [1, h!("B")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    let chain2 = chain!(checkpoints: [[0, h!("A")], [1, h!("B'")]], txids: [(h!("tx0"), TxHeight::Confirmed(1))]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Err(UpdateFailure::InconsistentTx {
+            inconsistent_txid: h!("tx0"),
+            original_height: TxHeight::Confirmed(0),
+            update_height: TxHeight::Confirmed(1)
+        })
+    );
+}
+
+/// This test doesn't make much sense. We're invalidating a block at height 1 and moving it to
+/// height 0. It should be impossible for it to be at height 1 at any point if it was at height 0
+/// all along.
+#[test]
+fn move_invalidated_tx_into_earlier_checkpoint() {
+    let chain1 = chain!(checkpoints: [[0, h!("A")], [1, h!("B")]], txids: [(h!("tx0"), TxHeight::Confirmed(1))]);
+    let chain2 = chain!(checkpoints: [[0, h!("A")], [1, h!("B'")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(1, Some(h!("B")) => Some(h!("B'")))],
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(1)) => Some(TxHeight::Confirmed(0)))]
+        })
+    );
+}
+
+#[test]
+fn invalidate_first_and_only_checkpoint_with_tx_move_to_mempool() {
+    let chain1 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    let chain2 = chain!(checkpoints: [[0,h!("A'")]], txids: [(h!("tx0"), TxHeight::Unconfirmed)]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(0, Some(h!("A")) => Some(h!("A'")))],
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(0)) => Some(TxHeight::Unconfirmed))]
+        })
+    );
+}
+
+#[test]
+fn confirm_tx_without_extending_chain() {
+    let chain1 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Unconfirmed)]);
+    let chain2 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [],
+            txids: [(h!("tx0"), Some(TxHeight::Unconfirmed) => Some(TxHeight::Confirmed(0)))]
+        })
+    );
+}
+
+#[test]
+fn confirm_tx_backwards_while_extending_chain() {
+    let chain1 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Unconfirmed)]);
+    let chain2 = chain!(checkpoints: [[0,h!("A")],[1,h!("B")]], txids: [(h!("tx0"), TxHeight::Confirmed(0))]);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(1, None => Some(h!("B")))],
+            txids: [(h!("tx0"), Some(TxHeight::Unconfirmed) => Some(TxHeight::Confirmed(0)))]
+        })
+    );
+}
+
+#[test]
+fn confirm_tx_in_new_block() {
+    let chain1 = chain!(checkpoints: [[0,h!("A")]], txids: [(h!("tx0"), TxHeight::Unconfirmed)]);
+    let chain2 = chain! {
+        checkpoints: [[0,h!("A")], [1,h!("B")]],
+        txids: [(h!("tx0"), TxHeight::Confirmed(1))]
+    };
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(1, None => Some(h!("B")))],
+            txids: [(h!("tx0"), Some(TxHeight::Unconfirmed) => Some(TxHeight::Confirmed(1)))]
+        })
+    );
+}
+
+#[test]
+fn merging_mempool_of_empty_chains_doesnt_fail() {
+    let chain1 = chain!(checkpoints: [], txids: [(h!("tx0"), TxHeight::Unconfirmed)]);
+    let chain2 = chain!(checkpoints: [], txids: [(h!("tx1"), TxHeight::Unconfirmed)]);
+
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [],
+            txids: [(h!("tx1"), None => Some(TxHeight::Unconfirmed))]
+        })
+    );
+}
+
+#[test]
+fn cannot_insert_confirmed_tx_without_checkpoints() {
     let mut chain = SparseChain::default();
+    assert_eq!(
+        chain.insert_tx(h!("A"), TxHeight::Confirmed(0)),
+        Err(InsertTxErr::TxTooHigh)
+    );
+}
+
+#[test]
+fn empty_chain_can_add_unconfirmed_transactions() {
+    let chain1 = chain!(checkpoints: [[0, h!("A")]], txids: []);
+    let chain2 = chain!(checkpoints: [], txids: [(h!("tx0"), TxHeight::Unconfirmed)]);
 
     assert_eq!(
-        chain.apply_update(&gen_update([gen_block_id(0, 0)])),
-        Ok(ChangeSet {
-            checkpoints: [(0, Change::new_insertion(gen_hash(0)))].into(),
-            ..Default::default()
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [],
+            txids: [ (h!("tx0"), None => Some(TxHeight::Unconfirmed)) ]
+        })
+    );
+}
+
+#[test]
+fn can_update_with_shorter_chain() {
+    let chain1 = chain!(checkpoints: [[1, h!("B")],[2, h!("C")]], txids: []);
+    let chain2 = chain!(checkpoints: [[1, h!("B")]], txids: [(h!("tx0"), TxHeight::Confirmed(1))]);
+
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [],
+            txids: [(h!("tx0"), None => Some(TxHeight::Confirmed(1)))]
+        })
+    )
+}
+
+#[test]
+fn can_introduce_older_checkpoints() {
+    let chain1 = chain!(checkpoints: [[2, h!("C")], [3, h!("D")]], txids: []);
+    let chain2 = chain!(checkpoints: [[1, h!("B")], [2, h!("C")]], txids: []);
+
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(1, None => Some(h!("B")))],
+            txids: []
+        })
+    );
+}
+
+#[test]
+fn fix_blockhash_before_agreement_point() {
+    let chain1 = chain!([0, h!("im-wrong")], [1, h!("we-agree")]);
+    let chain2 = chain!([0, h!("fix")], [1, h!("we-agree")]);
+
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(0, Some(h!("im-wrong")) => Some(h!("fix")))],
+            txids: []
+        })
+    )
+}
+
+/// B and C are in both chain and update
+/// ```
+///        | 0 | 1 | 2 | 3 | 4
+/// chain  |     B   C
+/// update | A   B   C   D
+/// ```
+/// This should succeed with the point of agreement being C and A should be added in addition.
+#[test]
+fn two_points_of_agreement() {
+    let chain1 = chain!([1, h!("B")], [2, h!("C")]);
+    let chain2 = chain!([0, h!("A")], [1, h!("B")], [2, h!("C")], [3, h!("D")]);
+
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(0, None => Some(h!("A"))), (3, None => Some(h!("D")))]
         }),
-        "add first tip should succeed",
-    );
-
-    assert_eq!(
-        chain.apply_update(&gen_update([gen_block_id(0, 0), gen_block_id(1, 1)])),
-        Ok(ChangeSet {
-            checkpoints: [(1, Change::new_insertion(gen_hash(1)))].into(),
-            ..Default::default()
-        }),
-        "applying second tip on top of first should succeed"
-    );
-
-    assert_eq!(
-        chain.apply_update(&gen_update([gen_block_id(2, 2)])),
-        Err(UpdateFailure::NotConnected),
-        "applying tip without specifying last valid should fail",
-    );
-
-    assert_eq!(
-        chain.apply_update(&gen_update([gen_block_id(1, 2), gen_block_id(3, 3,)])),
-        Err(UpdateFailure::NotConnected),
-        "apply tip, while specifying non-existant last_valid should fail",
-    );
-
-    assert_eq!(
-        chain.apply_update(&gen_update([
-            gen_block_id(0, 100),
-            gen_block_id(1, 101),
-            gen_block_id(10, 10)
-        ])),
-        Ok(ChangeSet {
-            checkpoints: [
-                (0, Change::new_alteration(gen_hash(0), gen_hash(100))),
-                (1, Change::new_alteration(gen_hash(1), gen_hash(101))),
-                (10, Change::new_insertion(gen_hash(10))),
-            ]
-            .into(),
-            ..Default::default()
-        }),
-        "this update should empty the chain before introducing new checkpoints",
-    );
-
-    assert_eq!(
-        chain.apply_update(&gen_update([
-            gen_block_id(10, 10), // last valid
-            gen_block_id(4, 4),
-            gen_block_id(3, 3)
-        ])),
-        Ok(ChangeSet {
-            checkpoints: [
-                (3, Change::new_insertion(gen_hash(3))),
-                (4, Change::new_insertion(gen_hash(4))),
-            ]
-            .into(),
-            txids: [].into()
-        }),
-        "arbitary block can be introduced when last_valid exists"
-    );
-
-    assert_eq!(
-        chain.apply_update(&gen_update([gen_block_id(5, 5), gen_block_id(9, 9)])),
-        Err(UpdateFailure::NotConnected),
-        "arbitary blocks cannot be introduced with no connection",
-    );
-
-    assert_eq!(
-        chain.apply_update(&gen_update([gen_block_id(5, 5), gen_block_id(11, 11)])),
-        Err(UpdateFailure::NotConnected),
-        "arbitary blocks cannot be introduced with no connection (2)",
     );
 }
 
@@ -110,307 +346,134 @@ fn check_last_valid_rules() {
 /// This should fail as we cannot figure out whether C & D are on the same chain
 #[test]
 fn update_and_chain_does_not_connect() {
-    let mut chain = SparseChain::default();
+    let chain1 = chain!([1, h!("B")], [2, h!("C")]);
+    let chain2 = chain!([0, h!("A")], [1, h!("B")], [3, h!("D")]);
 
     assert_eq!(
-        chain.apply_update(&gen_update([gen_block_id(1, 1), gen_block_id(2, 2)])),
-        Ok(ChangeSet {
-            checkpoints: [
-                (1, Change::new_insertion(gen_hash(1))),
-                (2, Change::new_insertion(gen_hash(2)))
-            ]
-            .into(),
-            ..Default::default()
-        }),
-    );
-
-    assert_eq!(
-        chain.apply_update(&gen_update([
-            gen_block_id(0, 0),
-            gen_block_id(1, 1),
-            gen_block_id(3, 3)
-        ])),
-        Err(UpdateFailure::NotConnected),
+        chain1.determine_changeset(&chain2),
+        Err(UpdateFailure::NotConnected(2)),
     );
 }
 
+/// Transient invalidation:
+/// ```
+///        | 0 | 1 | 2 | 3 | 4 | 5
+/// chain  | A       B   C       E
+/// update | A       B'  C'  D
+/// ```
+/// This should succeed and invalidate B,C and E with point of agreement being A.
+/// It should also invalidate transactions at height 1.
 #[test]
-fn apply_tips() {
-    let mut chain = SparseChain::default();
-
-    // gen 10 checkpoints
-    let mut last_valid = None;
-    for i in 0..10 {
-        let new_tip = gen_block_id(i, i as _);
-        chain
-            .apply_update(&gen_update(
-                last_valid.iter().chain(core::iter::once(&new_tip)).cloned(),
-            ))
-            .expect("should succeed");
-        last_valid = Some(new_tip);
-    }
-
-    // repeated last tip should succeed
-    assert_eq!(
-        chain
-            .apply_update(&gen_update(last_valid))
-            .expect("repeated last_tip should succeed"),
-        ChangeSet::default(),
-    );
-
-    // ensure state of sparsechain is correct
-    chain
-        .range_checkpoints(..)
-        .zip(0..)
-        .for_each(|(block_id, exp_height)| {
-            assert_eq!(block_id, gen_block_id(exp_height, exp_height as _))
-        });
-}
-
-#[test]
-fn checkpoint_limit_is_respected() {
-    let mut chain = SparseChain::default();
-    chain.set_checkpoint_limit(Some(5));
-
-    // gen 10 checkpoints
-    let mut last_valid = None;
-    for i in 0..10 {
-        let new_tip = gen_block_id(i, i as _);
-
-        let changes = chain
-            .apply_update(&Update {
-                txs: [(gen_txid(i as _).into(), TxHeight::Confirmed(i))].into(),
-                ..gen_update(last_valid.iter().chain(core::iter::once(&new_tip)).cloned())
-            })
-            .expect("should succeed");
-
-        assert_eq!(
-            changes,
-            ChangeSet {
-                // TODO: Figure out whether checkpoint pruning should be represented in changeset
-                checkpoints: //if i < 5 {
-                    [(i, Change::new_insertion(gen_hash(i as _)))].into(),
-                // } else {
-                //     [
-                //         (i, Change::new_insertion(gen_hash(i as _))),
-                //         (i - 5, Change::new_removal(gen_hash((i - 5) as _))),
-                //     ]
-                //     .into()
-                // },
-                txids: [(
-                    gen_hash(i as _),
-                    Change::new_insertion(TxHeight::Confirmed(i))
-                )]
-                .into(),
-            }
-        );
-
-        last_valid = Some(new_tip);
-    }
-
-    assert_eq!(chain.iter_txids().count(), 10);
-    assert_eq!(chain.range_checkpoints(..).count(), 5);
-}
-
-#[test]
-fn add_txids() {
-    let mut chain = SparseChain::default();
-
-    let update = Update {
-        txs: (0..100)
-            .map(gen_hash::<Txid>)
-            .map(|txid| (txid.into(), TxHeight::Confirmed(1)))
-            .collect(),
-        ..gen_update([gen_block_id(1, 1)])
+fn transitive_invalidation_applies_to_checkpoints_higher_than_invalidation() {
+    let chain1 = chain! {
+        checkpoints: [[0, h!("A")], [2, h!("B")], [3, h!("C")], [5, h!("E")]],
+        txids: [
+            (h!("a"), TxHeight::Confirmed(0)),
+            (h!("b1"), TxHeight::Confirmed(1)),
+            (h!("b2"), TxHeight::Confirmed(2)),
+            (h!("d"), TxHeight::Confirmed(3)),
+            (h!("e"), TxHeight::Confirmed(5))
+        ]
+    };
+    let chain2 = chain! {
+        checkpoints: [[0, h!("A")], [2, h!("B'")], [3, h!("C'")], [4, h!("D")]],
+        txids: [(h!("b1"), TxHeight::Confirmed(4)), (h!("b2"), TxHeight::Confirmed(3))]
     };
 
     assert_eq!(
-        chain.apply_update(&update),
-        Ok(ChangeSet {
-            checkpoints: [(1, Change::new_insertion(gen_hash(1)))].into(),
-            txids: update
-                .txs
-                .iter()
-                .map(|(txid, height)| (txid.txid(), Change::new_insertion(*height)))
-                .collect(),
-        }),
-        "add many txs in single checkpoint should succeed",
-    );
-
-    assert_eq!(
-        chain
-            .apply_update(&Update {
-                txs: [(gen_txid(2).into(), TxHeight::Confirmed(3))].into(),
-                ..gen_update([gen_block_id(1, 1), gen_block_id(2, 2)])
-            })
-            .expect_err("update that adds tx with height greater than hew tip should fail"),
-        UpdateFailure::Bogus(BogusReason::TxHeightGreaterThanTip {
-            txid: gen_hash(2),
-            tx_height: 3,
-            tip_height: 2,
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [
+                (2, Some(h!("B")) => Some(h!("B'"))),
+                (3, Some(h!("C")) => Some(h!("C'"))),
+                (4, None => Some(h!("D"))),
+                (5, Some(h!("E")) => None)
+            ],
+            txids: [
+                (h!("b1"), Some(TxHeight::Confirmed(1)) => Some(TxHeight::Confirmed(4))),
+                (h!("b2"), Some(TxHeight::Confirmed(2)) => Some(TxHeight::Confirmed(3))),
+                (h!("d"), Some(TxHeight::Confirmed(3)) => None),
+                (h!("e"), Some(TxHeight::Confirmed(5)) => None)
+            ]
         })
     );
 }
 
+/// Transient invalidation:
+/// ```
+///        | 0 | 1 | 2 | 3 | 4
+/// chain  |     B   C       E
+/// update |     B'  C'  D
+/// ```
+///
+/// This should succeed and invalidate B, C and E with no point of agreement
 #[test]
-fn add_txs_of_same_height_with_different_updates() {
-    let mut chain = SparseChain::default();
-    let block = gen_block_id(0, 0);
+fn transitive_invalidation_applies_to_checkpoints_higher_than_invalidation_no_point_of_agreement() {
+    let chain1 = chain!([1, h!("B")], [2, h!("C")], [4, h!("E")]);
+    let chain2 = chain!([1, h!("B'")], [2, h!("C'")], [3, h!("D")]);
 
-    // add one block
     assert_eq!(
-        chain.apply_update(&gen_update([block])),
-        Ok(ChangeSet {
-            checkpoints: [(0, Change::new_insertion(gen_hash(0)))].into(),
-            ..Default::default()
-        }),
-        "should succeed",
-    );
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [
+                (1, Some(h!("B")) => Some(h!("B'"))),
+                (2, Some(h!("C")) => Some(h!("C'"))),
+                (3, None => Some(h!("D"))),
+                (4, Some(h!("E")) => None)
+            ]
+        })
+    )
+}
 
-    // add txs of same height with different updates
-    (0..100).for_each(|i| {
-        assert_eq!(
-            chain
-                .apply_update(&Update {
-                    txs: [(gen_txid(i as _).into(), TxHeight::Confirmed(0))].into(),
-                    ..gen_update([block])
-                })
-                .expect("should succeed"),
-            ChangeSet {
-                txids: [(
-                    gen_hash(i as _),
-                    Change::new_insertion(TxHeight::Confirmed(0))
-                )]
-                .into(),
-                ..Default::default()
-            }
-        );
-    });
+/// Transient invalidation:
+/// ```
+///        | 0 | 1 | 2 | 3 | 4
+/// chain  | A   B   C       E
+/// update |     B'  C'  D
+/// ```
+///
+/// This should fail since although it tells us that B and C are invalid it doesn't tell us whether
+/// A was invalid.
+#[test]
+fn invalidation_but_no_connection() {
+    let chain1 = chain!([0, h!("A")], [1, h!("B")], [2, h!("C")], [4, h!("E")]);
+    let chain2 = chain!([1, h!("B'")], [2, h!("C'")], [3, h!("D")]);
 
-    assert_eq!(chain.iter_txids().count(), 100);
-    assert_eq!(chain.range_checkpoints(..).count(), 1);
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Err(UpdateFailure::NotConnected(0))
+    )
 }
 
 #[test]
-fn confirm_tx() {
-    let mut chain = SparseChain::default();
+fn checkpoint_limit_is_respected() {
+    let mut chain1 = SparseChain::default();
+    chain1
+        .apply_update(&chain!(
+            [1, h!("A")],
+            [2, h!("B")],
+            [3, h!("C")],
+            [4, h!("D")],
+            [5, h!("E")]
+        ))
+        .unwrap();
+
+    assert_eq!(chain1.checkpoints().len(), 5);
+    chain1.set_checkpoint_limit(Some(4));
+    assert_eq!(chain1.checkpoints().len(), 4);
+
+    chain1
+        .insert_checkpoint(BlockId {
+            height: 6,
+            hash: h!("F"),
+        })
+        .unwrap();
+    assert_eq!(chain1.checkpoints().len(), 4);
 
     assert_eq!(
-        chain
-            .apply_update(&Update {
-                txs: [
-                    (gen_txid(10).into(), TxHeight::Unconfirmed),
-                    (gen_txid(20).into(), TxHeight::Unconfirmed),
-                ]
-                .into(),
-                ..gen_update([gen_block_id(1, 1)])
-            })
-            .expect("adding two txs from mempool should succeed"),
-        ChangeSet {
-            checkpoints: [(1, Change::new_insertion(gen_hash(1)))].into(),
-            txids: [
-                (gen_hash(10), Change::new_insertion(TxHeight::Unconfirmed)),
-                (gen_hash(20), Change::new_insertion(TxHeight::Unconfirmed))
-            ]
-            .into()
-        }
+        chain1.apply_update(&chain!([6, h!("F")], [7, h!("G")])),
+        Ok(changeset!(checkpoints: [(7, None => Some(h!("G")))]))
     );
 
-    assert_eq!(
-        chain
-            .apply_update(&Update {
-                txs: [(gen_txid(10).into(), TxHeight::Confirmed(0))].into(),
-                ..gen_update([gen_block_id(1, 1), gen_block_id(1, 1)])
-            })
-            .expect("it should be okay to confirm tx into block before last_valid (partial sync)"),
-        ChangeSet {
-            txids: [(
-                gen_hash(10),
-                Change::new(Some(TxHeight::Unconfirmed), Some(TxHeight::Confirmed(0)))
-            )]
-            .into(),
-            ..Default::default()
-        }
-    );
-    let (confirmed, unconfirmed) = chain_txs(&chain);
-    assert_eq!(confirmed.len(), 1);
-    assert_eq!(unconfirmed.len(), 1);
-
-    assert_eq!(
-        chain
-            .apply_update(&Update {
-                txs: [(gen_txid(20).into(), TxHeight::Confirmed(2))].into(),
-                ..gen_update([gen_block_id(1, 1), gen_block_id(2, 2)])
-            })
-            .expect("it should be okay to confirm tx into the tip introduced"),
-        ChangeSet {
-            checkpoints: [(2, Change::new_insertion(gen_hash(2)))].into(),
-            txids: [(
-                gen_hash(20),
-                Change::new(Some(TxHeight::Unconfirmed), Some(TxHeight::Confirmed(2)))
-            )]
-            .into(),
-        }
-    );
-    let (confirmed, unconfirmed) = chain_txs(&chain);
-    assert_eq!(confirmed.len(), 2);
-    assert_eq!(unconfirmed.len(), 0);
-
-    assert_eq!(
-        chain
-            .apply_update(&Update {
-                txs: [(gen_txid(10).into(), TxHeight::Unconfirmed)].into(),
-                ..gen_update([gen_block_id(2, 2), gen_block_id(2, 2)])
-            })
-            .expect_err("tx cannot be unconfirmed without invalidate"),
-        UpdateFailure::Inconsistent {
-            inconsistent_txid: gen_hash(10),
-            original_height: TxHeight::Confirmed(0),
-            update_height: TxHeight::Unconfirmed,
-        }
-    );
-
-    assert_eq!(
-        chain
-            .apply_update(&Update {
-                txs: [(gen_txid(20).into(), TxHeight::Confirmed(3))].into(),
-                ..gen_update([gen_block_id(2, 2), gen_block_id(3, 3)])
-            })
-            .expect_err("tx cannot move forward in blocks without invalidate"),
-        UpdateFailure::Inconsistent {
-            inconsistent_txid: gen_hash(20),
-            original_height: TxHeight::Confirmed(2),
-            update_height: TxHeight::Confirmed(3),
-        },
-    );
-
-    assert_eq!(
-        chain
-            .apply_update(&Update {
-                txs: [(gen_txid(20).into(), TxHeight::Confirmed(1))].into(),
-                ..gen_update([gen_block_id(2, 2), gen_block_id(3, 3)])
-            })
-            .expect_err("tx cannot move backwards in blocks without invalidate"),
-        UpdateFailure::Inconsistent {
-            inconsistent_txid: gen_hash(20),
-            original_height: TxHeight::Confirmed(2),
-            update_height: TxHeight::Confirmed(1),
-        },
-    );
-
-    assert_eq!(
-        chain
-            .apply_update(&Update {
-                txs: [(gen_txid(20).into(), TxHeight::Confirmed(2))].into(),
-                ..gen_update([gen_block_id(2, 2), gen_block_id(3, 3)])
-            })
-            .expect("update can introduce already-existing tx"),
-        ChangeSet {
-            checkpoints: [(3, Change::new_insertion(gen_hash(3)))].into(),
-            ..Default::default()
-        }
-    );
-    let (confirmed, unconfirmed) = chain_txs(&chain);
-    assert_eq!(confirmed.len(), 2);
-    assert_eq!(unconfirmed.len(), 0);
+    assert_eq!(chain1.checkpoints().len(), 4);
 }

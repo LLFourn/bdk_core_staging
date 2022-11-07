@@ -311,7 +311,7 @@ where
     }?
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "miniscript"))]
 mod test {
     use bitcoin::secp256k1::Secp256k1;
 
