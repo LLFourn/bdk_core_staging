@@ -90,7 +90,7 @@ fn two_disjoint_chains_cannot_merge() {
     let chain2 = chain!([1, h!(1)]);
     assert_eq!(
         chain1.determine_changeset(&chain2),
-        Err(UpdateFailure::NotConnected)
+        Err(UpdateFailure::NotConnected(0))
     );
 }
 
@@ -291,7 +291,7 @@ fn fix_blockhash_before_agreement_point() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(0, Some(h!(0)) => Some(h!(1)))],
+            checkpoints: [(0, Some(h!(0)) => Some(h!(9)))],
             txids: []
         })
     )

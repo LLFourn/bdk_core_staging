@@ -52,8 +52,9 @@ impl std::error::Error for InsertCheckpointErr {}
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateFailure {
     /// The [`Update`] cannot be applied to this [`SparseChain`] because the chain suffix it
-    /// represents did not connect to the existing chain.
-    NotConnected,
+    /// represents did not connect to the existing chain. This error case contains the checkpoint
+    /// height to include so that the chains can connect.
+    NotConnected(u32),
     /// The [`Update`] canot be applied, because there are inconsistent tx states.
     /// This only reports the first inconsistency.
     InconsistentTx {
@@ -66,7 +67,9 @@ pub enum UpdateFailure {
 impl core::fmt::Display for UpdateFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NotConnected  => write!(f, "the checkpoints in the update could not be connected to the checkpoints in the chain"),
+            Self::NotConnected(h) =>
+                write!(f, "the checkpoints in the update could not be connected to the checkpoints in the chain, try include checkpoint of height {} to connect",
+                    h),
             Self::InconsistentTx { inconsistent_txid, original_height, update_height } =>
                 write!(f, "inconsistent update: first inconsistent tx is ({}) which had confirmation height ({}), but is ({}) in the update", 
                     inconsistent_txid, original_height, update_height),
@@ -173,7 +176,7 @@ impl SparseChain {
         // the first checkpoint to invalidate (if any) should be represented in the update
         if let Some(first_invalid) = first_invalid {
             if !update.checkpoints.contains_key(&first_invalid) {
-                return Err(UpdateFailure::NotConnected);
+                return Err(UpdateFailure::NotConnected(first_invalid));
             }
         }
 
