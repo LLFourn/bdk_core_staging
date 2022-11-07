@@ -235,7 +235,10 @@ fn merging_mempool_of_empty_chains_doesnt_fail() {
 #[test]
 fn cannot_insert_confirmed_tx_without_checkpoints() {
     let mut chain = SparseChain::default();
-    assert_eq!(chain.insert_tx(h!(0), TxHeight::Confirmed(0)), Err(InsertTxErr::TxTooHigh));
+    assert_eq!(
+        chain.insert_tx(h!(0), TxHeight::Confirmed(0)),
+        Err(InsertTxErr::TxTooHigh)
+    );
 }
 
 #[test]
@@ -248,7 +251,8 @@ fn empty_chain_can_add_unconfirmed_transactions() {
         Ok(changeset! {
             checkpoints: [],
             txids: [ (h!(0), None => Some(TxHeight::Unconfirmed)) ]
-        }));
+        })
+    );
 }
 
 #[test]
@@ -261,6 +265,34 @@ fn can_update_with_shorter_chain() {
         Ok(changeset! {
             checkpoints: [],
             txids: [(h!(0), None => Some(TxHeight::Confirmed(1)))]
+        })
+    )
+}
+
+#[test]
+fn can_introduce_older_checkpoints() {
+    let chain1 = chain!(checkpoints: [[2, h!(2)], [3, h!(3)]], txids: []);
+    let chain2 = chain!(checkpoints: [[1, h!(1)], [2, h!(2)]], txids: []);
+
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(1, None => Some(h!(1)))],
+            txids: []
+        })
+    );
+}
+
+#[test]
+fn fix_blockhash_before_agreement_point() {
+    let chain1 = chain!(checkpoints: [[0, h!(0)], [1, h!(1)]], txids: []);
+    let chain2 = chain!(checkpoints: [[0, h!(9)], [1, h!(1)]], txids: []);
+
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [(0, Some(h!(0)) => Some(h!(1)))],
+            txids: []
         })
     )
 }

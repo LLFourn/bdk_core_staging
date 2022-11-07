@@ -52,11 +52,10 @@ impl std::error::Error for InsertCheckpointErr {}
 pub enum UpdateFailure {
     /// The [`Update`] cannot be applied to this [`SparseChain`] because the chain suffix it
     /// represents did not connect to the existing chain.
-    /// TODO: Add last_valid and invalid_from?
     NotConnected,
     /// The [`Update`] canot be applied, because there are inconsistent tx states.
     /// This only reports the first inconsistency.
-    Inconsistent {
+    InconsistentTx {
         inconsistent_txid: Txid,
         original_height: TxHeight,
         update_height: TxHeight,
@@ -67,7 +66,7 @@ impl core::fmt::Display for UpdateFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NotConnected  => write!(f, "the checkpoints in the update could not be connected to the checkpoints in the chain"),
-            Self::Inconsistent { inconsistent_txid, original_height, update_height } =>
+            Self::InconsistentTx { inconsistent_txid, original_height, update_height } =>
                 write!(f, "inconsistent update: first inconsistent tx is ({}) which had confirmation height ({}), but is ({}) in the update", 
                     inconsistent_txid, original_height, update_height),
         }
@@ -140,17 +139,22 @@ impl SparseChain {
     }
 
     pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet, UpdateFailure> {
-        let last_valid = update
+        let agreement_point = update
             .checkpoints
             .iter()
             .rev()
             .find(|&(height, hash)| self.checkpoints.get(height) == Some(hash))
             .map(|(&h, _)| h);
 
+        let last_update_cp = update.checkpoints.iter().last().map(|(&h, _)| h);
+
         // checkpoints of this height and after are to be invalidated
-        let invalid_from = match update.checkpoints.is_empty() {
-            true => u32::MAX,
-            false => last_valid.map(|h| h + 1).unwrap_or(0),
+        let invalid_from = if last_update_cp.is_none() || last_update_cp == agreement_point {
+            // if agreement point is the last update checkpoint, or there is no update checkpoints,
+            // no invalidation is required
+            u32::MAX
+        } else {
+            agreement_point.map(|h| h + 1).unwrap_or(0)
         };
 
         // the first checkpoint of the sparsechain to invalidate (if any)
@@ -172,7 +176,7 @@ impl SparseChain {
             // to be invalidated, or originally unconfirmed)
             if let Some(&old_height) = self.txid_to_index.get(txid) {
                 if old_height < TxHeight::Confirmed(invalid_from) && tx_height != &old_height {
-                    return Err(UpdateFailure::Inconsistent {
+                    return Err(UpdateFailure::InconsistentTx {
                         inconsistent_txid: *txid,
                         original_height: old_height,
                         update_height: *tx_height,
@@ -293,7 +297,12 @@ impl SparseChain {
     /// Insert an arbitary txid. This assumes that we have at least one checkpoint and the tx does
     /// not already exist in [`SparseChain`]. Returns a [`ChangeSet`] on success.
     pub fn insert_tx(&mut self, txid: Txid, height: TxHeight) -> Result<bool, InsertTxErr> {
-        let latest = self.checkpoints.keys().last().cloned().map(TxHeight::Confirmed);
+        let latest = self
+            .checkpoints
+            .keys()
+            .last()
+            .cloned()
+            .map(TxHeight::Confirmed);
 
         if height.is_confirmed() && (latest.is_none() || height > latest.unwrap()) {
             return Err(InsertTxErr::TxTooHigh);
