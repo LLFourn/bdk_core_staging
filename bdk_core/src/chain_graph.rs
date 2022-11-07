@@ -1,6 +1,11 @@
+use core::borrow::Borrow;
+
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
-use crate::{BlockId, InsertCheckpointErr, InsertTxErr, SparseChain, TxGraph, TxHeight};
+use crate::{
+    BlockId, ChangeSet, InsertCheckpointErr, InsertTxErr, SparseChain, TxGraph, TxHeight,
+    UpdateFailure,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct ChainGraph {
@@ -39,6 +44,30 @@ impl ChainGraph {
     }
 
     pub fn graph(&self) -> &TxGraph {
+        &self.graph
+    }
+
+    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet, UpdateFailure> {
+        let changeset = self.chain.determine_changeset(update)?;
+        changeset
+            .tx_additions()
+            .map(|new_txid| update.graph.tx(new_txid).expect("tx should exist"))
+            .for_each(|tx| {
+                self.graph.insert_tx(tx);
+            });
+        self.chain.apply_changeset(&changeset);
+        Ok(changeset)
+    }
+}
+
+impl Borrow<SparseChain> for ChainGraph {
+    fn borrow(&self) -> &SparseChain {
+        &self.chain
+    }
+}
+
+impl Borrow<TxGraph> for ChainGraph {
+    fn borrow(&self) -> &TxGraph {
         &self.graph
     }
 }

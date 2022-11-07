@@ -1,4 +1,5 @@
 use core::{
+    borrow::Borrow,
     fmt::Display,
     ops::{Bound, RangeBounds},
 };
@@ -138,7 +139,12 @@ impl SparseChain {
         }
     }
 
-    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet, UpdateFailure> {
+    pub fn determine_changeset<U>(&self, update: &U) -> Result<ChangeSet, UpdateFailure>
+    where
+        U: Borrow<Self>,
+    {
+        let update: &Self = update.borrow();
+
         let agreement_point = update
             .checkpoints
             .iter()
@@ -238,7 +244,10 @@ impl SparseChain {
 
     /// Applies a new [`Update`] to the tracker.
     #[must_use]
-    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet, UpdateFailure> {
+    pub fn apply_update<U>(&mut self, update: &U) -> Result<ChangeSet, UpdateFailure>
+    where
+        U: Borrow<Self>,
+    {
         let changeset = self.determine_changeset(update)?;
         self.apply_changeset(&changeset);
         Ok(changeset)
