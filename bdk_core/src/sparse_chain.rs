@@ -78,6 +78,16 @@ impl core::fmt::Display for UpdateFailure {
 impl std::error::Error for UpdateFailure {}
 
 impl SparseChain {
+    /// Creates a new chain from a list of blocks. The caller must guarantee they are in the same
+    /// chain.
+    pub fn from_checkpoints(checkpoints: impl IntoIterator<Item = BlockId>) -> Self {
+        let mut chain = Self::default();
+        chain.checkpoints = checkpoints
+            .into_iter()
+            .map(|block_id| block_id.into())
+            .collect();
+        chain
+    }
     /// Get the BlockId for the last known tip.
     pub fn latest_checkpoint(&self) -> Option<BlockId> {
         self.checkpoints
@@ -283,9 +293,9 @@ impl SparseChain {
     /// Insert an arbitary txid. This assumes that we have at least one checkpoint and the tx does
     /// not already exist in [`SparseChain`]. Returns a [`ChangeSet`] on success.
     pub fn insert_tx(&mut self, txid: Txid, height: TxHeight) -> Result<bool, InsertTxErr> {
-        let latest: TxHeight = self.checkpoints.keys().last().cloned().into();
+        let latest = self.checkpoints.keys().last().cloned().map(TxHeight::Confirmed);
 
-        if height.is_confirmed() && height > latest {
+        if height.is_confirmed() && (latest.is_none() || height > latest.unwrap()) {
             return Err(InsertTxErr::TxTooHigh);
         }
 

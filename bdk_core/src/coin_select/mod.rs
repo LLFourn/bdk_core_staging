@@ -141,7 +141,7 @@ pub mod evaluate_cs {
     impl<'a> std::error::Error for EvaluationFailure<'a> {}
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "miniscript"))]
 pub mod tester {
     use super::*;
     use bitcoin::{

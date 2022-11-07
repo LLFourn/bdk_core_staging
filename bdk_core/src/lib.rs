@@ -79,6 +79,12 @@ impl From<(u32, BlockHash)> for BlockId {
     }
 }
 
+impl From<BlockId> for (u32, BlockHash) {
+    fn from(block_id: BlockId) -> Self {
+        (block_id.height, block_id.hash)
+    }
+}
+
 impl From<(&u32, &BlockHash)> for BlockId {
     fn from((height, hash): (&u32, &BlockHash)) -> Self {
         Self {
@@ -116,25 +122,4 @@ pub mod collections {
 pub enum PrevOuts {
     Coinbase,
     Spend(Vec<TxOut>),
-}
-
-pub mod testing {
-    use bitcoin::{hashes::Hash, Txid};
-
-    use crate::BlockId;
-
-    pub fn gen_hash<H: Hash>(n: u64) -> H {
-        Hash::hash(&n.to_le_bytes()[..])
-    }
-
-    pub fn gen_txid(n: u64) -> Txid {
-        gen_hash(n)
-    }
-
-    pub fn gen_block_id(height: u32, hash_n: u64) -> BlockId {
-        BlockId {
-            height,
-            hash: gen_hash(hash_n),
-        }
-    }
 }
