@@ -344,6 +344,7 @@ impl SparseChain {
         }
 
         self.checkpoints.insert(block_id.height, block_id.hash);
+        self.prune_checkpoints();
         Ok(true)
     }
 
@@ -397,6 +398,7 @@ impl SparseChain {
 
     pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
         self.checkpoint_limit = limit;
+        self.prune_checkpoints();
     }
 
     fn prune_checkpoints(&mut self) -> Option<BTreeMap<u32, BlockHash>> {
