@@ -1,19 +1,30 @@
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
+use core::fmt::Debug;
 
 use crate::{
-    BlockId, ChangeSet, InsertCheckpointErr, InsertTxErr, SparseChain, TxData, TxGraph,
+    BlockId, ChangeSet, InsertCheckpointErr, InsertTxErr, SparseChain, TxData, TxGraph, TxHeight,
     UpdateFailure,
 };
 
 #[derive(Clone, Debug, Default)]
-pub struct ChainGraph<D> {
+pub struct ChainGraph<D = ()> {
     chain: SparseChain<D>,
     graph: TxGraph,
 }
 
-impl<D: Clone + core::fmt::Debug + Default + Ord> ChainGraph<D> {
-    pub fn insert_tx(&mut self, tx: Transaction, data: TxData<D>) -> Result<bool, InsertTxErr> {
-        let changed = self.chain.insert_tx(tx.txid(), data)?;
+impl<D: Clone + Debug + Default + Ord> ChainGraph<D> {
+    pub fn insert_tx(&mut self, tx: Transaction, height: TxHeight) -> Result<bool, InsertTxErr> {
+        self.insert_tx_with_additional_data(tx, height.into())
+    }
+
+    pub fn insert_tx_with_additional_data(
+        &mut self,
+        tx: Transaction,
+        additional_data: TxData<D>,
+    ) -> Result<bool, InsertTxErr> {
+        let changed = self
+            .chain
+            .insert_tx_with_additional_data(tx.txid(), additional_data)?;
         self.graph.insert_tx(&tx);
         Ok(changed)
     }
@@ -22,15 +33,35 @@ impl<D: Clone + core::fmt::Debug + Default + Ord> ChainGraph<D> {
         &mut self,
         outpoint: OutPoint,
         txout: TxOut,
-        data: TxData<D>,
+        height: TxHeight,
     ) -> Result<bool, InsertTxErr> {
-        let changed = self.chain.insert_tx(outpoint.txid, data)?;
+        self.insert_output_with_additional_data(outpoint, txout, height.into())
+    }
+
+    pub fn insert_output_with_additional_data(
+        &mut self,
+        outpoint: OutPoint,
+        txout: TxOut,
+        additional_data: TxData<D>,
+    ) -> Result<bool, InsertTxErr> {
+        let changed = self
+            .chain
+            .insert_tx_with_additional_data(outpoint.txid, additional_data)?;
         self.graph.insert_txout(outpoint, txout);
         Ok(changed)
     }
 
-    pub fn insert_txid(&mut self, txid: Txid, data: TxData<D>) -> Result<bool, InsertTxErr> {
-        self.chain.insert_tx(txid, data)
+    pub fn insert_txid(&mut self, txid: Txid, height: TxHeight) -> Result<bool, InsertTxErr> {
+        self.insert_txid_with_additional_data(txid, height.into())
+    }
+
+    pub fn insert_txid_with_additional_data(
+        &mut self,
+        txid: Txid,
+        additional_data: TxData<D>,
+    ) -> Result<bool, InsertTxErr> {
+        self.chain
+            .insert_tx_with_additional_data(txid, additional_data)
     }
 
     pub fn insert_checkpoint(&mut self, block_id: BlockId) -> Result<bool, InsertCheckpointErr> {

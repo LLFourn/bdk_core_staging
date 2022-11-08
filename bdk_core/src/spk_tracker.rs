@@ -87,7 +87,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
                     txout: txout.clone(),
                     height: data.height,
                     spent_by: Default::default(),
-                    data: data.data,
+                    additional_data: data.additional,
                 },
             ))
         })

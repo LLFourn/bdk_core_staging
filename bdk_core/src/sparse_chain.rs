@@ -1,5 +1,5 @@
 use core::{
-    fmt::Display,
+    fmt::{Debug, Display},
     ops::{Bound, RangeBounds},
 };
 
@@ -7,7 +7,7 @@ use crate::{collections::*, BlockId, TxGraph, Vec};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, TxOut, Txid};
 
 #[derive(Clone, Debug, Default)]
-pub struct SparseChain<D> {
+pub struct SparseChain<D = ()> {
     /// Block height to checkpoint data.
     checkpoints: BTreeMap<u32, BlockHash>,
     /// Txids prepended by confirmation height.
@@ -79,7 +79,7 @@ impl core::fmt::Display for UpdateFailure {
 #[cfg(feature = "std")]
 impl std::error::Error for UpdateFailure {}
 
-impl<D: Clone + core::fmt::Debug + Default + Ord> SparseChain<D> {
+impl<D: Clone + Debug + Default + Ord> SparseChain<D> {
     /// Creates a new chain from a list of blocks. The caller must guarantee they are in the same
     /// chain.
     pub fn from_checkpoints(checkpoints: impl IntoIterator<Item = BlockId>) -> Self {
@@ -301,7 +301,15 @@ impl<D: Clone + core::fmt::Debug + Default + Ord> SparseChain<D> {
 
     /// Insert an arbitary txid. This assumes that we have at least one checkpoint and the tx does
     /// not already exist in [`SparseChain`]. Returns a [`ChangeSet`] on success.
-    pub fn insert_tx(&mut self, txid: Txid, data: TxData<D>) -> Result<bool, InsertTxErr> {
+    pub fn insert_tx(&mut self, txid: Txid, height: TxHeight) -> Result<bool, InsertTxErr> {
+        self.insert_tx_with_additional_data(txid, height.into())
+    }
+
+    pub fn insert_tx_with_additional_data(
+        &mut self,
+        txid: Txid,
+        additional_data: TxData<D>,
+    ) -> Result<bool, InsertTxErr> {
         let latest = self
             .checkpoints
             .keys()
@@ -309,20 +317,22 @@ impl<D: Clone + core::fmt::Debug + Default + Ord> SparseChain<D> {
             .cloned()
             .map(TxHeight::Confirmed);
 
-        if data.height.is_confirmed() && (latest.is_none() || data.height > latest.unwrap()) {
+        if additional_data.height.is_confirmed()
+            && (latest.is_none() || additional_data.height > latest.unwrap())
+        {
             return Err(InsertTxErr::TxTooHigh);
         }
 
         if let Some(old_data) = self.txid_to_index.get(&txid) {
-            if old_data.height.is_confirmed() && old_data.height != data.height {
+            if old_data.height.is_confirmed() && old_data.height != additional_data.height {
                 return Err(InsertTxErr::TxMoved);
             }
 
             return Ok(false);
         }
 
-        self.txid_to_index.insert(txid, data.clone());
-        self.txid_by_height.insert((data, txid));
+        self.txid_to_index.insert(txid, additional_data.clone());
+        self.txid_by_height.insert((additional_data, txid));
 
         Ok(true)
     }
@@ -386,7 +396,7 @@ impl<D: Clone + core::fmt::Debug + Default + Ord> SparseChain<D> {
             txout,
             height: data.height,
             spent_by,
-            data: data.data,
+            additional_data: data.additional,
         })
     }
 
@@ -472,7 +482,7 @@ impl core::hash::Hash for TxKey {
 
 /// Represents the set of changes as result of a successful [`Update`].
 #[derive(Debug, Default, PartialEq)]
-pub struct ChangeSet<D> {
+pub struct ChangeSet<D = ()> {
     pub checkpoints: HashMap<u32, Change<BlockHash>>,
     pub txids: HashMap<Txid, Change<TxData<D>>>,
 }
@@ -579,21 +589,23 @@ impl<V: PartialEq> Change<V> {
 
 impl<V: Display> Display for Change<V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // use core::fmt::Display as display_fmt;
+
         fn fmt_opt<V: Display>(
             opt: &Option<V>,
             f: &mut core::fmt::Formatter<'_>,
         ) -> core::fmt::Result {
             match opt {
                 Some(v) => v.fmt(f),
-                None => "None".fmt(f),
+                None => Display::fmt("None", f),
             }
         }
 
-        "(".fmt(f)?;
+        Display::fmt("(", f)?;
         fmt_opt(&self.from, f)?;
-        " => ".fmt(f)?;
+        Display::fmt(" => ", f)?;
         fmt_opt(&self.to, f)?;
-        ")".fmt(f)
+        Display::fmt(")", f)
     }
 }
 
@@ -631,14 +643,14 @@ impl<D: core::fmt::Display> Display for MergeFailure<D> {
 impl<D: core::fmt::Display + core::fmt::Debug> std::error::Error for MergeFailure<D> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TxData<D> {
+pub struct TxData<D = ()> {
     pub height: TxHeight,
-    pub data: D,
+    pub additional: D,
 }
 
 impl<D: Display> Display for TxData<D> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::write!(f, "data( height={}, {} )", self.height, self.data)
+        core::write!(f, "data( height={}, {} )", self.height, self.additional)
     }
 }
 
@@ -646,7 +658,7 @@ impl<D: Default> From<TxHeight> for TxData<D> {
     fn from(height: TxHeight) -> Self {
         Self {
             height,
-            data: D::default(),
+            additional: D::default(),
         }
     }
 }
@@ -655,7 +667,7 @@ impl<D: Default> From<Option<u32>> for TxData<D> {
     fn from(height: Option<u32>) -> Self {
         Self {
             height: height.into(),
-            data: D::default(),
+            additional: D::default(),
         }
     }
 }
@@ -707,5 +719,5 @@ pub struct FullTxOut<D> {
     pub txout: TxOut,
     pub height: TxHeight,
     pub spent_by: Option<Txid>,
-    pub data: D,
+    pub additional_data: D,
 }
