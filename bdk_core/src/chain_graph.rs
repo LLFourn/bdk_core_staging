@@ -3,19 +3,19 @@ use core::borrow::Borrow;
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
 use crate::{
-    BlockId, ChangeSet, InsertCheckpointErr, InsertTxErr, SparseChain, TxGraph, TxHeight,
+    BlockId, ChangeSet, InsertCheckpointErr, InsertTxErr, SparseChain, TxData, TxGraph,
     UpdateFailure,
 };
 
 #[derive(Clone, Debug, Default)]
-pub struct ChainGraph {
-    chain: SparseChain,
+pub struct ChainGraph<D> {
+    chain: SparseChain<D>,
     graph: TxGraph,
 }
 
-impl ChainGraph {
-    pub fn insert_tx(&mut self, tx: Transaction, height: TxHeight) -> Result<bool, InsertTxErr> {
-        let changed = self.chain.insert_tx(tx.txid(), height)?;
+impl<D: Clone + core::fmt::Debug + Default + Ord> ChainGraph<D> {
+    pub fn insert_tx(&mut self, tx: Transaction, data: TxData<D>) -> Result<bool, InsertTxErr> {
+        let changed = self.chain.insert_tx(tx.txid(), data)?;
         self.graph.insert_tx(&tx);
         Ok(changed)
     }
@@ -24,22 +24,22 @@ impl ChainGraph {
         &mut self,
         outpoint: OutPoint,
         txout: TxOut,
-        height: TxHeight,
+        data: TxData<D>,
     ) -> Result<bool, InsertTxErr> {
-        let changed = self.chain.insert_tx(outpoint.txid, height)?;
+        let changed = self.chain.insert_tx(outpoint.txid, data)?;
         self.graph.insert_txout(outpoint, txout);
         Ok(changed)
     }
 
-    pub fn insert_txid(&mut self, txid: Txid, height: TxHeight) -> Result<bool, InsertTxErr> {
-        self.chain.insert_tx(txid, height)
+    pub fn insert_txid(&mut self, txid: Txid, data: TxData<D>) -> Result<bool, InsertTxErr> {
+        self.chain.insert_tx(txid, data)
     }
 
     pub fn insert_checkpoint(&mut self, block_id: BlockId) -> Result<bool, InsertCheckpointErr> {
         self.chain.insert_checkpoint(block_id)
     }
 
-    pub fn chain(&self) -> &SparseChain {
+    pub fn chain(&self) -> &SparseChain<D> {
         &self.chain
     }
 
@@ -47,7 +47,7 @@ impl ChainGraph {
         &self.graph
     }
 
-    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet, UpdateFailure> {
+    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<D>, UpdateFailure> {
         let changeset = self.chain.determine_changeset(update)?;
         changeset
             .tx_additions()
@@ -60,13 +60,13 @@ impl ChainGraph {
     }
 }
 
-impl Borrow<SparseChain> for ChainGraph {
-    fn borrow(&self) -> &SparseChain {
+impl<D> Borrow<SparseChain<D>> for ChainGraph<D> {
+    fn borrow(&self) -> &SparseChain<D> {
         &self.chain
     }
 }
 
-impl Borrow<TxGraph> for ChainGraph {
+impl<D> Borrow<TxGraph> for ChainGraph<D> {
     fn borrow(&self) -> &TxGraph {
         &self.graph
     }

@@ -3,11 +3,11 @@ macro_rules! chain {
     ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
     (checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
         #[allow(unused_mut)]
-        let mut chain = SparseChain::from_checkpoints(vec![$(($height, $block_hash).into()),*]);
+        let mut chain = SparseChain::<()>::from_checkpoints(vec![$(($height, $block_hash).into()),*]);
 
         $(
             $(
-                chain.insert_tx($txid, $tx_height).unwrap();
+                chain.insert_tx($txid, $tx_height.into()).unwrap();
             )*
         )?
 
@@ -29,8 +29,10 @@ macro_rules! changeset {
 
     ) => {{
         use bdk_core::collections::HashMap;
+        use bdk_core::Change;
+
         #[allow(unused_mut)]
-        ChangeSet {
+        ChangeSet::<()> {
             checkpoints: {
                 let mut changes = HashMap::default();
                 $(changes.insert($height, Change { from: $cp_from, to: $cp_to });)*
@@ -38,7 +40,7 @@ macro_rules! changeset {
             },
             txids: {
                 let mut changes = HashMap::default();
-                $($(changes.insert($txid, Change { from: $tx_from, to: $tx_to });)*)?
+                $($(changes.insert($txid, Change { from: $tx_from.map(|h: TxHeight| h.into()), to: $tx_to.map(|h: TxHeight| h.into()) });)*)?
                 changes
             }
         }
@@ -254,9 +256,9 @@ fn merging_mempool_of_empty_chains_doesnt_fail() {
 
 #[test]
 fn cannot_insert_confirmed_tx_without_checkpoints() {
-    let mut chain = SparseChain::default();
+    let mut chain = SparseChain::<()>::default();
     assert_eq!(
-        chain.insert_tx(h!("A"), TxHeight::Confirmed(0)),
+        chain.insert_tx(h!("A"), TxHeight::Confirmed(0).into()),
         Err(InsertTxErr::TxTooHigh)
     );
 }

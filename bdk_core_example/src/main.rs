@@ -427,7 +427,7 @@ fn main() -> anyhow::Result<()> {
 pub fn fully_sync(
     client: &Client,
     tracker: &mut KeychainTracker<Keychain>,
-    chain: &mut ChainGraph,
+    chain: &mut ChainGraph<()>,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut active_indexes = vec![];
