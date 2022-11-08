@@ -2,73 +2,52 @@ use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use core::fmt::Debug;
 
 use crate::{
-    BlockId, ChangeSet, InsertCheckpointErr, InsertTxErr, SparseChain, TxData, TxGraph, TxHeight,
-    UpdateFailure,
+    BlockId, ChainIndex, ChainIndexExtension, ChangeSet, InsertCheckpointErr, InsertTxErr,
+    SparseChain, TxGraph, UpdateFailure,
 };
 
 #[derive(Clone, Debug, Default)]
-pub struct ChainGraph<D = ()> {
-    chain: SparseChain<D>,
+pub struct ChainGraph<E = ()> {
+    chain: SparseChain<E>,
     graph: TxGraph,
 }
 
-impl<D: Clone + Debug + Default + Ord> ChainGraph<D> {
-    pub fn insert_tx(&mut self, tx: Transaction, height: TxHeight) -> Result<bool, InsertTxErr> {
-        self.insert_tx_with_additional_data(tx, height.into())
-    }
-
-    pub fn insert_tx_with_additional_data(
-        &mut self,
-        tx: Transaction,
-        additional_data: TxData<D>,
-    ) -> Result<bool, InsertTxErr> {
-        let changed = self
-            .chain
-            .insert_tx_with_additional_data(tx.txid(), additional_data)?;
+impl<E: ChainIndexExtension> ChainGraph<E> {
+    pub fn insert_tx<I>(&mut self, tx: Transaction, index: I) -> Result<bool, InsertTxErr>
+    where
+        I: Into<ChainIndex<E>>,
+    {
+        let changed = self.chain.insert_tx(tx.txid(), index)?;
         self.graph.insert_tx(&tx);
         Ok(changed)
     }
 
-    pub fn insert_output(
+    pub fn insert_output<I>(
         &mut self,
         outpoint: OutPoint,
         txout: TxOut,
-        height: TxHeight,
-    ) -> Result<bool, InsertTxErr> {
-        self.insert_output_with_additional_data(outpoint, txout, height.into())
-    }
-
-    pub fn insert_output_with_additional_data(
-        &mut self,
-        outpoint: OutPoint,
-        txout: TxOut,
-        additional_data: TxData<D>,
-    ) -> Result<bool, InsertTxErr> {
-        let changed = self
-            .chain
-            .insert_tx_with_additional_data(outpoint.txid, additional_data)?;
+        index: I,
+    ) -> Result<bool, InsertTxErr>
+    where
+        I: Into<ChainIndex<E>>,
+    {
+        let changed = self.chain.insert_tx(outpoint.txid, index)?;
         self.graph.insert_txout(outpoint, txout);
         Ok(changed)
     }
 
-    pub fn insert_txid(&mut self, txid: Txid, height: TxHeight) -> Result<bool, InsertTxErr> {
-        self.insert_txid_with_additional_data(txid, height.into())
-    }
-
-    pub fn insert_txid_with_additional_data(
-        &mut self,
-        txid: Txid,
-        additional_data: TxData<D>,
-    ) -> Result<bool, InsertTxErr> {
-        self.chain
-            .insert_tx_with_additional_data(txid, additional_data)
+    pub fn insert_txid<I>(&mut self, txid: Txid, index: I) -> Result<bool, InsertTxErr>
+    where
+        I: Into<ChainIndex<E>>,
+    {
+        self.chain.insert_tx(txid, index)
     }
 
     pub fn insert_checkpoint(&mut self, block_id: BlockId) -> Result<bool, InsertCheckpointErr> {
         self.chain.insert_checkpoint(block_id)
     }
 
-    pub fn chain(&self) -> &SparseChain<D> {
+    pub fn chain(&self) -> &SparseChain<E> {
         &self.chain
     }
 
@@ -76,7 +55,7 @@ impl<D: Clone + Debug + Default + Ord> ChainGraph<D> {
         &self.graph
     }
 
-    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<D>, UpdateFailure> {
+    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<E>, UpdateFailure> {
         let changeset = self.chain.determine_changeset(update.chain())?;
         changeset
             .tx_additions()

@@ -193,7 +193,7 @@ fn main() -> anyhow::Result<()> {
             let (confirmed, unconfirmed) = tracker.iter_unspent(chain.chain(), chain.graph()).fold(
                 (0, 0),
                 |(confirmed, unconfirmed), ((keychain, _), utxo)| {
-                    if utxo.height.is_confirmed() || keychain == Keychain::Internal {
+                    if utxo.chain_index.height.is_confirmed() || keychain == Keychain::Internal {
                         (confirmed + utxo.txout.value, unconfirmed)
                     } else {
                         (confirmed, unconfirmed + utxo.txout.value)
@@ -257,9 +257,11 @@ fn main() -> anyhow::Result<()> {
                 CoinSelectionAlgo::SmallestFirst => {
                     candidates.sort_by_key(|(_, utxo)| utxo.txout.value)
                 }
-                CoinSelectionAlgo::OldestFirst => candidates.sort_by_key(|(_, utxo)| utxo.height),
+                CoinSelectionAlgo::OldestFirst => {
+                    candidates.sort_by_key(|(_, utxo)| utxo.chain_index.height)
+                }
                 CoinSelectionAlgo::NewestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.height))
+                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_index.height))
                 }
                 CoinSelectionAlgo::BranchAndBound => {}
             }

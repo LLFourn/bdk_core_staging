@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    BlockId, ChainGraph, InsertCheckpointErr, InsertTxErr,
+    BlockId, ChainGraph, InsertCheckpointErr, InsertTxErr, TxHeight,
 };
 use std::collections::{BTreeMap, BTreeSet};
 pub use ureq;
@@ -256,9 +256,8 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    if let Err(err) = update
-                        .insert_tx_with_additional_data(tx.to_tx(), tx.status.block_height.into())
-                    {
+                    let tx_conf: TxHeight = tx.status.block_height.into();
+                    if let Err(err) = update.insert_tx(tx.to_tx(), tx_conf) {
                         match err {
                             InsertTxErr::TxTooHigh => {
                                 /* Don't care about new transactions confirmed while syncing */

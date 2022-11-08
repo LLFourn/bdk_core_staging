@@ -7,7 +7,7 @@ macro_rules! chain {
 
         $(
             $(
-                chain.insert_tx_with_additional_data($txid, $tx_height.into()).unwrap();
+                chain.insert_tx($txid, $tx_height).unwrap();
             )*
         )?
 
@@ -258,7 +258,7 @@ fn merging_mempool_of_empty_chains_doesnt_fail() {
 fn cannot_insert_confirmed_tx_without_checkpoints() {
     let mut chain = SparseChain::<()>::default();
     assert_eq!(
-        chain.insert_tx_with_additional_data(h!("A"), TxHeight::Confirmed(0).into()),
+        chain.insert_tx(h!("A"), TxHeight::Confirmed(0)),
         Err(InsertTxErr::TxTooHigh)
     );
 }

@@ -2,7 +2,7 @@ use core::ops::RangeBounds;
 
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    FullTxOut, SparseChain, TxGraph,
+    ChainIndexExtension, FullTxOut, SparseChain, TxGraph,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
@@ -70,24 +70,23 @@ impl<I: Clone + Ord> SpkTracker<I> {
             .map(|(op, (index, txout))| (index.clone(), *op, txout))
     }
 
-    pub fn iter_unspent<'a, D: Clone + core::fmt::Debug + Default + Ord>(
+    pub fn iter_unspent<'a, E: ChainIndexExtension>(
         &'a self,
-        chain: &'a SparseChain<D>,
+        chain: &'a SparseChain<E>,
         graph: &'a TxGraph,
-    ) -> impl DoubleEndedIterator<Item = (I, FullTxOut<D>)> + '_ {
+    ) -> impl DoubleEndedIterator<Item = (I, FullTxOut<E>)> + '_ {
         self.iter_txout().filter_map(|(index, outpoint, txout)| {
             if !chain.is_unspent(graph, outpoint)? {
                 return None;
             }
-            let data = chain.tx_data(outpoint.txid)?;
+            let chain_index = chain.tx_index(outpoint.txid)?;
             Some((
                 index,
                 FullTxOut {
                     outpoint,
                     txout: txout.clone(),
-                    height: data.height,
+                    chain_index,
                     spent_by: Default::default(),
-                    additional_data: data.additional,
                 },
             ))
         })
