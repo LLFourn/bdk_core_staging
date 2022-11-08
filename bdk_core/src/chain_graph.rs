@@ -2,13 +2,22 @@ use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
 use crate::{
     BlockId, ChainIndex, ChangeSet, InsertCheckpointErr, InsertTxErr, SparseChain, TxGraph,
-    UpdateFailure,
+    TxHeight, UpdateFailure,
 };
 
-#[derive(Clone, Debug, Default)]
-pub struct ChainGraph<I> {
+#[derive(Clone, Debug)]
+pub struct ChainGraph<I = TxHeight> {
     chain: SparseChain<I>,
     graph: TxGraph,
+}
+
+impl<I> Default for ChainGraph<I> {
+    fn default() -> Self {
+        Self {
+            chain: Default::default(),
+            graph: Default::default(),
+        }
+    }
 }
 
 impl<I> ChainGraph<I>
