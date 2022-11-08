@@ -116,6 +116,7 @@ pub mod collections {
     pub type HashSet<K> = hashbrown::HashSet<K>;
     pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
     pub use alloc::collections::*;
+    pub use core::ops::Bound;
 }
 
 #[derive(Clone, Debug, PartialEq)]

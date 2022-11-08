@@ -4,7 +4,7 @@ use core::{
 };
 
 use crate::{collections::*, BlockId, TxGraph, Vec};
-use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, TxOut, Txid};
+use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
 #[derive(Clone, Debug)]
 pub struct SparseChain<E = ()> {
@@ -366,7 +366,10 @@ impl<E: ChainIndexExtension> SparseChain<E> {
         self.indexed_txids.iter().map(|(k, v)| (*k, *v))
     }
 
-    pub fn range_txids<I, R>(&self, range: R) -> impl DoubleEndedIterator + '_
+    pub fn range_txids<I, R>(
+        &self,
+        range: R,
+    ) -> impl DoubleEndedIterator<Item = &(ChainIndex<E>, Txid)> + '_
     where
         I: Into<ChainIndex<E>> + Copy,
         R: RangeBounds<I>,
@@ -389,7 +392,10 @@ impl<E: ChainIndexExtension> SparseChain<E> {
         ))
     }
 
-    pub fn range_txids_by_height<R>(&self, range: R) -> impl DoubleEndedIterator + '_
+    pub fn range_txids_by_height<R>(
+        &self,
+        range: R,
+    ) -> impl DoubleEndedIterator<Item = &(ChainIndex<E>, Txid)> + '_
     where
         R: RangeBounds<TxHeight>,
     {
@@ -474,59 +480,6 @@ impl<E: ChainIndexExtension> SparseChain<E> {
     pub fn is_unspent(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<bool> {
         let txids = graph.outspend(outpoint)?;
         Some(txids.iter().all(|&txid| self.tx_index(txid).is_none()))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum TxKey {
-    Txid(Txid),
-    Tx(Transaction),
-}
-
-impl TxKey {
-    pub fn txid(&self) -> Txid {
-        match self {
-            TxKey::Txid(txid) => *txid,
-            TxKey::Tx(tx) => tx.txid(),
-        }
-    }
-}
-
-impl From<Txid> for TxKey {
-    fn from(txid: Txid) -> Self {
-        Self::Txid(txid)
-    }
-}
-
-impl From<Transaction> for TxKey {
-    fn from(tx: Transaction) -> Self {
-        Self::Tx(tx)
-    }
-}
-
-impl PartialEq for TxKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.txid() == other.txid()
-    }
-}
-
-impl Eq for TxKey {}
-
-impl PartialOrd for TxKey {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for TxKey {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.txid().cmp(&other.txid())
-    }
-}
-
-impl core::hash::Hash for TxKey {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.txid().hash(state)
     }
 }
 
@@ -711,6 +664,11 @@ pub trait ChainIndexExtension:
 impl ChainIndexExtension for () {
     const MIN: Self = ();
     const MAX: Self = ();
+}
+
+impl ChainIndexExtension for u32 {
+    const MIN: Self = u32::MIN;
+    const MAX: Self = u32::MAX;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

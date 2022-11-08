@@ -1,9 +1,11 @@
-use bdk_core::*;
+use bdk_core::{collections::Bound, *};
+use bitcoin::Txid;
+
 macro_rules! chain {
     ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
     (checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
         #[allow(unused_mut)]
-        let mut chain = SparseChain::<()>::from_checkpoints(vec![$(($height, $block_hash).into()),*]);
+        let mut chain = SparseChain::<()>::from_checkpoints([$(($height, $block_hash).into()),*]);
 
         $(
             $(
@@ -478,4 +480,92 @@ fn checkpoint_limit_is_respected() {
     );
 
     assert_eq!(chain1.checkpoints().len(), 4);
+}
+
+#[test]
+fn range_txids() {
+    let mut chain = SparseChain::<u32>::from_checkpoints([
+        (1, h!("block 1")).into(),
+        (2, h!("block 2")).into(),
+    ]);
+
+    let txids: [(ChainIndex<u32>, Txid); 4] = [
+        ((TxHeight::Confirmed(1), u32::MIN).into(), h!("tx 1 min")),
+        ((TxHeight::Confirmed(1), u32::MAX).into(), h!("tx 1 max")),
+        ((TxHeight::Confirmed(2), u32::MIN).into(), h!("tx 2 min")),
+        ((TxHeight::Confirmed(2), u32::MAX).into(), h!("tx 2 max")),
+    ];
+
+    // populate chain with txids
+    for (index, txid) in txids {
+        chain.insert_tx(txid, index).expect("should succeed");
+    }
+
+    // inclusive start
+    assert_eq!(
+        chain
+            .range_txids((TxHeight::Confirmed(1), u32::MIN)..)
+            .collect::<Vec<_>>(),
+        txids.iter().collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        chain
+            .range_txids((TxHeight::Confirmed(1), u32::MAX)..)
+            .collect::<Vec<_>>(),
+        txids[1..].iter().collect::<Vec<_>>(),
+    );
+
+    // exclusive start
+    assert_eq!(
+        chain
+            .range_txids((
+                Bound::Excluded((TxHeight::Confirmed(1), u32::MIN)),
+                Bound::Unbounded
+            ))
+            .collect::<Vec<_>>(),
+        txids[1..].iter().collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        chain
+            .range_txids((
+                Bound::Excluded((TxHeight::Confirmed(1), u32::MAX)),
+                Bound::Unbounded
+            ))
+            .collect::<Vec<_>>(),
+        txids[2..].iter().collect::<Vec<_>>(),
+    );
+
+    // inclusive end
+    assert_eq!(
+        chain
+            .range_txids((
+                Bound::Unbounded,
+                Bound::Included((TxHeight::Confirmed(2), u32::MIN))
+            ))
+            .collect::<Vec<_>>(),
+        txids[..3].iter().collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        chain
+            .range_txids((
+                Bound::Unbounded,
+                Bound::Included((TxHeight::Confirmed(2), u32::MAX))
+            ))
+            .collect::<Vec<_>>(),
+        txids[..4].iter().collect::<Vec<_>>(),
+    );
+
+    // exclusive end
+    assert_eq!(
+        chain
+            .range_txids(..(TxHeight::Confirmed(2), u32::MIN))
+            .collect::<Vec<_>>(),
+        txids[..2].iter().collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        chain
+            .range_txids(..(TxHeight::Confirmed(2), u32::MAX))
+            .collect::<Vec<_>>(),
+        txids[..3].iter().collect::<Vec<_>>(),
+    );
 }
