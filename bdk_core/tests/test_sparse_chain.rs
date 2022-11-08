@@ -3,7 +3,7 @@ macro_rules! chain {
     ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
     (checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
         #[allow(unused_mut)]
-        let mut chain = SparseChain::from_checkpoints(vec![$(($height, $block_hash).into()),*]);
+        let mut chain = SparseChain::<TxHeight>::from_checkpoints(vec![$(($height, $block_hash).into()),*]);
 
         $(
             $(
@@ -47,7 +47,7 @@ macro_rules! changeset {
 
 #[test]
 fn add_first_checkpoint() {
-    let chain = SparseChain::default();
+    let chain: SparseChain = Default::default();
     assert_eq!(
         chain.determine_changeset(&chain!([0, h!("A")])),
         Ok(changeset! {
@@ -161,8 +161,8 @@ fn invalidate_a_checkpoint_and_try_and_move_tx_when_it_wasnt_within_invalidation
         chain1.determine_changeset(&chain2),
         Err(UpdateFailure::InconsistentTx {
             inconsistent_txid: h!("tx0"),
-            original_height: TxHeight::Confirmed(0),
-            update_height: TxHeight::Confirmed(1)
+            original_index: TxHeight::Confirmed(0),
+            update_index: TxHeight::Confirmed(1)
         })
     );
 }
