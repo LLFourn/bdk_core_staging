@@ -4,7 +4,7 @@ use core::{
 };
 
 use crate::{collections::*, BlockId, TxGraph, Vec};
-use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, TxOut, Txid};
+use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
 #[derive(Clone, Debug)]
 pub struct SparseChain<I = TxHeight> {
@@ -487,59 +487,6 @@ where
     pub fn is_unspent(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<bool> {
         let txids = graph.outspend(outpoint)?;
         Some(txids.iter().all(|&txid| self.chain_index(txid).is_none()))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum TxKey {
-    Txid(Txid),
-    Tx(Transaction),
-}
-
-impl TxKey {
-    pub fn txid(&self) -> Txid {
-        match self {
-            TxKey::Txid(txid) => *txid,
-            TxKey::Tx(tx) => tx.txid(),
-        }
-    }
-}
-
-impl From<Txid> for TxKey {
-    fn from(txid: Txid) -> Self {
-        Self::Txid(txid)
-    }
-}
-
-impl From<Transaction> for TxKey {
-    fn from(tx: Transaction) -> Self {
-        Self::Tx(tx)
-    }
-}
-
-impl PartialEq for TxKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.txid() == other.txid()
-    }
-}
-
-impl Eq for TxKey {}
-
-impl PartialOrd for TxKey {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for TxKey {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.txid().cmp(&other.txid())
-    }
-}
-
-impl core::hash::Hash for TxKey {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.txid().hash(state)
     }
 }
 
