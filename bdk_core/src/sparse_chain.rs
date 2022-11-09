@@ -11,7 +11,7 @@ pub struct SparseChain<I = TxHeight> {
     /// Block height to checkpoint data.
     checkpoints: BTreeMap<u32, BlockHash>,
     /// Txids prepended by confirmation height.
-    indexed_txids: BTreeSet<(I, Txid)>,
+    indexed_txids: BTreeSet<(OrdByHeight<I>, Txid)>,
     /// Confirmation heights of txids.
     txid_to_index: HashMap<Txid, I>,
     /// Limit number of checkpoints.
@@ -40,6 +40,32 @@ impl ChainIndex for TxHeight {
         height
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+struct OrdByHeight<I>(I);
+
+impl<I: ChainIndex> Ord for OrdByHeight<I> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        match self.0.height().cmp(&other.0.height()) {
+            core::cmp::Ordering::Equal => self.cmp(other),
+            ordering => ordering,
+        }
+    }
+}
+
+impl<I: ChainIndex> PartialOrd for OrdByHeight<I> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(&other))
+    }
+}
+
+impl<I: ChainIndex> PartialEq for OrdByHeight<I> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == core::cmp::Ordering::Equal
+    }
+}
+
+impl<I: ChainIndex> Eq for OrdByHeight<I> {}
 
 impl<I> Default for SparseChain<I> {
     fn default() -> Self {
@@ -176,7 +202,7 @@ where
             txids: self
                 .indexed_txids
                 .iter()
-                .map(|(index, txid)| (*txid, Change::new_insertion(*index)))
+                .map(|(index, txid)| (*txid, Change::new_insertion(index.0)))
                 .collect(),
         }
     }
@@ -215,6 +241,7 @@ where
         }
 
         for &(update_index, txid) in &update.indexed_txids {
+            let update_index = update_index.0;
             // ensure all currently confirmed txs are still at the same height (unless, if they are
             // to be invalidated, or originally unconfirmed)
             if let Some(&original_index) = self.txid_to_index.get(&txid) {
@@ -242,15 +269,15 @@ where
                 // avoid invalidating mempool txids for initial change-set
                 .range(
                     &(
-                        I::min_ord_for_height(TxHeight::Confirmed(invalid_from)),
+                        OrdByHeight(I::min_ord_for_height(TxHeight::Confirmed(invalid_from))),
                         Txid::all_zeros(),
                     )
                         ..&(
-                            I::min_ord_for_height(TxHeight::Unconfirmed),
+                            OrdByHeight(I::min_ord_for_height(TxHeight::Unconfirmed)),
                             Txid::all_zeros(),
                         ),
                 )
-                .map(|(chain_index, txid)| (*txid, Change::new_removal(*chain_index)))
+                .map(|(chain_index, txid)| (*txid, Change::new_removal(chain_index.0)))
                 .collect(),
         };
 
@@ -275,8 +302,8 @@ where
             let is_inaction = change_set
                 .txids
                 .entry(txid)
-                .and_modify(|change| change.to = Some(new_index))
-                .or_insert_with(|| Change::new(original_index, Some(new_index)))
+                .and_modify(|change| change.to = Some(new_index.0))
+                .or_insert_with(|| Change::new(original_index, Some(new_index.0)))
                 .is_inaction();
 
             if is_inaction {
@@ -311,16 +338,16 @@ where
             let (changed, original_height) = match (change.from, change.to) {
                 (None, None) => panic!("should not happen"),
                 (None, Some(to)) => (
-                    self.indexed_txids.insert((to, txid)),
+                    self.indexed_txids.insert((OrdByHeight(to), txid)),
                     self.txid_to_index.insert(txid, to),
                 ),
                 (Some(from), None) => (
-                    self.indexed_txids.remove(&(from, txid)),
+                    self.indexed_txids.remove(&(OrdByHeight(from), txid)),
                     self.txid_to_index.remove(&txid),
                 ),
                 (Some(from), Some(to)) => (
-                    self.indexed_txids.insert((to, txid))
-                        && self.indexed_txids.remove(&(from, txid)),
+                    self.indexed_txids.insert((OrdByHeight(to), txid))
+                        && self.indexed_txids.remove(&(OrdByHeight(from), txid)),
                     self.txid_to_index.insert(txid, to),
                 ),
             };
@@ -337,11 +364,11 @@ where
             .indexed_txids
             .range(
                 &(
-                    I::min_ord_for_height(TxHeight::Unconfirmed),
+                    OrdByHeight(I::min_ord_for_height(TxHeight::Unconfirmed)),
                     Txid::all_zeros(),
                 )..,
             )
-            .map(|&(index, txid)| (txid, Change::new_removal(index)))
+            .map(|&(index, txid)| (txid, Change::new_removal(index.0)))
             .collect();
 
         let changeset = ChangeSet {
@@ -378,7 +405,7 @@ where
         }
 
         self.txid_to_index.insert(txid, chain_index);
-        self.indexed_txids.insert((chain_index, txid));
+        self.indexed_txids.insert((OrdByHeight(chain_index), txid));
 
         Ok(true)
     }
@@ -400,40 +427,53 @@ where
     pub fn iter_txids(
         &self,
     ) -> impl DoubleEndedIterator<Item = (I, Txid)> + ExactSizeIterator + '_ {
-        self.indexed_txids.iter().map(|(k, v)| (*k, *v))
+        self.indexed_txids.iter().map(|(k, v)| (k.0, *v))
     }
 
     pub fn txids_in_range<R: RangeBounds<I>>(&self, range: R) -> impl DoubleEndedIterator + '_ {
-        fn map_bound<I: Clone + Copy>(bound: Bound<&I>) -> Bound<(I, Txid)> {
+        fn map_bound<I: Clone + Copy>(
+            bound: Bound<&I>,
+            start: bool,
+        ) -> Bound<(OrdByHeight<I>, Txid)> {
+            let max = |i: &I| (OrdByHeight(*i), max_txid());
+            let min = |i: &I| (OrdByHeight(*i), Txid::all_zeros());
             match bound {
                 Bound::Unbounded => Bound::Unbounded,
-                Bound::Included(x) => Bound::Included((*x, max_txid())),
-                Bound::Excluded(x) => Bound::Excluded((*x, Txid::all_zeros())),
+                Bound::Included(i) => Bound::Included(if start { min(i) } else { max(i) }),
+                Bound::Excluded(i) => Bound::Excluded(if start { max(i) } else { min(i) }),
             }
         }
-
         self.indexed_txids
-            .range((map_bound(range.start_bound()), map_bound(range.end_bound())))
-            .map(|(k, v)| (*k, *v))
+            .range((
+                map_bound(range.start_bound(), true),
+                map_bound(range.end_bound(), false),
+            ))
+            .map(|(k, v)| (k.0, *v))
     }
 
     pub fn txids_in_height_range<R: RangeBounds<TxHeight>>(
         &self,
         range: R,
     ) -> impl DoubleEndedIterator + '_ {
-        fn map_bound<I: ChainIndex>(bound: Bound<&TxHeight>) -> Bound<(I, Txid)> {
+        fn map_bound<I: ChainIndex>(
+            bound: Bound<&TxHeight>,
+            start: bool,
+        ) -> Bound<(OrdByHeight<I>, Txid)> {
+            let max = |h| (OrdByHeight(I::min_ord_for_height(h)), Txid::all_zeros());
+            let min = |h| (OrdByHeight(I::max_ord_for_height(h)), max_txid());
             match bound {
                 Bound::Unbounded => Bound::Unbounded,
-                Bound::Included(x) => Bound::Included((I::max_ord_for_height(*x), max_txid())),
-                Bound::Excluded(x) => {
-                    Bound::Excluded((I::min_ord_for_height(*x), Txid::all_zeros()))
-                }
+                Bound::Included(h) => Bound::Included(if start { min(*h) } else { max(*h) }),
+                Bound::Excluded(h) => Bound::Excluded(if start { max(*h) } else { min(*h) }),
             }
         }
 
         self.indexed_txids
-            .range((map_bound(range.start_bound()), map_bound(range.end_bound())))
-            .map(|(k, v)| (*k, *v))
+            .range((
+                map_bound(range.start_bound(), true),
+                map_bound(range.end_bound(), false),
+            ))
+            .map(|(k, v)| (k.0, *v))
     }
 
     pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut<I>> {
