@@ -182,7 +182,7 @@ impl Client {
         mut scripts: impl Iterator<Item = (u32, Script)> + Clone,
         stop_gap: usize,
         existing_chain: &BTreeMap<u32, BlockHash>,
-    ) -> Result<(Option<u32>, ChainGraph<()>), UpdateError> {
+    ) -> Result<(Option<u32>, ChainGraph), UpdateError> {
         let mut empty_scripts = 0;
         let mut update = ChainGraph::default();
         let mut last_active_index = None;

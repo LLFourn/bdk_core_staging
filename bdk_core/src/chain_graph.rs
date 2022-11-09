@@ -55,7 +55,7 @@ impl<E: ChainIndexExtension> ChainGraph<E> {
         &self.graph
     }
 
-    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<E>, UpdateFailure> {
+    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<E>, UpdateFailure<E>> {
         let changeset = self.chain.determine_changeset(update.chain())?;
         changeset
             .tx_additions()

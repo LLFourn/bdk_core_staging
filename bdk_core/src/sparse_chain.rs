@@ -60,7 +60,7 @@ impl std::error::Error for InsertCheckpointErr {}
 
 /// Represents an update failure of [`SparseChain`].
 #[derive(Clone, Debug, PartialEq)]
-pub enum UpdateFailure {
+pub enum UpdateFailure<E> {
     /// The [`Update`] cannot be applied to this [`SparseChain`] because the chain suffix it
     /// represents did not connect to the existing chain. This error case contains the checkpoint
     /// height to include so that the chains can connect.
@@ -69,26 +69,26 @@ pub enum UpdateFailure {
     /// This only reports the first inconsistency.
     InconsistentTx {
         inconsistent_txid: Txid,
-        original_height: TxHeight,
-        update_height: TxHeight,
+        original_index: ChainIndex<E>,
+        update_index: ChainIndex<E>,
     },
 }
 
-impl core::fmt::Display for UpdateFailure {
+impl<E: core::fmt::Debug> core::fmt::Display for UpdateFailure<E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NotConnected(h) =>
                 write!(f, "the checkpoints in the update could not be connected to the checkpoints in the chain, try include checkpoint of height {} to connect",
                     h),
-            Self::InconsistentTx { inconsistent_txid, original_height, update_height } =>
-                write!(f, "inconsistent update: first inconsistent tx is ({}) which had confirmation height ({}), but is ({}) in the update", 
-                    inconsistent_txid, original_height, update_height),
+            Self::InconsistentTx { inconsistent_txid, original_index, update_index } =>
+                write!(f, "inconsistent update: first inconsistent tx is ({}) which had index ({:?}), but is ({:?}) in the update", 
+                    inconsistent_txid, original_index, update_index),
         }
     }
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for UpdateFailure {}
+impl<E: core::fmt::Debug> std::error::Error for UpdateFailure<E> {}
 
 impl<E: ChainIndexExtension> SparseChain<E> {
     /// Creates a new chain from a list of blocks. The caller must guarantee they are in the same
@@ -152,7 +152,7 @@ impl<E: ChainIndexExtension> SparseChain<E> {
         }
     }
 
-    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<E>, UpdateFailure> {
+    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<E>, UpdateFailure<E>> {
         let agreement_point = update
             .checkpoints
             .iter()
@@ -185,17 +185,17 @@ impl<E: ChainIndexExtension> SparseChain<E> {
             }
         }
 
-        for (tx_index, txid) in &update.indexed_txids {
+        for (update_index, txid) in &update.indexed_txids {
             // ensure all currently confirmed txs are still at the same height (unless, if they are
             // to be invalidated, or originally unconfirmed)
-            if let Some(old_tx_index) = self.txid_to_index.get(txid) {
-                if old_tx_index.height < TxHeight::Confirmed(invalid_from)
-                    && tx_index.height != old_tx_index.height
+            if let Some(original_index) = self.txid_to_index.get(txid) {
+                if original_index.height < TxHeight::Confirmed(invalid_from)
+                    && update_index != original_index
                 {
                     return Err(UpdateFailure::InconsistentTx {
                         inconsistent_txid: *txid,
-                        original_height: old_tx_index.height,
-                        update_height: tx_index.height,
+                        original_index: *original_index,
+                        update_index: *update_index,
                     });
                 }
             }
@@ -257,7 +257,7 @@ impl<E: ChainIndexExtension> SparseChain<E> {
 
     /// Applies a new [`Update`] to the tracker.
     #[must_use]
-    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<E>, UpdateFailure> {
+    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<E>, UpdateFailure<E>> {
         let changeset = self.determine_changeset(update)?;
         self.apply_changeset(&changeset);
         Ok(changeset)
@@ -332,8 +332,8 @@ impl<E: ChainIndexExtension> SparseChain<E> {
             return Err(InsertTxErr::TxTooHigh);
         }
 
-        if let Some(old_index) = self.txid_to_index.get(&txid) {
-            if old_index.height.is_confirmed() && old_index.height != index.height {
+        if let Some(original_index) = self.txid_to_index.get(&txid) {
+            if original_index.height.is_confirmed() && original_index != &index {
                 return Err(InsertTxErr::TxMoved);
             }
 
@@ -634,7 +634,7 @@ pub struct MergeConflict<K, V> {
     pub new_change: Change<V>,
 }
 
-impl<D: core::fmt::Display> Display for MergeFailure<D> {
+impl<E: core::fmt::Debug> Display for MergeFailure<E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             MergeFailure::Checkpoint(conflict) => write!(
@@ -644,7 +644,7 @@ impl<D: core::fmt::Display> Display for MergeFailure<D> {
             ),
             MergeFailure::Txid(conflict) => write!(
                 f,
-                "merge conflict (tx): txid={}, original_change={}, merge_with={}",
+                "merge conflict (tx): txid={}, original_change={:?}, merge_with={:?}",
                 conflict.key, conflict.change, conflict.new_change
             ),
         }
@@ -675,17 +675,6 @@ impl ChainIndexExtension for u32 {
 pub struct ChainIndex<E = ()> {
     pub height: TxHeight,
     pub extension: E,
-}
-
-impl<E: Display> Display for ChainIndex<E> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::write!(
-            f,
-            "chain_index( height={}, {} )",
-            self.height,
-            self.extension
-        )
-    }
 }
 
 impl From<TxHeight> for ChainIndex {
