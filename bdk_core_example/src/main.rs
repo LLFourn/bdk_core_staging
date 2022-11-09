@@ -14,7 +14,7 @@ use bdk_core::{
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
-use std::{borrow::Borrow, cmp::Reverse, time::Duration};
+use std::{cmp::Reverse, time::Duration};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -190,15 +190,16 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Balance => {
-            let (confirmed, unconfirmed) = tracker
-                .iter_unspent(chain.borrow(), chain.borrow())
-                .fold((0, 0), |(confirmed, unconfirmed), ((keychain, _), utxo)| {
-                    if utxo.height.is_confirmed() || keychain == Keychain::Internal {
+            let (confirmed, unconfirmed) = tracker.iter_unspent(chain.chain(), chain.graph()).fold(
+                (0, 0),
+                |(confirmed, unconfirmed), ((keychain, _), utxo)| {
+                    if utxo.chain_index.height.is_confirmed() || keychain == Keychain::Internal {
                         (confirmed + utxo.txout.value, unconfirmed)
                     } else {
                         (confirmed, unconfirmed + utxo.txout.value)
                     }
-                });
+                },
+            );
 
             println!("confirmed: {}", confirmed);
             println!("unconfirmed: {}", unconfirmed);
@@ -256,9 +257,11 @@ fn main() -> anyhow::Result<()> {
                 CoinSelectionAlgo::SmallestFirst => {
                     candidates.sort_by_key(|(_, utxo)| utxo.txout.value)
                 }
-                CoinSelectionAlgo::OldestFirst => candidates.sort_by_key(|(_, utxo)| utxo.height),
+                CoinSelectionAlgo::OldestFirst => {
+                    candidates.sort_by_key(|(_, utxo)| utxo.chain_index.height)
+                }
                 CoinSelectionAlgo::NewestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.height))
+                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_index.height))
                 }
                 CoinSelectionAlgo::BranchAndBound => {}
             }
@@ -427,7 +430,7 @@ fn main() -> anyhow::Result<()> {
 pub fn fully_sync(
     client: &Client,
     tracker: &mut KeychainTracker<Keychain>,
-    chain: &mut ChainGraph,
+    chain: &mut ChainGraph<()>,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut active_indexes = vec![];

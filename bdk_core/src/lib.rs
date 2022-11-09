@@ -50,6 +50,12 @@ pub struct BlockTime {
     pub time: u64,
 }
 
+impl From<(u32, u64)> for BlockTime {
+    fn from((height, time): (u32, u64)) -> Self {
+        Self { height, time }
+    }
+}
+
 /// A reference to a block in the cannonical chain.
 #[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord)]
 #[cfg_attr(
@@ -116,6 +122,7 @@ pub mod collections {
     pub type HashSet<K> = hashbrown::HashSet<K>;
     pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
     pub use alloc::collections::*;
+    pub use core::ops::Bound;
 }
 
 #[derive(Clone, Debug, PartialEq)]
