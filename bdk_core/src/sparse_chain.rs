@@ -636,6 +636,11 @@ pub trait ChainIndexExtension:
     const MAX: Self;
 }
 
+impl<E: ChainIndexExtension> ChainIndexExtension for Option<E> {
+    const MIN: Self = None;
+    const MAX: Self = Some(E::MAX);
+}
+
 impl ChainIndexExtension for () {
     const MIN: Self = ();
     const MAX: Self = ();
@@ -644,6 +649,11 @@ impl ChainIndexExtension for () {
 impl ChainIndexExtension for u32 {
     const MIN: Self = u32::MIN;
     const MAX: Self = u32::MAX;
+}
+
+impl ChainIndexExtension for u64 {
+    const MIN: Self = u64::MIN;
+    const MAX: Self = u64::MAX;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

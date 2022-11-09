@@ -50,6 +50,12 @@ pub struct BlockTime {
     pub time: u64,
 }
 
+impl From<(u32, u64)> for BlockTime {
+    fn from((height, time): (u32, u64)) -> Self {
+        Self { height, time }
+    }
+}
+
 /// A reference to a block in the cannonical chain.
 #[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord)]
 #[cfg_attr(
