@@ -324,6 +324,62 @@ fn fix_blockhash_before_agreement_point() {
     )
 }
 
+// TODO: Use macro
+#[test]
+fn cannot_change_index_of_confirmed_tx() {
+    let chain1 = {
+        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
+        c.insert_tx(h!("tx1"), (TxHeight::Confirmed(1), 10))
+            .expect("should succeed");
+        c
+    };
+    let chain2 = {
+        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
+        c.insert_tx(h!("tx1"), (TxHeight::Confirmed(1), 20))
+            .expect("should succeed");
+        c
+    };
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Err(UpdateFailure::InconsistentTx {
+            inconsistent_txid: h!("tx1"),
+            original_index: (TxHeight::Confirmed(1), 10).into(),
+            update_index: (TxHeight::Confirmed(1), 20).into(),
+        }),
+    )
+}
+
+// TODO: Use macro
+#[test]
+fn can_change_index_of_unconfirmed_tx() {
+    let chain1 = {
+        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
+        c.insert_tx(h!("tx1"), (TxHeight::Unconfirmed, 10))
+            .expect("should succeed");
+        c
+    };
+    let chain2 = {
+        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
+        c.insert_tx(h!("tx1"), (TxHeight::Unconfirmed, 20))
+            .expect("should succeed");
+        c
+    };
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(ChangeSet {
+            checkpoints: [].into(),
+            txids: [(
+                h!("tx1"),
+                Change::new_alteration(
+                    (TxHeight::Unconfirmed, 10).into(),
+                    (TxHeight::Unconfirmed, 20).into()
+                )
+            )]
+            .into()
+        }),
+    )
+}
+
 /// B and C are in both chain and update
 /// ```
 ///        | 0 | 1 | 2 | 3 | 4
