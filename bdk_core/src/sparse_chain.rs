@@ -372,60 +372,35 @@ impl<E: ChainIndexExtension> SparseChain<E> {
     ) -> impl DoubleEndedIterator<Item = &(ChainIndex<E>, Txid)> + '_
     where
         I: Into<ChainIndex<E>> + Copy,
-        R: RangeBounds<I>,
+        R: RangeBounds<(I, Txid)>,
     {
-        // internal helper
-        fn map_bound<E, I>(b: Bound<&I>, inc: Txid, exc: Txid) -> Bound<(ChainIndex<E>, Txid)>
-        where
-            I: Into<ChainIndex<E>> + Copy,
-        {
-            match b {
-                Bound::Included(&index) => Bound::Included((index.into(), inc)),
-                Bound::Excluded(&index) => Bound::Excluded((index.into(), exc)),
-                Bound::Unbounded => Bound::Unbounded,
-            }
-        }
+        let map_bound = |b: Bound<&(I, Txid)>| match b {
+            Bound::Included(&(index, txid)) => Bound::Included((index.into(), txid)),
+            Bound::Excluded(&(index, txid)) => Bound::Excluded((index.into(), txid)),
+            Bound::Unbounded => Bound::Unbounded,
+        };
 
-        self.indexed_txids.range((
-            map_bound(range.start_bound(), min_txid(), max_txid()),
-            map_bound(range.end_bound(), max_txid(), min_txid()),
-        ))
+        self.indexed_txids
+            .range((map_bound(range.start_bound()), map_bound(range.end_bound())))
     }
 
-    pub fn range_txids_by_height<R>(
+    pub fn range_txids_by_index<I, R>(
         &self,
         range: R,
     ) -> impl DoubleEndedIterator<Item = &(ChainIndex<E>, Txid)> + '_
     where
-        R: RangeBounds<TxHeight>,
+        I: Into<ChainIndex<E>> + Copy,
+        R: RangeBounds<I>,
     {
-        // internal helper
-        fn map_bound<E>(
-            b: Bound<&TxHeight>,
-            inc: (E, Txid),
-            exc: (E, Txid),
-        ) -> Bound<(ChainIndex<E>, Txid)>
-        where
-            E: ChainIndexExtension,
-        {
-            match b {
-                Bound::Included(&x) => Bound::Included(((x, inc.0).into(), inc.1)),
-                Bound::Excluded(&x) => Bound::Excluded(((x, exc.0).into(), exc.1)),
-                Bound::Unbounded => Bound::Unbounded,
-            }
-        }
+        let map_bound = |b: Bound<&I>, inc: Txid, exc: Txid| match b {
+            Bound::Included(&index) => Bound::Included((index.into(), inc)),
+            Bound::Excluded(&index) => Bound::Excluded((index.into(), exc)),
+            Bound::Unbounded => Bound::Unbounded,
+        };
 
         self.indexed_txids.range((
-            map_bound(
-                range.start_bound(),
-                (E::MIN, min_txid()),
-                (E::MAX, max_txid()),
-            ),
-            map_bound(
-                range.end_bound(),
-                (E::MAX, max_txid()),
-                (E::MIN, min_txid()),
-            ),
+            map_bound(range.start_bound(), min_txid(), max_txid()),
+            map_bound(range.end_bound(), max_txid(), min_txid()),
         ))
     }
 
