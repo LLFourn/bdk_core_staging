@@ -642,6 +642,10 @@ impl<E: core::fmt::Debug> Display for MergeFailure<E> {
 #[cfg(feature = "std")]
 impl<D: core::fmt::Display + core::fmt::Debug> std::error::Error for MergeFailure<D> {}
 
+/// [`ChainIndexExtension`] is used to extend [`ChainIndex`].
+///
+/// This can be used to add additional data (such as block time and block position) to transactions,
+/// which will be reflected in how the transactions are to be sorted in [`SparseChain`].
 pub trait ChainIndexExtension:
     Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + core::hash::Hash
 {
@@ -669,11 +673,15 @@ impl ChainIndexExtension for u64 {
     const MAX: Self = u64::MAX;
 }
 
+/// [`ChainIndex`] that is extended by a timestamp.
 pub type TimestampedChainIndex = ChainIndex<Option<u64>>;
 
+/// Index in which transactions are ordered by in [`SparseChain`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChainIndex<E = ()> {
+    /// Height in which the transaction is confirmed (or not).
     pub height: TxHeight,
+    /// Additional data to extend the [`ChainIndex`].
     pub extension: E,
 }
 
