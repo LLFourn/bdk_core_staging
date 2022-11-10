@@ -6,8 +6,19 @@ use core::{
 use crate::{collections::*, BlockId, TxGraph, Vec};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
+/// A [`SparseChain`] in which the [`ChainIndex`] is extended by a timestamp.
 pub type TimestampedSparseChain = SparseChain<Option<u64>>;
 
+/// This is a non-monotone structure that tracks relevant [`Txid`]s that are ordered by
+/// [`ChainIndex`].
+///
+/// To "merge" two [`SparseChain`]s, one can calculate the [`ChangeSet`] by calling
+/// [`Self::determine_changeset(update)`], and applying the [`ChangeSet`] via
+/// [`Self::apply_changeset(changeset)`]. For convenience, one can do the above two steps as one via
+/// [`Self::apply_update(update)`].
+///
+/// The generic `E` is used to extend the [`ChainIndex`], allowing for more definite ordering within
+/// a given height.
 #[derive(Clone, Debug)]
 pub struct SparseChain<E = ()> {
     /// Block height to checkpoint data.
