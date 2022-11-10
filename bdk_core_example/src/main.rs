@@ -10,7 +10,7 @@ use bdk_core::{
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     descriptor_into_script_iter,
     miniscript::{Descriptor, DescriptorPublicKey},
-    ChainGraph, DescriptorExt, KeychainTracker,
+    ChainGraph, DescriptorExt, KeychainTracker, TimestampedChainGraph,
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
@@ -430,7 +430,7 @@ fn main() -> anyhow::Result<()> {
 pub fn fully_sync(
     client: &Client,
     tracker: &mut KeychainTracker<Keychain>,
-    chain: &mut ChainGraph<()>,
+    chain: &mut TimestampedChainGraph,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut active_indexes = vec![];

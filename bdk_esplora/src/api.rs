@@ -6,7 +6,7 @@ use bdk_core::{
         BlockHash, OutPoint, PackedLockTime, Script, Sequence, Transaction, TxIn, TxOut, Txid,
         Witness,
     },
-    BlockId, BlockTime, PrevOuts,
+    BlockId, BlockTime, PrevOuts, TimestampedChainIndex,
 };
 
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -45,6 +45,15 @@ impl TxStatus {
         let height = self.block_height?;
         let time = self.block_time?;
         Some(BlockTime { height, time })
+    }
+}
+
+impl From<TxStatus> for TimestampedChainIndex {
+    fn from(status: TxStatus) -> Self {
+        Self {
+            height: status.block_height.into(),
+            extension: status.block_time,
+        }
     }
 }
 

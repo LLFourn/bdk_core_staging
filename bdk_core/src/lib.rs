@@ -56,6 +56,21 @@ impl From<(u32, u64)> for BlockTime {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ConfirmationTime {
+    pub height: TxHeight,
+    pub time: Option<u64>,
+}
+
+impl From<ConfirmationTime> for ChainIndex<Option<u64>> {
+    fn from(conf: ConfirmationTime) -> Self {
+        Self {
+            height: conf.height,
+            extension: conf.time,
+        }
+    }
+}
+
 /// A reference to a block in the cannonical chain.
 #[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord)]
 #[cfg_attr(

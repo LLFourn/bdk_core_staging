@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    BlockId, ChainGraph, InsertCheckpointErr, InsertTxErr, TxHeight,
+    BlockId, InsertCheckpointErr, InsertTxErr, TimestampedChainGraph,
 };
 use std::collections::{BTreeMap, BTreeSet};
 pub use ureq;
@@ -182,9 +182,9 @@ impl Client {
         mut scripts: impl Iterator<Item = (u32, Script)> + Clone,
         stop_gap: usize,
         existing_chain: &BTreeMap<u32, BlockHash>,
-    ) -> Result<(Option<u32>, ChainGraph), UpdateError> {
+    ) -> Result<(Option<u32>, TimestampedChainGraph), UpdateError> {
         let mut empty_scripts = 0;
-        let mut update = ChainGraph::default();
+        let mut update = TimestampedChainGraph::default();
         let mut last_active_index = None;
         // need to clone the iterator in case we need to start from the beggining again
         let backup_scripts = scripts.clone();
@@ -256,8 +256,7 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    let tx_conf: TxHeight = tx.status.block_height.into();
-                    if let Err(err) = update.insert_tx(tx.to_tx(), tx_conf) {
+                    if let Err(err) = update.insert_tx(tx.to_tx(), tx.status) {
                         match err {
                             InsertTxErr::TxTooHigh => {
                                 /* Don't care about new transactions confirmed while syncing */

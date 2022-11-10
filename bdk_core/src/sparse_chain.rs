@@ -6,6 +6,8 @@ use core::{
 use crate::{collections::*, BlockId, TxGraph, Vec};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
+pub type TimestampedSparseChain = SparseChain<Option<u64>>;
+
 #[derive(Clone, Debug)]
 pub struct SparseChain<E = ()> {
     /// Block height to checkpoint data.
@@ -655,6 +657,8 @@ impl ChainIndexExtension for u64 {
     const MIN: Self = u64::MIN;
     const MAX: Self = u64::MAX;
 }
+
+pub type TimestampedChainIndex = ChainIndex<Option<u64>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChainIndex<E = ()> {
