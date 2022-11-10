@@ -2,13 +2,13 @@ use bdk_core::{
     collections::{BTreeSet, Bound},
     *,
 };
-use bitcoin::{hashes::Hash, Txid};
+use bitcoin::{hashes::Hash, BlockHash, Txid};
 
 macro_rules! chain {
     ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
     (checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
         #[allow(unused_mut)]
-        let mut chain = SparseChain::<()>::from_checkpoints([$(($height, $block_hash).into()),*]);
+        let mut chain = SparseChain::<()>::from_checkpoints::<(u32, BlockHash), _>([$(($height, $block_hash)),*]);
 
         $(
             $(
@@ -328,13 +328,13 @@ fn fix_blockhash_before_agreement_point() {
 #[test]
 fn cannot_change_index_of_confirmed_tx() {
     let chain1 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
+        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1"))]);
         c.insert_tx(h!("tx1"), (TxHeight::Confirmed(1), 10))
             .expect("should succeed");
         c
     };
     let chain2 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
+        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1"))]);
         c.insert_tx(h!("tx1"), (TxHeight::Confirmed(1), 20))
             .expect("should succeed");
         c
@@ -353,13 +353,13 @@ fn cannot_change_index_of_confirmed_tx() {
 #[test]
 fn can_change_index_of_unconfirmed_tx() {
     let chain1 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
+        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1"))]);
         c.insert_tx(h!("tx1"), (TxHeight::Unconfirmed, 10))
             .expect("should succeed");
         c
     };
     let chain2 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
+        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1"))]);
         c.insert_tx(h!("tx1"), (TxHeight::Unconfirmed, 20))
             .expect("should succeed");
         c
@@ -542,11 +542,69 @@ fn checkpoint_limit_is_respected() {
 }
 
 #[test]
+fn range_txids_by_height() {
+    let mut chain = SparseChain::<u32>::from_checkpoints([(1, h!("block 1")), (2, h!("block 2"))]);
+
+    let txids: [(ChainIndex<u32>, Txid); 4] = [
+        (
+            (TxHeight::Confirmed(1), u32::MIN).into(),
+            Txid::from_inner([0x00; 32]),
+        ),
+        (
+            (TxHeight::Confirmed(1), u32::MAX).into(),
+            Txid::from_inner([0xfe; 32]),
+        ),
+        (
+            (TxHeight::Confirmed(2), u32::MIN).into(),
+            Txid::from_inner([0x01; 32]),
+        ),
+        (
+            (TxHeight::Confirmed(2), u32::MAX).into(),
+            Txid::from_inner([0xff; 32]),
+        ),
+    ];
+
+    // populate chain with txids
+    for (index, txid) in txids {
+        chain.insert_tx(txid, index).expect("should succeed");
+    }
+
+    // inclusive start
+    assert_eq!(
+        chain
+            .range_txids_by_height(TxHeight::Confirmed(1)..)
+            .collect::<Vec<_>>(),
+        txids.iter().collect::<Vec<_>>(),
+    );
+
+    // exclusive start
+    assert_eq!(
+        chain
+            .range_txids_by_height((Bound::Excluded(TxHeight::Confirmed(1)), Bound::Unbounded,))
+            .collect::<Vec<_>>(),
+        txids[2..].iter().collect::<Vec<_>>(),
+    );
+
+    // inclusive end
+    assert_eq!(
+        chain
+            .range_txids_by_height((Bound::Unbounded, Bound::Included(TxHeight::Confirmed(2))))
+            .collect::<Vec<_>>(),
+        txids[..4].iter().collect::<Vec<_>>(),
+    );
+
+    // exclusive end
+    assert_eq!(
+        chain
+            .range_txids_by_height(..TxHeight::Confirmed(2))
+            .collect::<Vec<_>>(),
+        txids[..2].iter().collect::<Vec<_>>(),
+    );
+}
+
+#[test]
 fn range_txids_by_index() {
-    let mut chain = SparseChain::<u32>::from_checkpoints([
-        (1, h!("block 1")).into(),
-        (2, h!("block 2")).into(),
-    ]);
+    let mut chain = SparseChain::<u32>::from_checkpoints([(1, h!("block 1")), (2, h!("block 2"))]);
 
     let txids: [(ChainIndex<u32>, Txid); 4] = [
         ((TxHeight::Confirmed(1), u32::MIN).into(), h!("tx 1 min")),

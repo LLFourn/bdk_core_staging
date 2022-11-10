@@ -106,12 +106,13 @@ impl<E: core::fmt::Debug> std::error::Error for UpdateFailure<E> {}
 impl<E: ChainIndexExtension> SparseChain<E> {
     /// Creates a new chain from a list of blocks. The caller must guarantee they are in the same
     /// chain.
-    pub fn from_checkpoints(checkpoints: impl IntoIterator<Item = BlockId>) -> Self {
+    pub fn from_checkpoints<B, I>(checkpoints: I) -> Self
+    where
+        B: Into<(u32, BlockHash)>,
+        I: IntoIterator<Item = B>,
+    {
         let mut chain = Self::default();
-        chain.checkpoints = checkpoints
-            .into_iter()
-            .map(|block_id| block_id.into())
-            .collect();
+        chain.checkpoints = checkpoints.into_iter().map(|block| block.into()).collect();
         chain
     }
     /// Get the BlockId for the last known tip.
@@ -414,6 +415,33 @@ impl<E: ChainIndexExtension> SparseChain<E> {
         self.indexed_txids.range((
             map_bound(range.start_bound(), min_txid(), max_txid()),
             map_bound(range.end_bound(), max_txid(), min_txid()),
+        ))
+    }
+
+    pub fn range_txids_by_height<R>(
+        &self,
+        range: R,
+    ) -> impl DoubleEndedIterator<Item = &(ChainIndex<E>, Txid)> + '_
+    where
+        R: RangeBounds<TxHeight>,
+    {
+        let map_bound = |b: Bound<&TxHeight>, inc: (E, Txid), exc: (E, Txid)| match b {
+            Bound::Included(&h) => Bound::Included(((h, inc.0).into(), inc.1)),
+            Bound::Excluded(&h) => Bound::Excluded(((h, exc.0).into(), exc.1)),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+
+        self.indexed_txids.range((
+            map_bound(
+                range.start_bound(),
+                (E::MIN, min_txid()),
+                (E::MAX, max_txid()),
+            ),
+            map_bound(
+                range.end_bound(),
+                (E::MAX, max_txid()),
+                (E::MIN, min_txid()),
+            ),
         ))
     }
 
