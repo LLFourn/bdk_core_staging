@@ -3,7 +3,7 @@ use core::{
     ops::{Bound, RangeBounds},
 };
 
-use crate::{collections::*, BlockId, TxGraph, Vec};
+use crate::{collections::*, BlockId, ConfirmationTime, TxGraph, TxHeight, Vec};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
 /// A [`SparseChain`] in which the [`ChainIndex`] is extended by a timestamp.
@@ -692,43 +692,12 @@ impl<E: ChainIndexExtension> From<(TxHeight, E)> for ChainIndex<E> {
     }
 }
 
-/// Represents the height in which a transaction is confirmed at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TxHeight {
-    Confirmed(u32),
-    Unconfirmed,
-}
-
-impl Display for TxHeight {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Confirmed(h) => core::write!(f, "confirmed_at({})", h),
-            Self::Unconfirmed => core::write!(f, "unconfirmed"),
+impl From<ConfirmationTime> for ChainIndex<Option<u64>> {
+    fn from(conf: ConfirmationTime) -> Self {
+        Self {
+            height: conf.height,
+            extension: conf.time,
         }
-    }
-}
-
-impl From<Option<u32>> for TxHeight {
-    fn from(opt: Option<u32>) -> Self {
-        match opt {
-            Some(h) => Self::Confirmed(h),
-            None => Self::Unconfirmed,
-        }
-    }
-}
-
-impl From<TxHeight> for Option<u32> {
-    fn from(height: TxHeight) -> Self {
-        match height {
-            TxHeight::Confirmed(h) => Some(h),
-            TxHeight::Unconfirmed => None,
-        }
-    }
-}
-
-impl TxHeight {
-    pub fn is_confirmed(&self) -> bool {
-        matches!(self, Self::Confirmed(_))
     }
 }
 

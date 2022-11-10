@@ -36,38 +36,97 @@ extern crate std;
 #[cfg(all(not(feature = "std"), feature = "hashbrown"))]
 extern crate hashbrown;
 
-/// Block height and timestamp of a block
+// When no-std use `alloc`'s Hash collections. This is activated by default
+#[cfg(all(not(feature = "std"), not(feature = "hashbrown")))]
+pub mod collections {
+    #![allow(dead_code)]
+    pub type HashSet<K> = alloc::collections::BTreeSet<K>;
+    pub type HashMap<K, V> = alloc::collections::BTreeMap<K, V>;
+    pub use alloc::collections::*;
+}
+
+// When we have std use `std`'s all collections
+#[cfg(all(feature = "std", not(feature = "hashbrown")))]
+pub mod collections {
+    pub use std::collections::*;
+}
+
+// With special feature `hashbrown` use `hashbrown`'s hash collections, and else from `alloc`.
+#[cfg(feature = "hashbrown")]
+pub mod collections {
+    #![allow(dead_code)]
+    pub type HashSet<K> = hashbrown::HashSet<K>;
+    pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
+    pub use alloc::collections::*;
+    pub use core::ops::Bound;
+}
+
+/// Represents the height in which a transaction is confirmed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
+pub enum TxHeight {
+    Confirmed(u32),
+    Unconfirmed,
+}
+
+impl Default for TxHeight {
+    fn default() -> Self {
+        Self::Unconfirmed
+    }
+}
+
+impl core::fmt::Display for TxHeight {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Confirmed(h) => core::write!(f, "confirmed_at({})", h),
+            Self::Unconfirmed => core::write!(f, "unconfirmed"),
+        }
+    }
+}
+
+impl From<Option<u32>> for TxHeight {
+    fn from(opt: Option<u32>) -> Self {
+        match opt {
+            Some(h) => Self::Confirmed(h),
+            None => Self::Unconfirmed,
+        }
+    }
+}
+
+impl From<TxHeight> for Option<u32> {
+    fn from(height: TxHeight) -> Self {
+        match height {
+            TxHeight::Confirmed(h) => Some(h),
+            TxHeight::Unconfirmed => None,
+        }
+    }
+}
+
+impl TxHeight {
+    pub fn is_confirmed(&self) -> bool {
+        matches!(self, Self::Confirmed(_))
+    }
+}
+
+/// Block height and timestamp in which a transaction is confirmed in.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Copy, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Deserialize, serde::Serialize),
     serde(crate = "serde_crate")
 )]
-pub struct BlockTime {
-    /// confirmation block height
-    pub height: u32,
-    /// confirmation block timestamp
-    pub time: u64,
-}
-
-impl From<(u32, u64)> for BlockTime {
-    fn from((height, time): (u32, u64)) -> Self {
-        Self { height, time }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ConfirmationTime {
     pub height: TxHeight,
     pub time: Option<u64>,
 }
 
-impl From<ConfirmationTime> for ChainIndex<Option<u64>> {
-    fn from(conf: ConfirmationTime) -> Self {
-        Self {
-            height: conf.height,
-            extension: conf.time,
-        }
+impl ConfirmationTime {
+    pub fn is_confirmed(&self) -> bool {
+        self.height.is_confirmed()
     }
 }
 
@@ -113,31 +172,6 @@ impl From<(&u32, &BlockHash)> for BlockId {
             hash: *hash,
         }
     }
-}
-
-// When no-std use `alloc`'s Hash collections. This is activated by default
-#[cfg(all(not(feature = "std"), not(feature = "hashbrown")))]
-pub mod collections {
-    #![allow(dead_code)]
-    pub type HashSet<K> = alloc::collections::BTreeSet<K>;
-    pub type HashMap<K, V> = alloc::collections::BTreeMap<K, V>;
-    pub use alloc::collections::*;
-}
-
-// When we have std use `std`'s all collections
-#[cfg(all(feature = "std", not(feature = "hashbrown")))]
-pub mod collections {
-    pub use std::collections::*;
-}
-
-// With special feature `hashbrown` use `hashbrown`'s hash collections, and else from `alloc`.
-#[cfg(feature = "hashbrown")]
-pub mod collections {
-    #![allow(dead_code)]
-    pub type HashSet<K> = hashbrown::HashSet<K>;
-    pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
-    pub use alloc::collections::*;
-    pub use core::ops::Bound;
 }
 
 #[derive(Clone, Debug, PartialEq)]
