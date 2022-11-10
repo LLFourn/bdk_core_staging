@@ -6,6 +6,8 @@ use crate::{
     SparseChain, TxGraph, UpdateFailure,
 };
 
+pub type TimestampedChainGraph = ChainGraph<Option<u64>>;
+
 #[derive(Clone, Debug, Default)]
 pub struct ChainGraph<E = ()> {
     chain: SparseChain<E>,

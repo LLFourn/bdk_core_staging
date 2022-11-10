@@ -3,9 +3,22 @@ use core::{
     ops::{Bound, RangeBounds},
 };
 
-use crate::{collections::*, BlockId, TxGraph, Vec};
+use crate::{collections::*, BlockId, ConfirmationTime, TxGraph, TxHeight, Vec};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
+/// A [`SparseChain`] in which the [`ChainIndex`] is extended by a timestamp.
+pub type TimestampedSparseChain = SparseChain<Option<u64>>;
+
+/// This is a non-monotone structure that tracks relevant [`Txid`]s that are ordered by
+/// [`ChainIndex`].
+///
+/// To "merge" two [`SparseChain`]s, one can calculate the [`ChangeSet`] by calling
+/// [`Self::determine_changeset(update)`], and applying the [`ChangeSet`] via
+/// [`Self::apply_changeset(changeset)`]. For convenience, one can do the above two steps as one via
+/// [`Self::apply_update(update)`].
+///
+/// The generic `E` is used to extend the [`ChainIndex`], allowing for more definite ordering within
+/// a given height.
 #[derive(Clone, Debug)]
 pub struct SparseChain<E = ()> {
     /// Block height to checkpoint data.
@@ -629,6 +642,10 @@ impl<E: core::fmt::Debug> Display for MergeFailure<E> {
 #[cfg(feature = "std")]
 impl<D: core::fmt::Display + core::fmt::Debug> std::error::Error for MergeFailure<D> {}
 
+/// [`ChainIndexExtension`] is used to extend [`ChainIndex`].
+///
+/// This can be used to add additional data (such as block time and block position) to transactions,
+/// which will be reflected in how the transactions are to be sorted in [`SparseChain`].
 pub trait ChainIndexExtension:
     Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + core::hash::Hash
 {
@@ -656,9 +673,15 @@ impl ChainIndexExtension for u64 {
     const MAX: Self = u64::MAX;
 }
 
+/// [`ChainIndex`] that is extended by a timestamp.
+pub type TimestampedChainIndex = ChainIndex<Option<u64>>;
+
+/// Index in which transactions are ordered by in [`SparseChain`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChainIndex<E = ()> {
+    /// Height in which the transaction is confirmed (or not).
     pub height: TxHeight,
+    /// Additional data to extend the [`ChainIndex`].
     pub extension: E,
 }
 
@@ -677,43 +700,12 @@ impl<E: ChainIndexExtension> From<(TxHeight, E)> for ChainIndex<E> {
     }
 }
 
-/// Represents the height in which a transaction is confirmed at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TxHeight {
-    Confirmed(u32),
-    Unconfirmed,
-}
-
-impl Display for TxHeight {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Confirmed(h) => core::write!(f, "confirmed_at({})", h),
-            Self::Unconfirmed => core::write!(f, "unconfirmed"),
+impl From<ConfirmationTime> for ChainIndex<Option<u64>> {
+    fn from(conf: ConfirmationTime) -> Self {
+        Self {
+            height: conf.height,
+            extension: conf.time,
         }
-    }
-}
-
-impl From<Option<u32>> for TxHeight {
-    fn from(opt: Option<u32>) -> Self {
-        match opt {
-            Some(h) => Self::Confirmed(h),
-            None => Self::Unconfirmed,
-        }
-    }
-}
-
-impl From<TxHeight> for Option<u32> {
-    fn from(height: TxHeight) -> Self {
-        match height {
-            TxHeight::Confirmed(h) => Some(h),
-            TxHeight::Unconfirmed => None,
-        }
-    }
-}
-
-impl TxHeight {
-    pub fn is_confirmed(&self) -> bool {
-        matches!(self, Self::Confirmed(_))
     }
 }
 
