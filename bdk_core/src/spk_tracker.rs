@@ -1,10 +1,11 @@
-use core::ops::RangeBounds;
-
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    ChainIndexExtension, FullTxOut, SparseChain, TxGraph,
+    sparse_chain::{self, SparseChain},
+    tx_graph::TxGraph,
+    FullTxOut,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
+use core::ops::RangeBounds;
 
 /// A *script pubkey* tracker.
 ///
@@ -70,7 +71,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
             .map(|(op, (index, txout))| (index.clone(), *op, txout))
     }
 
-    pub fn iter_unspent<'a, E: ChainIndexExtension>(
+    pub fn iter_unspent<'a, E: sparse_chain::ChainIndexExtension>(
         &'a self,
         chain: &'a SparseChain<E>,
         graph: &'a TxGraph,

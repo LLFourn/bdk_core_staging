@@ -2,8 +2,9 @@ use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use core::fmt::Debug;
 
 use crate::{
-    BlockId, ChainIndex, ChainIndexExtension, ChangeSet, InsertCheckpointErr, InsertTxErr,
-    SparseChain, TxGraph, UpdateFailure,
+    sparse_chain::{self, SparseChain},
+    tx_graph::TxGraph,
+    BlockId,
 };
 
 pub type TimestampedChainGraph = ChainGraph<Option<u64>>;
@@ -14,10 +15,14 @@ pub struct ChainGraph<E = ()> {
     graph: TxGraph,
 }
 
-impl<E: ChainIndexExtension> ChainGraph<E> {
-    pub fn insert_tx<I>(&mut self, tx: Transaction, index: I) -> Result<bool, InsertTxErr>
+impl<E: sparse_chain::ChainIndexExtension> ChainGraph<E> {
+    pub fn insert_tx<I>(
+        &mut self,
+        tx: Transaction,
+        index: I,
+    ) -> Result<bool, sparse_chain::InsertTxErr>
     where
-        I: Into<ChainIndex<E>>,
+        I: Into<sparse_chain::ChainIndex<E>>,
     {
         let changed = self.chain.insert_tx(tx.txid(), index)?;
         self.graph.insert_tx(&tx);
@@ -29,23 +34,30 @@ impl<E: ChainIndexExtension> ChainGraph<E> {
         outpoint: OutPoint,
         txout: TxOut,
         index: I,
-    ) -> Result<bool, InsertTxErr>
+    ) -> Result<bool, sparse_chain::InsertTxErr>
     where
-        I: Into<ChainIndex<E>>,
+        I: Into<sparse_chain::ChainIndex<E>>,
     {
         let changed = self.chain.insert_tx(outpoint.txid, index)?;
         self.graph.insert_txout(outpoint, txout);
         Ok(changed)
     }
 
-    pub fn insert_txid<I>(&mut self, txid: Txid, index: I) -> Result<bool, InsertTxErr>
+    pub fn insert_txid<I>(
+        &mut self,
+        txid: Txid,
+        index: I,
+    ) -> Result<bool, sparse_chain::InsertTxErr>
     where
-        I: Into<ChainIndex<E>>,
+        I: Into<sparse_chain::ChainIndex<E>>,
     {
         self.chain.insert_tx(txid, index)
     }
 
-    pub fn insert_checkpoint(&mut self, block_id: BlockId) -> Result<bool, InsertCheckpointErr> {
+    pub fn insert_checkpoint(
+        &mut self,
+        block_id: BlockId,
+    ) -> Result<bool, sparse_chain::InsertCheckpointErr> {
         self.chain.insert_checkpoint(block_id)
     }
 
@@ -57,7 +69,10 @@ impl<E: ChainIndexExtension> ChainGraph<E> {
         &self.graph
     }
 
-    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<E>, UpdateFailure<E>> {
+    pub fn apply_update(
+        &mut self,
+        update: &Self,
+    ) -> Result<sparse_chain::ChangeSet<E>, sparse_chain::UpdateFailure<E>> {
         let changeset = self.chain.determine_changeset(update.chain())?;
         changeset
             .tx_additions()
