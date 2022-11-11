@@ -1,14 +1,16 @@
 use bdk_core::{
     collections::{BTreeSet, Bound},
-    *,
+    sparse_chain::*,
+    BlockId, TxHeight,
 };
 use bitcoin::{hashes::Hash, BlockHash, Txid};
 
 macro_rules! chain {
     ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
-    (checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
+    (checkpoints: $($tail:tt)*) => { chain!( ext: (), checkpoints: $($tail)*) };
+    (ext: $ext:ty, checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
         #[allow(unused_mut)]
-        let mut chain = SparseChain::<()>::from_checkpoints::<(u32, BlockHash), _>([$(($height, $block_hash)),*]);
+        let mut chain = SparseChain::<$ext>::from_checkpoints::<(u32, BlockHash), _>([$(($height, $block_hash)),*]);
 
         $(
             $(
@@ -28,16 +30,16 @@ macro_rules! h {
 }
 
 macro_rules! changeset {
+    (checkpoints: $($tail:tt)*) => { changeset!(ext: (), checkpoints: $($tail)*) };
     (
+        ext: $ext:ty,
         checkpoints: [ $(( $height:expr, $cp_from:expr => $cp_to:expr )),* ]
         $(,txids: [ $(( $txid:expr, $tx_from:expr => $tx_to:expr )),* ])?
-
     ) => {{
         use bdk_core::collections::HashMap;
-        use bdk_core::Change;
 
         #[allow(unused_mut)]
-        ChangeSet::<()> {
+        ChangeSet::<$ext> {
             checkpoints: {
                 let mut changes = HashMap::default();
                 $(changes.insert($height, Change { from: $cp_from, to: $cp_to });)*
@@ -324,21 +326,44 @@ fn fix_blockhash_before_agreement_point() {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
+pub struct TestIndexExt(pub u32);
+pub struct TestIndex(TxHeight, u32);
+
+impl ChainIndexExtension for TestIndexExt {
+    const MIN: Self = TestIndexExt(u32::MIN);
+    const MAX: Self = TestIndexExt(u32::MAX);
+}
+
+impl From<TestIndex> for ChainIndex<TestIndexExt> {
+    fn from(i: TestIndex) -> Self {
+        ChainIndex {
+            height: i.0,
+            extension: TestIndexExt(i.1),
+        }
+    }
+}
+
+impl From<u32> for TestIndexExt {
+    fn from(i: u32) -> Self {
+        TestIndexExt(i)
+    }
+}
+
 // TODO: Use macro
 #[test]
-fn cannot_change_index_of_confirmed_tx() {
-    let chain1 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1"))]);
-        c.insert_tx(h!("tx1"), (TxHeight::Confirmed(1), 10))
-            .expect("should succeed");
-        c
-    };
-    let chain2 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1"))]);
-        c.insert_tx(h!("tx1"), (TxHeight::Confirmed(1), 20))
-            .expect("should succeed");
-        c
-    };
+fn cannot_change_ext_index_of_confirmed_tx() {
+    let chain1 = chain!(
+        ext: TestIndexExt,
+        checkpoints: [[1, h!("A")]],
+        txids: [(h!("tx0"), (TxHeight::Confirmed(1), 10))]
+    );
+    let chain2 = chain!(
+        ext: TestIndexExt,
+        checkpoints: [[1, h!("A")]],
+        txids: [(h!("tx0"), (TxHeight::Confirmed(1), 20))]
+    );
+
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Err(UpdateFailure::InconsistentTx {
@@ -349,21 +374,19 @@ fn cannot_change_index_of_confirmed_tx() {
     )
 }
 
-// TODO: Use macro
 #[test]
 fn can_change_index_of_unconfirmed_tx() {
-    let chain1 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1"))]);
-        c.insert_tx(h!("tx1"), (TxHeight::Unconfirmed, 10))
-            .expect("should succeed");
-        c
-    };
-    let chain2 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1"))]);
-        c.insert_tx(h!("tx1"), (TxHeight::Unconfirmed, 20))
-            .expect("should succeed");
-        c
-    };
+    let chain1 = chain!(
+        ext: TestIndexExt,
+        checkpoints: [[1, h!("A")]],
+        txids: [(h!("tx1"), (TxHeight::Unconfirmed, 10))]
+    );
+    let chain2 = chain!(
+        ext: TestIndexExt,
+        checkpoints: [[1, h!("A")]],
+        txids: [(h!("tx1"), (TxHeight::Unconfirmed, 20))]
+    );
+
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(ChangeSet {
@@ -543,9 +566,10 @@ fn checkpoint_limit_is_respected() {
 
 #[test]
 fn range_txids_by_height() {
-    let mut chain = SparseChain::<u32>::from_checkpoints([(1, h!("block 1")), (2, h!("block 2"))]);
+    let mut chain =
+        SparseChain::<TestIndexExt>::from_checkpoints([(1, h!("block 1")), (2, h!("block 2"))]);
 
-    let txids: [(ChainIndex<u32>, Txid); 4] = [
+    let txids: [(ChainIndex<TestIndexExt>, Txid); 4] = [
         (
             (TxHeight::Confirmed(1), u32::MIN).into(),
             Txid::from_inner([0x00; 32]),
@@ -604,9 +628,10 @@ fn range_txids_by_height() {
 
 #[test]
 fn range_txids_by_index() {
-    let mut chain = SparseChain::<u32>::from_checkpoints([(1, h!("block 1")), (2, h!("block 2"))]);
+    let mut chain =
+        SparseChain::<TestIndexExt>::from_checkpoints([(1, h!("block 1")), (2, h!("block 2"))]);
 
-    let txids: [(ChainIndex<u32>, Txid); 4] = [
+    let txids: [(ChainIndex<TestIndexExt>, Txid); 4] = [
         ((TxHeight::Confirmed(1), u32::MIN).into(), h!("tx 1 min")),
         ((TxHeight::Confirmed(1), u32::MAX).into(), h!("tx 1 max")),
         ((TxHeight::Confirmed(2), u32::MIN).into(), h!("tx 2 min")),

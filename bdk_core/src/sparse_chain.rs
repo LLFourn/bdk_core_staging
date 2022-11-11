@@ -3,8 +3,10 @@ use core::{
     ops::{Bound, RangeBounds},
 };
 
-use crate::{collections::*, BlockId, ConfirmationTime, TxGraph, TxHeight, Vec};
-use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
+use crate::{
+    collections::*, tx_graph::TxGraph, BlockId, ConfirmationTime, FullTxOut, TxHeight, Vec,
+};
+use bitcoin::{hashes::Hash, BlockHash, OutPoint, Txid};
 
 /// A [`SparseChain`] in which the [`ChainIndex`] is extended by a timestamp.
 pub type TimestampedSparseChain = SparseChain<Option<u64>>;
@@ -104,7 +106,7 @@ impl<E: core::fmt::Debug> core::fmt::Display for UpdateFailure<E> {
 impl<E: core::fmt::Debug> std::error::Error for UpdateFailure<E> {}
 
 impl<E: ChainIndexExtension> SparseChain<E> {
-    /// Creates a new chain from a list of blocks. The caller must guarantee they are in the same
+    /// Creates a new chain from a list of block hashes and heights. The caller must guarantee they are in the same
     /// chain.
     pub fn from_checkpoints<B, I>(checkpoints: I) -> Self
     where
@@ -691,19 +693,6 @@ impl ChainIndexExtension for () {
     const MAX: Self = ();
 }
 
-impl ChainIndexExtension for u32 {
-    const MIN: Self = u32::MIN;
-    const MAX: Self = u32::MAX;
-}
-
-impl ChainIndexExtension for u64 {
-    const MIN: Self = u64::MIN;
-    const MAX: Self = u64::MAX;
-}
-
-/// [`ChainIndex`] that is extended by a timestamp.
-pub type TimestampedChainIndex = ChainIndex<Option<u64>>;
-
 /// Index in which transactions are ordered by in [`SparseChain`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChainIndex<E = ()> {
@@ -722,9 +711,12 @@ impl From<TxHeight> for ChainIndex {
     }
 }
 
-impl<E: ChainIndexExtension> From<(TxHeight, E)> for ChainIndex<E> {
-    fn from((height, extension): (TxHeight, E)) -> Self {
-        Self { height, extension }
+impl<E: ChainIndexExtension, I: Into<E>> From<(TxHeight, I)> for ChainIndex<E> {
+    fn from((height, extension): (TxHeight, I)) -> Self {
+        Self {
+            height,
+            extension: extension.into(),
+        }
     }
 }
 
@@ -735,15 +727,6 @@ impl From<ConfirmationTime> for ChainIndex<Option<u64>> {
             extension: conf.time,
         }
     }
-}
-
-/// A `TxOut` with as much data as we can retreive about it
-#[derive(Debug, Clone, PartialEq)]
-pub struct FullTxOut<E> {
-    pub outpoint: OutPoint,
-    pub txout: TxOut,
-    pub chain_index: ChainIndex<E>,
-    pub spent_by: Option<Txid>,
 }
 
 fn min_txid() -> Txid {
