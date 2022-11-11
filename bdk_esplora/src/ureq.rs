@@ -6,7 +6,7 @@ use bdk_core::{
         BlockHash, Script, Transaction, Txid,
     },
     sparse_chain::{InsertCheckpointErr, InsertTxErr},
-    BlockId, ConfirmationTime, TimestampedChainGraph,
+    BlockId, TimestampedChainGraph,
 };
 use std::collections::{BTreeMap, BTreeSet};
 pub use ureq;
@@ -256,6 +256,10 @@ impl Client {
                 })
                 .collect::<Vec<_>>();
 
+            let fallback_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("should obtain system time")
+                .as_secs();
             let n_handles = handles.len();
 
             for handle in handles {
@@ -267,8 +271,8 @@ impl Client {
                     empty_scripts = 0;
                 }
                 for tx in related_txs {
-                    if let Err(err) =
-                        update.insert_tx::<ConfirmationTime>(tx.to_tx(), tx.status.into())
+                    if let Err(err) = update
+                        .insert_tx(tx.to_tx(), tx.status.into_confirmation_time(fallback_time))
                     {
                         match err {
                             InsertTxErr::TxTooHigh => {
