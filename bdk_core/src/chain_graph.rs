@@ -4,15 +4,24 @@ use core::fmt::Debug;
 use crate::{
     sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
-    BlockId,
+    BlockId, Timestamp,
 };
 
-pub type TimestampedChainGraph = ChainGraph<Option<u64>>;
+pub type TimestampedChainGraph = ChainGraph<Timestamp>;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ChainGraph<E = ()> {
     chain: SparseChain<E>,
     graph: TxGraph,
+}
+
+impl<E> Default for ChainGraph<E> {
+    fn default() -> Self {
+        Self {
+            chain: Default::default(),
+            graph: Default::default(),
+        }
+    }
 }
 
 impl<E: sparse_chain::ChainIndexExtension> ChainGraph<E> {

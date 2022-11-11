@@ -1,4 +1,4 @@
-use crate::sparse_chain::{self, ChainIndex, ChainIndexExtension};
+use crate::sparse_chain::{self, ChainIndex, ChainIndexExtension, TimestampedChainIndex};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
 /// Represents the height in which a transaction is confirmed at.
@@ -53,7 +53,7 @@ impl TxHeight {
 }
 
 /// Block height and timestamp in which a transaction is confirmed in.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Copy, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Deserialize, serde::Serialize),
@@ -61,7 +61,7 @@ impl TxHeight {
 )]
 pub struct ConfirmationTime {
     pub height: TxHeight,
-    pub time: Option<u64>,
+    pub time: Timestamp,
 }
 
 impl ConfirmationTime {
@@ -125,6 +125,11 @@ pub struct FullTxOut<E> {
 
 /// A wrapped `u64` for use as a [`ChainIndexExtension`](crate::sparse_chain::ChainIndexExtension)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
 pub struct Timestamp(pub u64);
 
 impl ChainIndexExtension for Timestamp {
@@ -132,11 +137,11 @@ impl ChainIndexExtension for Timestamp {
     const MAX: Self = Timestamp(u64::MAX);
 }
 
-impl From<ConfirmationTime> for ChainIndex<Option<Timestamp>> {
+impl From<ConfirmationTime> for TimestampedChainIndex {
     fn from(ct: ConfirmationTime) -> Self {
         ChainIndex {
             height: ct.height,
-            extension: ct.time.map(Timestamp),
+            extension: ct.time,
         }
     }
 }
