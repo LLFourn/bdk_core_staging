@@ -40,11 +40,11 @@ pub struct TxStatus {
     pub block_time: Option<u64>,
 }
 
-impl From<TxStatus> for ConfirmationTime {
-    fn from(status: TxStatus) -> Self {
-        Self {
-            height: status.block_height.into(),
-            time: Timestamp(status.block_time.unwrap_or(0)),
+impl TxStatus {
+    pub fn into_confirmation_time(self, fallback_time: u64) -> ConfirmationTime {
+        ConfirmationTime {
+            height: self.block_height.into(),
+            time: Timestamp(self.block_time.unwrap_or(fallback_time)),
         }
     }
 }
@@ -91,8 +91,8 @@ impl Tx {
         }
     }
 
-    pub fn confirmation_time(&self) -> ConfirmationTime {
-        self.status.clone().into()
+    pub fn confirmation_time(&self, fallback_time: u64) -> ConfirmationTime {
+        self.status.clone().into_confirmation_time(fallback_time)
     }
 
     pub fn previous_outputs(&self) -> PrevOuts {
