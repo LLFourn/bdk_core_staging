@@ -5,7 +5,8 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    BlockId, ChainGraph, InsertCheckpointErr, InsertTxErr,
+    sparse_chain::{ InsertCheckpointErr, InsertTxErr },
+    BlockId, WalletScanUpdate, chain_graph::ChainGraph,
 };
 use std::collections::{BTreeMap, BTreeSet};
 pub use ureq;
@@ -22,6 +23,7 @@ pub struct Client {
 pub enum UpdateError {
     Ureq(ureq::Error),
     Deserialization { url: String },
+    Reorg
 }
 
 #[derive(Debug)]
@@ -46,6 +48,7 @@ impl core::fmt::Display for UpdateError {
             UpdateError::Deserialization { url } => {
                 write!(f, "Failed to deserialize response from {}", url)
             }
+            UpdateError::Reorg => write!(f, "there was a reorg during the scan")
         }
     }
 }
@@ -175,19 +178,29 @@ impl Client {
         Ok(())
     }
 
+
+    pub fn spk_scan(&self, spks: impl Iterator<Item=Script>, existing_chain: BTreeMap<u32, BlockHash>) -> Result<ChainGraph, UpdateError> {
+        let mut dummy_keychains = BTreeMap::new();
+        dummy_keychains.insert((), spks.enumerate().map(|(i, spk)| (i as u32, spk)));
+
+        let wallet_scan = self.wallet_scan(dummy_keychains, None, existing_chain)?;
+
+        Ok(wallet_scan.update)
+    }
+
     /// Create a new checkpoint with transactions spending from or to the scriptpubkeys in
     /// `scripts`.
-    pub fn fetch_new_checkpoint(
+    pub fn wallet_scan<K: Ord + Clone, I>(
         &self,
-        mut scripts: impl Iterator<Item = (u32, Script)> + Clone,
-        stop_gap: usize,
-        existing_chain: &BTreeMap<u32, BlockHash>,
-    ) -> Result<(Option<u32>, ChainGraph), UpdateError> {
-        let mut empty_scripts = 0;
-        let mut update = ChainGraph::default();
-        let mut last_active_index = None;
-        // need to clone the iterator in case we need to start from the beggining again
-        let backup_scripts = scripts.clone();
+        keychains: BTreeMap<K, I>,
+        stop_gap: Option<usize>,
+        existing_chain: BTreeMap<u32, BlockHash>,
+    ) -> Result<WalletScanUpdate<K>, UpdateError>
+    where
+        I: Iterator<Item = (u32, Script)>
+    {
+        let mut wallet_scan = WalletScanUpdate::default();
+        let update = &mut wallet_scan.update;
 
         for (&existing_height, &existing_hash) in existing_chain.iter().rev() {
             let current_hash = self.block_hash_at_height(existing_height)?;
@@ -212,65 +225,76 @@ impl Client {
             }
         }
 
-        loop {
-            let handles = (0..self.parallel_requests)
-                .filter_map(|_| {
-                    let (index, script) = scripts.next()?;
-                    let client = self.clone();
-                    Some(std::thread::spawn(move || {
-                        let mut related_txs: Vec<api::Tx> =
-                            client._scripthash_txs(&script, None)?;
+        for (keychain, mut spks) in keychains {
+            let mut last_active_index = None;
+            let mut empty_scripts = 0;
 
-                        let n_confirmed =
-                            related_txs.iter().filter(|tx| tx.status.confirmed).count();
-                        // esplora pages on 25 confirmed transactions. If there's 25 or more we
-                        // keep requesting to see if there's more.
-                        if n_confirmed >= 25 {
-                            loop {
-                                let new_related_txs: Vec<api::Tx> = client._scripthash_txs(
-                                    &script,
-                                    Some(related_txs.last().unwrap().txid),
-                                )?;
-                                let n = new_related_txs.len();
-                                related_txs.extend(new_related_txs);
-                                // we've reached the end
-                                if n < 25 {
-                                    break;
+            loop {
+                let handles = (0..self.parallel_requests)
+                    .filter_map(|_| {
+                        let (index, script) = spks.next()?;
+                        let client = self.clone();
+                        Some(std::thread::spawn(move || {
+                            let mut related_txs: Vec<api::Tx> =
+                                client._scripthash_txs(&script, None)?;
+
+                            let n_confirmed =
+                                related_txs.iter().filter(|tx| tx.status.confirmed).count();
+                            // esplora pages on 25 confirmed transactions. If there's 25 or more we
+                            // keep requesting to see if there's more.
+                            if n_confirmed >= 25 {
+                                loop {
+                                    let new_related_txs: Vec<api::Tx> = client._scripthash_txs(
+                                        &script,
+                                        Some(related_txs.last().unwrap().txid),
+                                    )?;
+                                    let n = new_related_txs.len();
+                                    related_txs.extend(new_related_txs);
+                                    // we've reached the end
+                                    if n < 25 {
+                                        break;
+                                    }
                                 }
                             }
-                        }
 
-                        Result::<_, ureq::Error>::Ok((index, related_txs))
-                    }))
-                })
-                .collect::<Vec<_>>();
+                            Result::<_, ureq::Error>::Ok((index, related_txs))
+                        }))
+                    })
+                    .collect::<Vec<_>>();
 
-            let n_handles = handles.len();
+                let n_handles = handles.len();
 
-            for handle in handles {
-                let (index, related_txs) = handle.join().unwrap()?; // TODO: don't unwrap
-                if related_txs.is_empty() {
-                    empty_scripts += 1;
-                } else {
-                    last_active_index = Some(index);
-                    empty_scripts = 0;
-                }
-                for tx in related_txs {
-                    if let Err(err) = update.insert_tx(tx.to_tx(), tx.status.block_height.into()) {
-                        match err {
-                            InsertTxErr::TxTooHigh => {
-                                /* Don't care about new transactions confirmed while syncing */
-                            }
-                            InsertTxErr::TxMoved => {
-                                /* This means there is a reorg, we will catch that below */
+                for handle in handles {
+                    let (index, related_txs) = handle.join().unwrap()?; // TODO: don't unwrap
+                    if related_txs.is_empty() {
+                        empty_scripts += 1;
+                    } else {
+                        last_active_index = Some(index);
+                        empty_scripts = 0;
+                    }
+                    for tx in related_txs {
+                        if let Err(err) = update.insert_tx(tx.to_tx(), tx.status.block_height.into()) {
+                            match err {
+                                InsertTxErr::TxTooHigh => {
+                                    /* Don't care about new transactions confirmed while syncing */
+                                }
+                                InsertTxErr::TxMoved => {
+                                    /* This means there is a reorg, we will catch that below */
+                                }
                             }
                         }
                     }
                 }
+
+                if n_handles == 0 || empty_scripts >= stop_gap.unwrap_or(usize::MAX) {
+                    break;
+                }
             }
 
-            if n_handles == 0 || empty_scripts >= stop_gap {
-                break;
+            if let Some(last_active_index) = last_active_index {
+                wallet_scan
+                    .last_active_indexes
+                    .insert(keychain, last_active_index);
             }
         }
 
@@ -278,10 +302,11 @@ impl Client {
 
         for block in blocks_at_end {
             if update.insert_checkpoint(block).is_err() {
-                return self.fetch_new_checkpoint(backup_scripts, stop_gap, existing_chain);
+                return Err(UpdateError::Reorg)
             }
         }
 
-        Ok((last_active_index, update))
+        Ok(wallet_scan)
+
     }
 }

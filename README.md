@@ -65,7 +65,7 @@ This is not well tested. If something goes wrong it's probably a bug!
 
 ```
 cd bdk_core_example
-export DESCRIPTOR="tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)" CHANGE_DESCRIPTOR="tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/*)"
+export DESCRIPTOR="tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)" CHANGE_DESCRIPTOR="tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/*)" BDK_DB="./tmp.db"
 
 cargo run -- address list
 cargo run -- address next
@@ -76,6 +76,7 @@ cargo run -- send 10000 <the new address>
 
 ```
 export DESCRIPTOR="tr(xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ/0/*,pk(xprv9s21ZrQH143K3ngkqk9y72BYSJTZ1ngfTFGFtxCwfP9pKqcMzn6aCP3mZoY8qMEqUjkxC2BkDUVLw77qbyGt66BbE7g3nt8JAGGkcTe4kWZ/0/*))"
+BDK_DB="./tmp.db"
 ```
 
 ## Contribute

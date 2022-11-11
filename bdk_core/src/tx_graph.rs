@@ -2,7 +2,7 @@ use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
 use crate::{collections::*, Vec};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TxGraph {
     txs: HashMap<Txid, TxNode>,
     spends: BTreeMap<OutPoint, HashSet<Txid>>,
@@ -46,8 +46,8 @@ impl TxGraph {
     }
 
     /// Returns a [`BTreeMap`] of outputs of a given txid.
-    pub fn txouts(&self, txid: &Txid) -> Option<BTreeMap<u32, &TxOut>> {
-        Some(match self.txs.get(txid)? {
+    pub fn txouts(&self, txid: Txid) -> Option<BTreeMap<u32, &TxOut>> {
+        Some(match self.txs.get(&txid)? {
             TxNode::Whole(tx) => tx
                 .output
                 .iter()
@@ -168,24 +168,72 @@ impl TxGraph {
 
     /// Extends this graph with another so that `self` becomes the union of the two sets of
     /// transactions.
-    pub fn extend(&mut self, other: TxGraph) {
-        for (txid, tx) in other.txs {
+    pub fn apply_update(&mut self, other: TxGraph) {
+        let additions = self.determine_additions(&other);
+        self.apply_additions(additions);
+    }
+
+    pub fn determine_additions(&self, other: &TxGraph) -> Additions {
+        let mut additions = Additions::default();
+        for (&txid, tx) in &other.txs {
             match tx {
                 TxNode::Whole(tx) => {
-                    self.insert_tx(&tx);
+                    if self.tx(txid).is_none() {
+                        additions.tx.insert(tx.clone());
+                    }
                 }
                 TxNode::Partial(partial) => {
-                    for (vout, txout) in partial {
-                        self.insert_txout(OutPoint { txid, vout }, txout);
+                    for (&vout, txout) in partial {
+                        let op = OutPoint { txid, vout };
+                        let insert = match self.txouts(txid) {
+                            Some(txouts) => match txouts.get(&vout) {
+                                Some(existing_txout) => *existing_txout != txout,
+                                None => true,
+                            },
+                            None => true,
+                        };
+
+                        if insert {
+                            additions.txout.insert(op, txout.clone());
+                        }
                     }
                 }
             }
         }
+
+        additions
+    }
+
+    pub fn apply_additions(&mut self, additions: Additions) {
+        for tx in additions.tx {
+            self.insert_tx(&tx);
+        }
+
+        for (outpoint, txout) in additions.txout {
+            self.insert_txout(outpoint, txout);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
+pub struct Additions {
+    pub tx: BTreeSet<Transaction>,
+    pub txout: BTreeMap<OutPoint, TxOut>,
+}
+
+impl Additions {
+    pub fn is_empty(&self) -> bool {
+        self.tx.is_empty() && self.txout.is_empty()
     }
 }
 
 /// Node of a [`TxGraph`]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum TxNode {
     Whole(Transaction),
     Partial(BTreeMap<u32, TxOut>),

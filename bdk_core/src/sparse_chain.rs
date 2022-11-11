@@ -1,13 +1,13 @@
 use core::{
-    borrow::Borrow,
     fmt::Display,
     ops::{Bound, RangeBounds},
 };
 
-use crate::{collections::*, BlockId, TxGraph, Vec};
-use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, TxOut, Txid};
+use crate::{collections::*, tx_graph::TxGraph, BlockId, FullTxOut, TxHeight};
+use alloc::vec::Vec;
+use bitcoin::{hashes::Hash, BlockHash, OutPoint, Transaction, Txid};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SparseChain {
     /// Block height to checkpoint data.
     checkpoints: BTreeMap<u32, BlockHash>,
@@ -142,12 +142,7 @@ impl SparseChain {
         }
     }
 
-    pub fn determine_changeset<U>(&self, update: &U) -> Result<ChangeSet, UpdateFailure>
-    where
-        U: Borrow<Self>,
-    {
-        let update: &Self = update.borrow();
-
+    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet, UpdateFailure> {
         let agreement_point = update
             .checkpoints
             .iter()
@@ -247,43 +242,35 @@ impl SparseChain {
 
     /// Applies a new [`Update`] to the tracker.
     #[must_use]
-    pub fn apply_update<U>(&mut self, update: &U) -> Result<ChangeSet, UpdateFailure>
-    where
-        U: Borrow<Self>,
-    {
+    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet, UpdateFailure> {
         let changeset = self.determine_changeset(update)?;
-        self.apply_changeset(&changeset);
+        self.apply_changeset(changeset.clone().into_new_change_set());
         Ok(changeset)
     }
 
-    pub fn apply_changeset(&mut self, changeset: &ChangeSet) {
+    pub fn apply_changeset(&mut self, changeset: NewChangeSet) {
         for (&height, change) in &changeset.checkpoints {
-            let original_hash = match change.to {
-                Some(to) => self.checkpoints.insert(height, to),
+            match change {
+                Some(to) => self.checkpoints.insert(height, *to),
                 None => self.checkpoints.remove(&height),
             };
-            debug_assert_eq!(original_hash, change.from);
         }
 
-        for (&txid, change) in &changeset.txids {
-            let (changed, original_height) = match (change.from, change.to) {
-                (None, None) => panic!("should not happen"),
-                (None, Some(to)) => (
-                    self.txid_by_height.insert((to, txid)),
-                    self.txid_to_index.insert(txid, to),
-                ),
-                (Some(from), None) => (
-                    self.txid_by_height.remove(&(from, txid)),
-                    self.txid_to_index.remove(&txid),
-                ),
-                (Some(from), Some(to)) => (
-                    self.txid_by_height.insert((to, txid))
-                        && self.txid_by_height.remove(&(from, txid)),
-                    self.txid_to_index.insert(txid, to),
-                ),
-            };
-            debug_assert!(changed);
-            debug_assert_eq!(original_height, change.from);
+        for (&txid, &new_index) in &changeset.txids {
+            match new_index {
+                Some(new_index) => {
+                    self.txid_by_height.insert((new_index, txid));
+                    self.txid_to_index.insert(txid, new_index);
+                }
+                None => {
+                    let &current_height = self
+                        .txid_to_index
+                        .get(&txid)
+                        .expect("changeset is incompatible");
+                    self.txid_by_height.remove(&(current_height, txid));
+                    self.txid_to_index.remove(&txid);
+                }
+            }
         }
 
         self.prune_checkpoints();
@@ -302,7 +289,7 @@ impl SparseChain {
             ..Default::default()
         };
 
-        self.apply_changeset(&changeset);
+        self.apply_changeset(changeset.clone().into_new_change_set());
         changeset
     }
 
@@ -481,7 +468,7 @@ impl core::hash::Hash for TxKey {
 }
 
 /// Represents the set of changes as result of a successful [`Update`].
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub struct ChangeSet {
     pub checkpoints: HashMap<u32, Change<BlockHash>>,
     pub txids: HashMap<Txid, Change<TxHeight>>,
@@ -545,6 +532,38 @@ impl ChangeSet {
                 (None, Some(_)) => Some(*txid),
                 _ => None,
             })
+    }
+
+    pub fn into_new_change_set(self) -> NewChangeSet {
+        NewChangeSet {
+            checkpoints: self
+                .checkpoints
+                .into_iter()
+                .map(|(height, change)| (height, change.to))
+                .collect(),
+            txids: self
+                .txids
+                .into_iter()
+                .map(|(txid, change)| (txid, change.to))
+                .collect(),
+        }
+    }
+}
+
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewChangeSet {
+    pub checkpoints: BTreeMap<u32, Option<BlockHash>>,
+    pub txids: BTreeMap<Txid, Option<TxHeight>>,
+}
+
+impl NewChangeSet {
+    pub fn is_empty(&self) -> bool {
+        self.checkpoints.is_empty() && self.txids.is_empty()
     }
 }
 
@@ -639,70 +658,3 @@ impl Display for MergeFailure {
 
 #[cfg(feature = "std")]
 impl std::error::Error for MergeFailure {}
-
-#[derive(Debug)]
-pub enum SyncFailure {
-    TxNotInGraph(Txid),
-    TxNotInIndex(Txid),
-    TxInconsistent {
-        txid: Txid,
-        original: Option<TxHeight>,
-        change: Change<TxHeight>,
-    },
-}
-
-impl Display for SyncFailure {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // TODO: Proper error
-        write!(f, "sync failure: {:?}", self)
-    }
-}
-
-/// Represents the height in which a transaction is confirmed at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TxHeight {
-    Confirmed(u32),
-    Unconfirmed,
-}
-
-impl Display for TxHeight {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Confirmed(h) => core::write!(f, "confirmed_at({})", h),
-            Self::Unconfirmed => core::write!(f, "unconfirmed"),
-        }
-    }
-}
-
-impl From<Option<u32>> for TxHeight {
-    fn from(opt: Option<u32>) -> Self {
-        match opt {
-            Some(h) => Self::Confirmed(h),
-            None => Self::Unconfirmed,
-        }
-    }
-}
-
-impl From<TxHeight> for Option<u32> {
-    fn from(height: TxHeight) -> Self {
-        match height {
-            TxHeight::Confirmed(h) => Some(h),
-            TxHeight::Unconfirmed => None,
-        }
-    }
-}
-
-impl TxHeight {
-    pub fn is_confirmed(&self) -> bool {
-        matches!(self, Self::Confirmed(_))
-    }
-}
-
-/// A `TxOut` with as much data as we can retreive about it
-#[derive(Debug, Clone, PartialEq)]
-pub struct FullTxOut {
-    pub outpoint: OutPoint,
-    pub txout: TxOut,
-    pub height: TxHeight,
-    pub spent_by: Option<Txid>,
-}

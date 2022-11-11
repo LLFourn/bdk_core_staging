@@ -1,4 +1,5 @@
-use bdk_core::*;
+use bdk_core::sparse_chain::*;
+use bdk_core::{BlockId, TxHeight};
 macro_rules! chain {
     ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
     (checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{

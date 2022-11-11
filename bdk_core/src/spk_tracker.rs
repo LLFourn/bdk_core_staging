@@ -2,7 +2,9 @@ use core::ops::RangeBounds;
 
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    FullTxOut, SparseChain, TxGraph,
+    sparse_chain::SparseChain,
+    tx_graph::TxGraph,
+    FullTxOut,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
