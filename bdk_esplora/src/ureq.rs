@@ -5,8 +5,9 @@ use bdk_core::{
         hashes::{hex::ToHex, sha256, Hash},
         BlockHash, Script, Transaction, Txid,
     },
-    sparse_chain::{ InsertCheckpointErr, InsertTxErr },
-    BlockId, WalletScanUpdate, chain_graph::ChainGraph,
+    chain_graph::ChainGraph,
+    sparse_chain::{InsertCheckpointErr, InsertTxErr},
+    BlockId, WalletScanUpdate,
 };
 use std::collections::{BTreeMap, BTreeSet};
 pub use ureq;
@@ -23,7 +24,7 @@ pub struct Client {
 pub enum UpdateError {
     Ureq(ureq::Error),
     Deserialization { url: String },
-    Reorg
+    Reorg,
 }
 
 #[derive(Debug)]
@@ -48,7 +49,7 @@ impl core::fmt::Display for UpdateError {
             UpdateError::Deserialization { url } => {
                 write!(f, "Failed to deserialize response from {}", url)
             }
-            UpdateError::Reorg => write!(f, "there was a reorg during the scan")
+            UpdateError::Reorg => write!(f, "there was a reorg during the scan"),
         }
     }
 }
@@ -178,8 +179,11 @@ impl Client {
         Ok(())
     }
 
-
-    pub fn spk_scan(&self, spks: impl Iterator<Item=Script>, existing_chain: BTreeMap<u32, BlockHash>) -> Result<ChainGraph, UpdateError> {
+    pub fn spk_scan(
+        &self,
+        spks: impl Iterator<Item = Script>,
+        existing_chain: BTreeMap<u32, BlockHash>,
+    ) -> Result<ChainGraph, UpdateError> {
         let mut dummy_keychains = BTreeMap::new();
         dummy_keychains.insert((), spks.enumerate().map(|(i, spk)| (i as u32, spk)));
 
@@ -197,7 +201,7 @@ impl Client {
         existing_chain: BTreeMap<u32, BlockHash>,
     ) -> Result<WalletScanUpdate<K>, UpdateError>
     where
-        I: Iterator<Item = (u32, Script)>
+        I: Iterator<Item = (u32, Script)>,
     {
         let mut wallet_scan = WalletScanUpdate::default();
         let update = &mut wallet_scan.update;
@@ -273,7 +277,9 @@ impl Client {
                         empty_scripts = 0;
                     }
                     for tx in related_txs {
-                        if let Err(err) = update.insert_tx(tx.to_tx(), tx.status.block_height.into()) {
+                        if let Err(err) =
+                            update.insert_tx(tx.to_tx(), tx.status.block_height.into())
+                        {
                             match err {
                                 InsertTxErr::TxTooHigh => {
                                     /* Don't care about new transactions confirmed while syncing */
@@ -302,11 +308,10 @@ impl Client {
 
         for block in blocks_at_end {
             if update.insert_checkpoint(block).is_err() {
-                return Err(UpdateError::Reorg)
+                return Err(UpdateError::Reorg);
             }
         }
 
         Ok(wallet_scan)
-
     }
 }

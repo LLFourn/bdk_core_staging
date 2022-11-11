@@ -1,6 +1,6 @@
+use bdk_core::byte_list::{ByteList, LoadError};
 use bdk_core::chain_graph;
 use bdk_core::collections::BTreeMap;
-use bdk_core::disklist::{DiskList, LoadError};
 use bincode;
 use std::io;
 
@@ -12,13 +12,13 @@ enum DbKey {
     DerivationIndex,
 }
 
-pub struct Db<F>(DiskList<F>);
+pub struct Db<F>(ByteList<F>);
 
 const BINCODE_CONF: bincode::config::Configuration = bincode::config::standard();
 
 impl<F: io::Read + io::Write + io::Seek> Db<F> {
     pub fn load(file: F) -> Result<Self, LoadError> {
-        Ok(Self(DiskList::load(file)?))
+        Ok(Self(ByteList::load(file)?))
     }
 
     pub fn push_chain_changeset(&mut self, changeset: &chain_graph::ChangeSet) -> io::Result<()> {
@@ -63,8 +63,7 @@ impl<F: io::Read + io::Write + io::Seek> Db<F> {
     }
 
     pub fn set_derivation_indicies(&mut self, indicies: BTreeMap<Keychain, u32>) -> io::Result<()> {
-        let buf = bincode::encode_to_vec(indicies, bincode::config::standard()).unwrap();
-        self.0
-            .push_if_different(DbKey::DerivationIndex as u8, &buf[..])
+        let buf = bincode::encode_to_vec(indicies, BINCODE_CONF).unwrap();
+        self.0.push_if_different(DbKey::DerivationIndex as u8, &buf)
     }
 }

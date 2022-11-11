@@ -5,7 +5,7 @@ use bdk_core::{
         hashes::hex::ToHex,
         secp256k1::Secp256k1,
         util::sighash::{Prevouts, SighashCache},
-        Address, LockTime, Network, Script, Sequence, Transaction, TxIn, TxOut,
+        Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
     chain_graph::ChainGraph,
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},

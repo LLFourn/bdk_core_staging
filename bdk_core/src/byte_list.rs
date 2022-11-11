@@ -80,7 +80,7 @@ impl<S: Read + Write + Seek> ByteList<S> {
         Ok(Self { inner: stream })
     }
 
-    /// Initialize stream with [`MAGIC_BYTES`] and linked list 
+    /// Initialize stream with [`MAGIC_BYTES`] and linked list
     /// tail lookup table
     pub fn init(mut stream: S) -> Result<Self, io::Error> {
         stream.rewind()?;
