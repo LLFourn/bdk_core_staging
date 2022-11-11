@@ -2,6 +2,7 @@
 pub use alloc::{boxed::Box, vec::Vec};
 pub use bitcoin;
 mod chain_graph;
+use bitcoin::TxOut;
 pub use chain_graph::*;
 mod spk_tracker;
 pub use spk_tracker::*;
@@ -60,8 +61,8 @@ pub mod collections {
     pub use core::ops::Bound;
 }
 
-// #[derive(Clone, Debug, PartialEq)]
-// pub enum PrevOuts {
-//     Coinbase,
-//     Spend(Vec<TxOut>),
-// }
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrevOuts {
+    Coinbase,
+    Spend(Vec<TxOut>),
+}

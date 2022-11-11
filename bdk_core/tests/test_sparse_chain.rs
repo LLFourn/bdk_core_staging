@@ -367,7 +367,7 @@ fn cannot_change_ext_index_of_confirmed_tx() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Err(UpdateFailure::InconsistentTx {
-            inconsistent_txid: h!("tx1"),
+            inconsistent_txid: h!("tx0"),
             original_index: (TxHeight::Confirmed(1), 10).into(),
             update_index: (TxHeight::Confirmed(1), 20).into(),
         }),

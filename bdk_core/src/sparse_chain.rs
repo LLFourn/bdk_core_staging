@@ -3,13 +3,14 @@ use core::{
     ops::{Bound, RangeBounds},
 };
 
-use crate::{
-    collections::*, tx_graph::TxGraph, BlockId, ConfirmationTime, FullTxOut, TxHeight, Vec,
-};
+use crate::{collections::*, tx_graph::TxGraph, BlockId, FullTxOut, Timestamp, TxHeight, Vec};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, Txid};
 
-/// A [`SparseChain`] in which the [`ChainIndex`] is extended by a timestamp.
-pub type TimestampedSparseChain = SparseChain<Option<u64>>;
+/// A [`SparseChain`] in which the [`ChainIndex`] is extended by a [`Timestamp`].
+pub type TimestampedSparseChain = SparseChain<Timestamp>;
+
+/// A [`ChainIndex`] which is extended by a [`Timestamp`].
+pub type TimestampedChainIndex = ChainIndex<Timestamp>;
 
 /// This is a non-monotone structure that tracks relevant [`Txid`]s that are ordered by
 /// [`ChainIndex`].
@@ -683,11 +684,6 @@ pub trait ChainIndexExtension:
     const MAX: Self;
 }
 
-impl<E: ChainIndexExtension> ChainIndexExtension for Option<E> {
-    const MIN: Self = None;
-    const MAX: Self = Some(E::MAX);
-}
-
 impl ChainIndexExtension for () {
     const MIN: Self = ();
     const MAX: Self = ();
@@ -716,15 +712,6 @@ impl<E: ChainIndexExtension, I: Into<E>> From<(TxHeight, I)> for ChainIndex<E> {
         Self {
             height,
             extension: extension.into(),
-        }
-    }
-}
-
-impl From<ConfirmationTime> for ChainIndex<Option<u64>> {
-    fn from(conf: ConfirmationTime) -> Self {
-        Self {
-            height: conf.height,
-            extension: conf.time,
         }
     }
 }
