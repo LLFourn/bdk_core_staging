@@ -48,3 +48,15 @@ impl PartialOrd for Ordf64 {
         Some(self.cmp(other))
     }
 }
+
+impl core::fmt::Display for Ordf32 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl core::fmt::Display for Ordf64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}

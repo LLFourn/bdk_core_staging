@@ -15,14 +15,15 @@ impl<'a, M: BnBMetric> Iterator for BnbIter<'a, M> {
     type Item = Option<(CoinSelector<'a>, M::Score)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let branch = self.queue.pop()?;
-
         // {
+        //     println!("=========================== {:?}", self.best);
         //     for thing in self.queue.iter() {
         //         println!("{} {:?}", &thing.selector, thing.lower_bound);
         //     }
-        //     let _ = std::io::stdin().read_line(&mut String::new());
+        //     // let _ = std::io::stdin().read_line(&mut String::new());
         // }
+
+        let branch = self.queue.pop()?;
         if let Some(best) = &self.best {
             // If the next thing in queue is worse than our best we're done
             if *best < branch.lower_bound {
@@ -61,11 +62,8 @@ impl<'a, M: BnBMetric> BnbIter<'a, M> {
             metric,
         };
 
-        if let Some(_) = iter
-            .metric
-            .requires_ordering_by_descending_effective_value()
-        {
-            selector.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.spwu()));
+        if let Some(_) = iter.metric.requires_ordering_by_descending_spwu() {
+            selector.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.value_pwu()));
         }
 
         iter.consider_adding_to_queue(&selector, false);
@@ -139,7 +137,7 @@ pub trait BnBMetric {
 
     fn score<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score>;
     fn bound<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score>;
-    fn requires_ordering_by_descending_effective_value(&self) -> Option<FeeRate> {
+    fn requires_ordering_by_descending_spwu(&self) -> Option<FeeRate> {
         None
     }
 }

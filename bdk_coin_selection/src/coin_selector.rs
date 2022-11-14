@@ -38,7 +38,7 @@ impl WeightedValue {
         Ordf32(self.value as f32 - (self.weight as f32 * feerate.spwu()))
     }
 
-    pub fn spwu(&self) -> Ordf32 {
+    pub fn value_pwu(&self) -> Ordf32 {
         Ordf32(self.value as f32 / self.weight as f32)
     }
 }
@@ -221,6 +221,20 @@ impl<'a> CoinSelector<'a> {
             - self.implied_fee(target.feerate, target.min_fee, drain.weight) as i64
     }
 
+    pub fn rate_excess(&self, target: Target, drain: Drain) -> i64 {
+        self.selected_value() as i64
+            - target.value as i64
+            - drain.value as i64
+            - self.implied_fee_from_feerate(target.feerate, drain.weight) as i64
+    }
+
+    pub fn absolute_excess(&self, target: Target, drain: Drain) -> i64 {
+        self.selected_value() as i64
+            - target.value as i64
+            - drain.value as i64
+            - target.min_fee as i64
+    }
+
     /// The feerate the transaction would have if we were to use this selection of inputs to acheive
     /// the
     pub fn implied_feerate(&self, target_value: u64, drain: Drain) -> FeeRate {
@@ -230,7 +244,11 @@ impl<'a> CoinSelector<'a> {
     }
 
     pub fn implied_fee(&self, feerate: FeeRate, min_fee: u64, drain_weight: u32) -> u64 {
-        ((self.weight(drain_weight) as f32 * feerate.spwu()).ceil() as u64).max(min_fee)
+        (self.implied_fee_from_feerate(feerate, drain_weight)).max(min_fee)
+    }
+
+    pub fn implied_fee_from_feerate(&self, feerate: FeeRate, drain_weight: u32) -> u64 {
+        (self.weight(drain_weight) as f32 * feerate.spwu()).ceil() as u64
     }
 
     /// The value of the current selected inputs minus the fee needed to pay for the selected inputs
@@ -257,10 +275,6 @@ impl<'a> CoinSelector<'a> {
         K: Ord,
     {
         self.sort_candidates_by(|a, b| key_fn(a).cmp(&key_fn(b)))
-    }
-
-    pub fn sort_candidates_by_descending_effective_value(&mut self, feerate: FeeRate) {
-        self.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.effective_value(feerate)))
     }
 
     pub fn waste(
