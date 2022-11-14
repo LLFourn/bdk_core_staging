@@ -245,14 +245,19 @@ fn main() -> anyhow::Result<()> {
         Commands::Sync { unused } => {
             let mut spks = vec![];
             if unused {
-                spks.extend(tracker.iter_unused());
-            }
-            let spk_iter = spks.into_iter().map(|(index, script)| {
-                eprintln!("scanning {:?}", index);
-                script.clone()
-            });
+                spks.extend(tracker.iter_unused().into_iter().map(|(index, script)| {
+                    eprintln!("scanning {:?}", index);
+                    script.clone()
+                }));
+            } else {
+                spks.extend(tracker.script_pubkeys().into_iter().map(|(index, script)| {
+                    eprintln!("scanning {:?}", index);
+                    script.clone()
+                }));
+            };
+
             let update = client
-                .spk_scan(spk_iter, chain.chain().checkpoints().clone())
+                .spk_scan(spks.into_iter(), chain.chain().checkpoints().clone())
                 .context("scanning the blockchain")?;
 
             let changeset = chain.determine_changeset(&update)?;
