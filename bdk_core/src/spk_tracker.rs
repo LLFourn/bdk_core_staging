@@ -71,11 +71,11 @@ impl<I: Clone + Ord> SpkTracker<I> {
             .map(|(op, (index, txout))| (index.clone(), *op, txout))
     }
 
-    pub fn iter_unspent<'a, E: sparse_chain::ChainIndexExtension>(
+    pub fn iter_unspent<'a, C: sparse_chain::ChainIndex>(
         &'a self,
-        chain: &'a SparseChain<E>,
+        chain: &'a SparseChain<C>,
         graph: &'a TxGraph,
-    ) -> impl DoubleEndedIterator<Item = (I, FullTxOut<E>)> + '_ {
+    ) -> impl DoubleEndedIterator<Item = (I, FullTxOut<C>)> + '_ {
         self.iter_txout().filter_map(|(index, outpoint, txout)| {
             if !chain.is_unspent(graph, outpoint)? {
                 return None;

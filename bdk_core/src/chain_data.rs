@@ -1,5 +1,6 @@
-use crate::sparse_chain::{self, ChainIndex, ChainIndexExtension, TimestampedChainIndex};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
+
+use crate::sparse_chain;
 
 /// Represents the height in which a transaction is confirmed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -46,6 +47,28 @@ impl From<TxHeight> for Option<u32> {
     }
 }
 
+impl sparse_chain::ChainIndex for TxHeight {
+    type Extension = ();
+    const EXTENSION_MIN: Self::Extension = ();
+    const EXTENSION_MAX: Self::Extension = ();
+
+    fn height(&self) -> TxHeight {
+        *self
+    }
+
+    fn extension(&self) -> Self::Extension {
+        ()
+    }
+
+    fn into_ordered_key(self) -> (TxHeight, Self::Extension) {
+        (self, ())
+    }
+
+    fn from_ordered_key(key: (TxHeight, Self::Extension)) -> Self {
+        key.0
+    }
+}
+
 impl TxHeight {
     pub fn is_confirmed(&self) -> bool {
         matches!(self, Self::Confirmed(_))
@@ -61,7 +84,32 @@ impl TxHeight {
 )]
 pub struct ConfirmationTime {
     pub height: TxHeight,
-    pub time: Timestamp,
+    pub time: Option<u64>,
+}
+
+impl sparse_chain::ChainIndex for ConfirmationTime {
+    type Extension = Option<u64>;
+    const EXTENSION_MIN: Self::Extension = None;
+    const EXTENSION_MAX: Self::Extension = Some(u64::MAX);
+
+    fn height(&self) -> TxHeight {
+        self.height
+    }
+
+    fn extension(&self) -> Self::Extension {
+        self.time
+    }
+
+    fn into_ordered_key(self) -> (TxHeight, Self::Extension) {
+        (self.height, self.time)
+    }
+
+    fn from_ordered_key(key: (TxHeight, Self::Extension)) -> Self {
+        Self {
+            height: key.0,
+            time: key.1,
+        }
+    }
 }
 
 impl ConfirmationTime {
@@ -116,32 +164,9 @@ impl From<(&u32, &BlockHash)> for BlockId {
 
 /// A `TxOut` with as much data as we can retreive about it
 #[derive(Debug, Clone, PartialEq)]
-pub struct FullTxOut<E> {
+pub struct FullTxOut<I> {
     pub outpoint: OutPoint,
     pub txout: TxOut,
-    pub chain_index: sparse_chain::ChainIndex<E>,
+    pub chain_index: I,
     pub spent_by: Option<Txid>,
-}
-
-/// A wrapped `u64` for use as a [`ChainIndexExtension`](crate::sparse_chain::ChainIndexExtension)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(crate = "serde_crate")
-)]
-pub struct Timestamp(pub u64);
-
-impl ChainIndexExtension for Timestamp {
-    const MIN: Self = Timestamp(u64::MIN);
-    const MAX: Self = Timestamp(u64::MAX);
-}
-
-impl From<ConfirmationTime> for TimestampedChainIndex {
-    fn from(ct: ConfirmationTime) -> Self {
-        ChainIndex {
-            height: ct.height,
-            extension: ct.time,
-        }
-    }
 }
