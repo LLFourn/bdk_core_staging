@@ -1,11 +1,12 @@
 use alloc::vec::Vec;
 use core::mem::size_of;
+use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 /// A very simple collection of `256` byte linked lists.
 #[derive(Debug)]
-pub struct ByteList<S> {
-    inner: S,
+pub struct ExampleDb<F> {
+    inner: F,
 }
 
 /// The number of magic bytes
@@ -43,6 +44,27 @@ impl From<io::Error> for LoadError {
     }
 }
 
+pub trait DbFile: Read + Write + Seek {
+    fn sync_data(&mut self) -> io::Result<()>;
+    fn is_empty(&mut self) -> Result<bool, io::Error>;
+}
+
+impl DbFile for File {
+    #[allow(unconditional_recursion)]
+    fn sync_data(&mut self) -> io::Result<()> {
+        self.sync_data()
+    }
+
+    fn is_empty(&mut self) -> Result<bool, io::Error> {
+        let metadata = match self.metadata() {
+            Ok(metadata) => metadata,
+            Err(e) => return Err(e),
+        };
+
+        Ok(metadata.len() == 0u64)
+    }
+}
+
 macro_rules! read_ints {
     ($reader:expr => $($type:ty),*) => {{
         let mut main_buf = [0u8; 0 $(+size_of::<$type>())*];
@@ -57,40 +79,40 @@ macro_rules! read_ints {
     }}
 }
 
-impl<S: Read + Write + Seek> ByteList<S> {
-    /// Load the byte source ready for Read/Write/Seek
-    pub fn load(mut stream: S) -> Result<Self, LoadError> {
-        stream.rewind()?;
-        let mut type_version = [0u8; 4];
-        if let Err(e) = stream.read_exact(&mut type_version) {
-            if e.kind() == io::ErrorKind::UnexpectedEof {
-                stream.rewind()?;
-                stream.write_all(&MAGIC_BYTES)?;
-                stream.write_all(&[0u8; TAIL_TABLE_SIZE])?;
-                type_version = MAGIC_BYTES;
-            } else {
-                return Err(LoadError::Io(e));
+impl<F> ExampleDb<F>
+where
+    F: DbFile,
+{
+    /// If file is empty initialize it with magic bytes and lookup
+    /// table bytes, otherwise read magic bytes and check if
+    /// they are correct.
+    pub fn load(mut file: F) -> Result<Self, LoadError> {
+        if file.is_empty()? {
+            return Ok(ExampleDb::init(file)?);
+        } else {
+            file.rewind()?;
+            let mut type_version = [0u8; 4];
+            file.read_exact(&mut type_version)?;
+            if type_version != MAGIC_BYTES {
+                return Err(LoadError::UnexpectedVersion);
             }
         }
 
-        if type_version != MAGIC_BYTES {
-            return Err(LoadError::UnexpectedVersion);
-        }
-
-        Ok(Self { inner: stream })
+        Ok(Self { inner: file })
     }
 
-    /// Initialize stream with [`MAGIC_BYTES`] and linked list
+    /// Initialize file with [`MAGIC_BYTES`] and linked list
     /// tail lookup table
-    pub fn init(mut stream: S) -> Result<Self, io::Error> {
-        stream.rewind()?;
-        stream.write_all(&MAGIC_BYTES[..])?;
-        stream.write_all(&[0u8; TAIL_TABLE_SIZE])?;
+    pub fn init(mut file: F) -> Result<Self, io::Error> {
+        file.rewind()?;
+        file.write_all(&MAGIC_BYTES)?;
+        file.write_all(&[0u8; TAIL_TABLE_SIZE])?;
+        file.sync_data()?;
 
-        Ok(Self { inner: stream })
+        Ok(Self { inner: file })
     }
 
-    /// Use key (object type) to push new serialized changeset to the byte linked list
+    /// Use key (object type) to push new serialized changeset to the database
     pub fn push(&mut self, key: u8, data: &[u8]) -> io::Result<()> {
         assert!(data.len() <= u32::MAX as usize);
         let mut header = [0u8; 12];
@@ -101,7 +123,7 @@ impl<S: Read + Write + Seek> ByteList<S> {
         // Write new entry first so we're sure it's written before we update pointer to tail
         self.inner.write_all(&header)?;
         self.inner.write_all(data)?;
-        self.inner.flush()?;
+        self.inner.sync_data()?;
         // it worked so let's set the pointer
         self.set_tail_loc(key, new_tail_loc)?;
         Ok(())
@@ -121,7 +143,7 @@ impl<S: Read + Write + Seek> ByteList<S> {
     }
 
     /// Iterates from the last element to the first
-    pub fn iter(&mut self, key: u8) -> io::Result<IterEntries<'_, S>> {
+    pub fn iter(&mut self, key: u8) -> io::Result<IterEntries<'_, F>> {
         let last_entry_pos = self.tail_loc(key)?;
         Ok(IterEntries {
             inner: &mut self.inner,
@@ -129,7 +151,7 @@ impl<S: Read + Write + Seek> ByteList<S> {
         })
     }
 
-    /// Get all the keys stored in the byte linked list
+    /// Get all the keys stored in the database
     pub fn keys(&mut self) -> io::Result<impl DoubleEndedIterator<Item = u8>> {
         self.inner.seek(SeekFrom::Start(MAGIC_BYTES_SIZE as u64))?;
         let mut key_index = [0u8; TAIL_TABLE_SIZE];
@@ -159,18 +181,20 @@ impl<S: Read + Write + Seek> ByteList<S> {
     fn set_tail_loc(&mut self, key: u8, pos: u64) -> io::Result<()> {
         self.seek_to_last_entry_pos(key)?;
         self.inner.write_all(pos.to_be_bytes().as_ref())?;
-        self.inner.flush()?;
         Ok(())
     }
 }
 
-/// Iterator over entries of the byte linked list
-pub struct IterEntries<'a, S> {
-    inner: &'a mut S,
+/// Iterator over entries of the database
+pub struct IterEntries<'a, F> {
+    inner: &'a mut F,
     current: u64,
 }
 
-impl<'a, S: Read + Write + Seek> Iterator for IterEntries<'a, S> {
+impl<'a, F> Iterator for IterEntries<'a, F>
+where
+    F: DbFile,
+{
     type Item = Result<Vec<u8>, io::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -195,16 +219,41 @@ impl<'a, S: Read + Write + Seek> Iterator for IterEntries<'a, S> {
 
 #[cfg(test)]
 mod test {
+
     use super::*;
     use alloc::collections::LinkedList;
     use proptest::test_runner::TestRng;
     use proptest::{prelude::*, test_runner::RngAlgorithm};
     use rand::{Rng, RngCore};
 
+    impl DbFile for std::io::Cursor<&mut [u8]> {
+        fn is_empty(&mut self) -> Result<bool, io::Error> {
+            let mut buf: Vec<u8> = vec![];
+            let read = self.read_to_end(&mut buf)?;
+            Ok(read == 0usize)
+        }
+
+        fn sync_data(&mut self) -> io::Result<()> {
+            self.flush()
+        }
+    }
+
+    impl DbFile for std::io::Cursor<alloc::vec::Vec<u8>> {
+        fn is_empty(&mut self) -> Result<bool, io::Error> {
+            let mut buf: Vec<u8> = vec![];
+            let read = self.read_to_end(&mut buf)?;
+            Ok(read == 0usize)
+        }
+
+        fn sync_data(&mut self) -> io::Result<()> {
+            self.flush()
+        }
+    }
+
     proptest! {
 
         #![proptest_config(ProptestConfig {
-            timeout: 100,
+            timeout: 1000,
             .. ProptestConfig::default()
         })]
         #[test]
@@ -212,8 +261,8 @@ mod test {
             dbg!(size);
             let mut buf = vec![0u8;size];
             let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
-            let mut bytelist = match ByteList::init(io::Cursor::new(&mut buf[..])) {
-                Ok(bytelist) => bytelist,
+            let mut example_db = match ExampleDb::init(io::Cursor::new(&mut buf[..])) {
+                Ok(example_db) => example_db,
                 Err(_e) => {
                     assert!(size < MAGIC_BYTES_SIZE + TAIL_TABLE_SIZE);
                     return Ok(());
@@ -227,7 +276,7 @@ mod test {
                 let byte_len = rng.gen_range(0..1_000);
                 let mut bytes = vec![0u8;byte_len];
                 rng.fill_bytes(&mut bytes);
-                match bytelist.push(key, &bytes) {
+                match example_db.push(key, &bytes) {
                     Ok(_) => in_memory[key as usize].push_back(bytes),
                     Err(_) => {
                         break
@@ -235,11 +284,11 @@ mod test {
                 }
             }
 
-            let mut bytelist = ByteList::load(io::Cursor::new(&mut buf[..])).unwrap();
+            let mut example_db = ExampleDb::load(io::Cursor::new(&mut buf[..])).unwrap();
 
             for (key, list) in in_memory.into_iter().enumerate() {
                 let truth = list.into_iter().rev().collect::<Vec<_>>();
-                let our_iter = bytelist.iter(key as u8).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+                let our_iter = example_db.iter(key as u8).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
                 assert_eq!(truth, our_iter);
             }
         }
@@ -251,34 +300,34 @@ mod test {
         let a2 = b"a2".to_vec();
         let b1 = b"b1".to_vec();
         let target: io::Cursor<Vec<u8>> = io::Cursor::new(vec![]);
-        let mut byte_list = ByteList::load(target).unwrap();
+        let mut example_db = ExampleDb::load(target).unwrap();
 
-        assert_eq!(byte_list.iter(0).unwrap().count(), 0);
+        assert_eq!(example_db.iter(0).unwrap().count(), 0);
 
-        byte_list.push(0, &a1).unwrap();
-        assert_eq!(byte_list.iter(0).unwrap().count(), 1);
-        assert_eq!(byte_list.keys().unwrap().collect::<Vec<_>>(), vec![0]);
+        example_db.push(0, &a1).unwrap();
+        assert_eq!(example_db.iter(0).unwrap().count(), 1);
+        assert_eq!(example_db.keys().unwrap().collect::<Vec<_>>(), vec![0]);
         assert_eq!(
-            byte_list
+            example_db
                 .iter(0)
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap(),
             vec![a1.clone()]
         );
-        byte_list.push(0, &a2).unwrap();
+        example_db.push(0, &a2).unwrap();
         assert_eq!(
-            byte_list
+            example_db
                 .iter(0)
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap(),
             vec![a2.clone(), a1.clone()]
         );
-        byte_list.push(1, &b1).unwrap();
-        assert_eq!(byte_list.keys().unwrap().collect::<Vec<_>>(), vec![0, 1]);
+        example_db.push(1, &b1).unwrap();
+        assert_eq!(example_db.keys().unwrap().collect::<Vec<_>>(), vec![0, 1]);
         assert_eq!(
-            byte_list
+            example_db
                 .iter(0)
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()
@@ -286,7 +335,7 @@ mod test {
             vec![a2.clone(), a1.clone()]
         );
         assert_eq!(
-            byte_list
+            example_db
                 .iter(1)
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()

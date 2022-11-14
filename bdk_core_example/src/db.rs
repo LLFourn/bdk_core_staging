@@ -1,8 +1,7 @@
-use bdk_core::byte_list::{ByteList, LoadError};
 use bdk_core::chain_graph;
 use bdk_core::collections::BTreeMap;
-use bincode;
-use std::io;
+use bdk_core::example_db::{ExampleDb, LoadError};
+use std::{fs::File, io};
 
 use crate::Keychain;
 
@@ -12,13 +11,13 @@ enum DbKey {
     DerivationIndex,
 }
 
-pub struct Db<F>(ByteList<F>);
+pub struct Db(ExampleDb<File>);
 
 const BINCODE_CONF: bincode::config::Configuration = bincode::config::standard();
 
-impl<F: io::Read + io::Write + io::Seek> Db<F> {
-    pub fn load(file: F) -> Result<Self, LoadError> {
-        Ok(Self(ByteList::load(file)?))
+impl Db {
+    pub fn load(file: File) -> Result<Self, LoadError> {
+        Ok(Self(ExampleDb::load(file)?))
     }
 
     pub fn push_chain_changeset(&mut self, changeset: &chain_graph::ChangeSet) -> io::Result<()> {

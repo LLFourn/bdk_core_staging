@@ -41,8 +41,12 @@ struct Args {
 enum Commands {
     Scan,
     Sync {
-        #[clap(short, default_value = "true")]
+        #[clap(long, default_value = "false")]
         unused: bool,
+        #[clap(long, default_value = "false")]
+        unspent: bool,
+        #[clap(long, default_value = "true")]
+        all: bool,
     },
     Address {
         #[clap(subcommand)]
@@ -240,21 +244,36 @@ fn main() -> anyhow::Result<()> {
                 db.push_chain_changeset(&changeset)?;
             }
 
-            eprintln!("");
+            eprintln!();
         }
-        Commands::Sync { unused } => {
+        Commands::Sync {
+            unused,
+            unspent,
+            all,
+        } => {
             let mut spks = vec![];
             if unused {
-                spks.extend(tracker.iter_unused().into_iter().map(|(index, script)| {
+                spks.extend(tracker.iter_unused().map(|(index, script)| {
+                    eprintln!("Checking if script at {:?} has been used", index);
+                    script.clone()
+                }));
+            }
+
+            if all {
+                spks.extend(tracker.script_pubkeys().iter().map(|(index, script)| {
                     eprintln!("scanning {:?}", index);
                     script.clone()
                 }));
-            } else {
-                spks.extend(tracker.script_pubkeys().into_iter().map(|(index, script)| {
-                    eprintln!("scanning {:?}", index);
-                    script.clone()
-                }));
-            };
+            }
+
+            if unspent {
+                spks.extend(tracker.iter_unspent(chain.chain(), chain.graph()).map(
+                    |(_index, ftxout)| {
+                        eprintln!("checking if {} has been spent", ftxout.outpoint);
+                        ftxout.txout.script_pubkey
+                    },
+                ));
+            }
 
             let update = client
                 .spk_scan(spks.into_iter(), chain.chain().checkpoints().clone())
@@ -297,7 +316,7 @@ fn main() -> anyhow::Result<()> {
                     };
                     for (index, spk) in tracker.script_pubkeys() {
                         if index.0 == target_keychain {
-                            let address = Address::from_script(&spk, args.network)
+                            let address = Address::from_script(spk, args.network)
                                 .expect("should always be able to derive address");
                             println!("{} used:{}", address, tracker.is_used(*index));
                         }

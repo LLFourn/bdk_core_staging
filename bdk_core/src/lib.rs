@@ -2,9 +2,9 @@
 pub use alloc::{boxed::Box, vec::Vec};
 pub use bitcoin;
 use bitcoin::{hashes::Hash, BlockHash, TxOut};
-pub mod byte_list;
 pub mod chain_graph;
 pub mod coin_select;
+pub mod example_db;
 #[cfg(feature = "miniscript")]
 mod keychain_tracker;
 pub mod sparse_chain;
