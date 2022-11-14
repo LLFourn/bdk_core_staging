@@ -31,8 +31,6 @@ where
         const INCLUDE_EXCESS: f32 = 1.0;
 
         if rate_diff >= 0.0 {
-            let mut cs = cs.clone();
-
             // Our lower bound algorithms differ depending on whether we have already met the target or not.
             if cs.is_target_met(self.target, change_lower_bound) {
                 let current_change = (self.change_policy)(&cs, self.target);
@@ -53,54 +51,52 @@ where
                     && current_change.is_some();
 
                 if should_explore_changeless {
-                    cs.select_while(
-                        |cs, (_, wv)| {
-                            cs.is_target_met(self.target, Drain::none())
-                                && wv.effective_value(self.target.feerate).0 < 0.0
-                        },
-                        true,
-                    );
+                    let selection_with_as_much_negative_ev_as_possible = cs
+                        .clone()
+                        .select_iter()
+                        .rev()
+                        .take_while(|(cs, _, wv)| {
+                            wv.effective_value(self.target.feerate).0 < 0.0
+                                && cs.is_target_met(self.target, Drain::none())
+                        })
+                        .last();
 
-                    debug_assert!(cs.is_target_met(self.target, Drain::none()));
-
-                    let can_do_better_by_slurping =
-                        cs.unselected()
-                            .rev()
-                            .next()
-                            .and_then(|(_, next_unselected)| {
-                                if next_unselected.effective_value(self.target.feerate).0 < 0.0 {
-                                    Some(next_unselected)
+                    if let Some((cs, _, _)) = selection_with_as_much_negative_ev_as_possible {
+                        let can_do_better_by_slurping =
+                            cs.unselected().rev().next().and_then(|(_, wv)| {
+                                if wv.effective_value(self.target.feerate).0 < 0.0 {
+                                    Some(wv)
                                 } else {
                                     None
                                 }
                             });
-
-                    let lower_bound_without_change = match can_do_better_by_slurping {
-                        Some(finishing_input) => {
-                            // NOTE we are slurping negative value here to try and reduce excess in
-                            // the hopes of getting rid of the change output
-                            let value_to_slurp = -cs.rate_excess(self.target, Drain::none());
-                            let weight_to_extinguish_excess =
-                                slurp_wv(finishing_input, value_to_slurp, self.target.feerate);
-                            let waste_to_extinguish_excess =
-                                weight_to_extinguish_excess * rate_diff;
-                            let waste_after_excess_reduction = cs.waste(
+                        let lower_bound_without_change = match can_do_better_by_slurping {
+                            Some(finishing_input) => {
+                                // NOTE we are slurping negative value here to try and reduce excess in
+                                // the hopes of getting rid of the change output
+                                let value_to_slurp = -cs.rate_excess(self.target, Drain::none());
+                                let weight_to_extinguish_excess =
+                                    slurp_wv(finishing_input, value_to_slurp, self.target.feerate);
+                                let waste_to_extinguish_excess =
+                                    weight_to_extinguish_excess * rate_diff;
+                                let waste_after_excess_reduction = cs.waste(
+                                    self.target,
+                                    self.long_term_feerate,
+                                    Drain::none(),
+                                    IGNORE_EXCESS,
+                                ) + waste_to_extinguish_excess;
+                                waste_after_excess_reduction
+                            }
+                            None => cs.waste(
                                 self.target,
                                 self.long_term_feerate,
                                 Drain::none(),
-                                IGNORE_EXCESS,
-                            ) + waste_to_extinguish_excess;
-                            waste_after_excess_reduction
-                        }
-                        None => cs.waste(
-                            self.target,
-                            self.long_term_feerate,
-                            Drain::none(),
-                            INCLUDE_EXCESS,
-                        ),
-                    };
+                                INCLUDE_EXCESS,
+                            ),
+                        };
 
-                    lower_bound = lower_bound.min(lower_bound_without_change);
+                        lower_bound = lower_bound.min(lower_bound_without_change);
+                    }
                 }
 
                 Some(Ordf32(lower_bound))
@@ -113,14 +109,12 @@ where
                 // weight.
                 //
                 // Step 1: select everything up until the input that hits the target.
-                let target_not_met = cs.select_while(
-                    |cs, _| !cs.is_target_met(self.target, change_lower_bound),
-                    false,
-                );
+                let (mut cs, slurp_index, to_slurp) = cs
+                    .clone()
+                    .select_iter()
+                    .find(|(cs, _, _)| cs.is_target_met(self.target, change_lower_bound))?;
 
-                if target_not_met {
-                    return None;
-                }
+                cs.deselect(slurp_index);
 
                 // Step 2: We pretend that the final input exactly cancels out the remaining excess
                 // by taking whatever value we want from it but at the value per weight of the real
@@ -130,13 +124,13 @@ where
                     // both indepdently and find which requires the most weight of the next input.
                     let remaining_rate = cs.rate_excess(self.target, change_lower_bound);
                     let remaining_abs = cs.absolute_excess(self.target, change_lower_bound);
-                    let (_i, next_wv) = cs.unselected().next().unwrap();
 
-                    let weight_to_satisfy_abs = remaining_abs.min(0) as f32 / next_wv.value_pwu().0;
+                    let weight_to_satisfy_abs =
+                        remaining_abs.min(0) as f32 / to_slurp.value_pwu().0;
                     let weight_to_satisfy_rate =
-                        slurp_wv(next_wv, remaining_rate.min(0), self.target.feerate);
+                        slurp_wv(to_slurp, remaining_rate.min(0), self.target.feerate);
                     let weight_to_satisfy = weight_to_satisfy_abs.max(weight_to_satisfy_rate);
-                    debug_assert!(weight_to_satisfy <= next_wv.weight as f32);
+                    debug_assert!(weight_to_satisfy <= to_slurp.weight as f32);
                     weight_to_satisfy
                 };
                 let weight_lower_bound = cs.selected_weight() as f32 + ideal_next_weight;
@@ -176,28 +170,26 @@ where
 
             if look_for_changeless_solution {
                 // 2. select the highest weight solution with no change
-                let mut cs_ = cs.clone();
+                let highest_weight_selection_without_change = cs
+                    .clone()
+                    .select_iter()
+                    .rev()
+                    .take_while(|(cs, _, wv)| {
+                        wv.effective_value(self.target.feerate).0 < 0.0
+                            || (self.change_policy)(&cs, self.target).is_none()
+                    })
+                    .last();
 
-                cs_.select_while(
-                    |_, (_, wv)| wv.effective_value(self.target.feerate).0 < 0.0,
-                    true,
-                );
-                let change_never_found = cs_.select_while(
-                    |cs, _| (self.change_policy)(&cs, self.target).is_none(),
-                    true,
-                );
+                if let Some((cs, _, _)) = highest_weight_selection_without_change {
+                    let no_change_waste = cs.waste(
+                        self.target,
+                        self.long_term_feerate,
+                        Drain::none(),
+                        IGNORE_EXCESS,
+                    );
 
-                if change_never_found {
-                    debug_assert!(cs_.is_exhausted());
+                    lower_bound = lower_bound.min(no_change_waste)
                 }
-                let no_change_waste = cs_.waste(
-                    self.target,
-                    self.long_term_feerate,
-                    Drain::none(),
-                    IGNORE_EXCESS,
-                );
-
-                lower_bound = lower_bound.min(no_change_waste)
             }
 
             Some(Ordf32(lower_bound))

@@ -370,29 +370,8 @@ impl<'a> CoinSelector<'a> {
         }
     }
 
-    ///
-    pub fn select_while(
-        &mut self,
-        mut predicate: impl FnMut(&CoinSelector<'a>, (usize, WeightedValue)) -> bool,
-        // TODO: Remove this in favor of being able to reverse sort candidate order
-        reverse: bool,
-    ) -> bool {
-        loop {
-            let next = if reverse {
-                self.unselected_indexes().rev().next()
-            } else {
-                self.unselected_indexes().next()
-            };
-            if let Some(next) = next {
-                self.select(next);
-                if !predicate(&*self, (next, self.candidates[next])) {
-                    self.deselect(next);
-                    return false;
-                }
-            } else {
-                return true;
-            }
-        }
+    pub fn select_iter(self) -> SelectIter<'a> {
+        SelectIter { cs: self.clone() }
     }
 
     pub fn branch_and_bound<M: BnBMetric>(
@@ -400,6 +379,28 @@ impl<'a> CoinSelector<'a> {
         metric: M,
     ) -> impl Iterator<Item = Option<(CoinSelector<'a>, M::Score)>> {
         crate::bnb::BnbIter::new(self.clone(), metric)
+    }
+}
+
+pub struct SelectIter<'a> {
+    cs: CoinSelector<'a>,
+}
+
+impl<'a> Iterator for SelectIter<'a> {
+    type Item = (CoinSelector<'a>, usize, WeightedValue);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (index, wv) = self.cs.unselected().next()?;
+        self.cs.select(index);
+        Some((self.cs.clone(), index, wv))
+    }
+}
+
+impl<'a> DoubleEndedIterator for SelectIter<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let (index, wv) = self.cs.unselected().next_back()?;
+        self.cs.select(index);
+        Some((self.cs.clone(), index, wv))
     }
 }
 
