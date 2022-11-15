@@ -1,6 +1,6 @@
 use crate::{CoinSelector, Drain, FeeRate, Target};
 
-pub fn min_value(drain: Drain) -> impl Fn(&CoinSelector, Target) -> Drain {
+pub fn min_value(drain: Drain, min_value: u64) -> impl Fn(&CoinSelector, Target) -> Drain {
     debug_assert!(drain.is_some());
     move |cs, target| {
         if cs.excess(target, Drain::none()) >= drain.value as i64 {
@@ -11,7 +11,7 @@ pub fn min_value(drain: Drain) -> impl Fn(&CoinSelector, Target) -> Drain {
     }
 }
 
-pub fn no_waste(
+pub fn min_waste(
     drain: Drain,
     long_term_feerate: FeeRate,
 ) -> impl Fn(&CoinSelector, Target) -> Drain {

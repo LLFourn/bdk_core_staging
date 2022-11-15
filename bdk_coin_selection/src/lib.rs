@@ -7,9 +7,7 @@ mod coin_selector;
 pub mod ord_float;
 pub use coin_selector::*;
 
-// mod bnb;
-// pub use bnb::*;
-mod bnb;
+pub mod bnb;
 pub mod metrics;
 
 mod feerate;
