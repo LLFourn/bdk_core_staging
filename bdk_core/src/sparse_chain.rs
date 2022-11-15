@@ -26,7 +26,7 @@ pub struct SparseChain<I: ChainIndex = TxHeight> {
     /// Block height to checkpoint data.
     checkpoints: BTreeMap<u32, BlockHash>,
     /// Ordered txids where order is enforced with the prepended height and index extension.
-    ordered_txids: BTreeSet<((TxHeight, I::Extension), Txid)>,
+    ordered_txids: BTreeSet<(I, Txid)>,
     /// Confirmation heights of txids.
     txid_to_index: HashMap<Txid, I>,
     /// Limit number of checkpoints.
@@ -164,7 +164,7 @@ impl<I: ChainIndex> SparseChain<I> {
             txids: self
                 .ordered_txids
                 .iter()
-                .map(|(index, txid)| (*txid, Change::new_insertion(I::from_ordered_key(*index))))
+                .map(|(index, txid)| (*txid, Change::new_insertion(*index)))
                 .collect(),
         }
     }
@@ -230,15 +230,15 @@ impl<I: ChainIndex> SparseChain<I> {
                 // avoid invalidating mempool txids for initial change-set
                 .range(
                     &(
-                        (TxHeight::Confirmed(invalid_from), I::EXTENSION_MIN).into(),
+                        I::min_ord_of_height(TxHeight::Confirmed(invalid_from)),
                         Txid::all_zeros(),
                     )
                         ..&(
-                            (TxHeight::Unconfirmed, I::EXTENSION_MIN).into(),
+                            I::min_ord_of_height(TxHeight::Unconfirmed),
                             Txid::all_zeros(),
                         ),
                 )
-                .map(|(key, txid)| (*txid, Change::new_removal(I::from_ordered_key(*key))))
+                .map(|(key, txid)| (*txid, Change::new_removal(*key)))
                 .collect(),
         };
 
@@ -296,16 +296,16 @@ impl<I: ChainIndex> SparseChain<I> {
             let (changed, original_index) = match (change.from, change.to) {
                 (None, None) => panic!("should not happen"),
                 (None, Some(to)) => (
-                    self.ordered_txids.insert((to.into_ordered_key(), txid)),
+                    self.ordered_txids.insert((to, txid)),
                     self.txid_to_index.insert(txid, to),
                 ),
                 (Some(from), None) => (
-                    self.ordered_txids.remove(&(from.into_ordered_key(), txid)),
+                    self.ordered_txids.remove(&(from, txid)),
                     self.txid_to_index.remove(&txid),
                 ),
                 (Some(from), Some(to)) => (
-                    self.ordered_txids.insert((to.into_ordered_key(), txid))
-                        && self.ordered_txids.remove(&(from.into_ordered_key(), txid)),
+                    self.ordered_txids.insert((to, txid))
+                        && self.ordered_txids.remove(&(from, txid)),
                     self.txid_to_index.insert(txid, to),
                 ),
             };
@@ -322,11 +322,11 @@ impl<I: ChainIndex> SparseChain<I> {
             .ordered_txids
             .range(
                 &(
-                    (TxHeight::Unconfirmed, I::EXTENSION_MIN).into(),
+                    I::min_ord_of_height(TxHeight::Unconfirmed),
                     Txid::all_zeros(),
                 )..,
             )
-            .map(|(key, txid)| (*txid, Change::new_removal(I::from_ordered_key(*key))))
+            .map(|(key, txid)| (*txid, Change::new_removal(*key)))
             .collect();
 
         let changeset = ChangeSet::<I> {
@@ -363,7 +363,7 @@ impl<I: ChainIndex> SparseChain<I> {
         }
 
         self.txid_to_index.insert(txid, index);
-        self.ordered_txids.insert((index.into_ordered_key(), txid));
+        self.ordered_txids.insert((index, txid));
 
         Ok(true)
     }
@@ -384,76 +384,65 @@ impl<I: ChainIndex> SparseChain<I> {
 
     pub fn iter_txids(
         &self,
-    ) -> impl DoubleEndedIterator<Item = (I, Txid)> + ExactSizeIterator + '_ {
-        self.ordered_txids
-            .iter()
-            .map(|(k, v)| (I::from_ordered_key(*k), *v))
+    ) -> impl DoubleEndedIterator<Item = &(I, Txid)> + ExactSizeIterator + '_ {
+        self.ordered_txids.iter()
     }
 
-    pub fn range_txids<R>(&self, range: R) -> impl DoubleEndedIterator<Item = (I, Txid)> + '_
+    pub fn range_txids<R>(&self, range: R) -> impl DoubleEndedIterator<Item = &(I, Txid)> + '_
     where
         R: RangeBounds<(I, Txid)>,
     {
         let map_bound = |b: Bound<&(I, Txid)>| match b {
-            Bound::Included(&(index, txid)) => Bound::Included((index.into_ordered_key(), txid)),
-            Bound::Excluded(&(index, txid)) => Bound::Excluded((index.into_ordered_key(), txid)),
+            Bound::Included(&(index, txid)) => Bound::Included((index, txid)),
+            Bound::Excluded(&(index, txid)) => Bound::Excluded((index, txid)),
             Bound::Unbounded => Bound::Unbounded,
         };
 
         self.ordered_txids
             .range((map_bound(range.start_bound()), map_bound(range.end_bound())))
-            .map(|(k, v)| (I::from_ordered_key(*k), *v))
     }
 
     pub fn range_txids_by_index<R>(
         &self,
         range: R,
-    ) -> impl DoubleEndedIterator<Item = (I, Txid)> + '_
+    ) -> impl DoubleEndedIterator<Item = &(I, Txid)> + '_
     where
         R: RangeBounds<I>,
     {
         let map_bound = |b: Bound<&I>, inc: Txid, exc: Txid| match b {
-            Bound::Included(&index) => Bound::Included((index.into_ordered_key(), inc)),
-            Bound::Excluded(&index) => Bound::Excluded((index.into_ordered_key(), exc)),
+            Bound::Included(&index) => Bound::Included((index, inc)),
+            Bound::Excluded(&index) => Bound::Excluded((index, exc)),
             Bound::Unbounded => Bound::Unbounded,
         };
 
-        self.ordered_txids
-            .range((
-                map_bound(range.start_bound(), min_txid(), max_txid()),
-                map_bound(range.end_bound(), max_txid(), min_txid()),
-            ))
-            .map(|(k, v)| (I::from_ordered_key(*k), *v))
+        self.ordered_txids.range((
+            map_bound(range.start_bound(), min_txid(), max_txid()),
+            map_bound(range.end_bound(), max_txid(), min_txid()),
+        ))
     }
 
     pub fn range_txids_by_height<R>(
         &self,
         range: R,
-    ) -> impl DoubleEndedIterator<Item = (I, Txid)> + '_
+    ) -> impl DoubleEndedIterator<Item = &(I, Txid)> + '_
     where
         R: RangeBounds<TxHeight>,
     {
-        let map_bound =
-            |b: Bound<&TxHeight>, inc: (I::Extension, Txid), exc: (I::Extension, Txid)| match b {
-                Bound::Included(&h) => Bound::Included(((h, inc.0), inc.1)),
-                Bound::Excluded(&h) => Bound::Excluded(((h, exc.0), exc.1)),
-                Bound::Unbounded => Bound::Unbounded,
-            };
+        let ord_it = |height, is_max| match is_max {
+            true => I::max_ord_of_height(height),
+            false => I::min_ord_of_height(height),
+        };
 
-        self.ordered_txids
-            .range((
-                map_bound(
-                    range.start_bound(),
-                    (I::EXTENSION_MIN, min_txid()),
-                    (I::EXTENSION_MAX, max_txid()),
-                ),
-                map_bound(
-                    range.end_bound(),
-                    (I::EXTENSION_MAX, max_txid()),
-                    (I::EXTENSION_MIN, min_txid()),
-                ),
-            ))
-            .map(|(k, v)| (I::from_ordered_key(*k), *v))
+        let map_bound = |b: Bound<&TxHeight>, inc: (bool, Txid), exc: (bool, Txid)| match b {
+            Bound::Included(&h) => Bound::Included((ord_it(h, inc.0), inc.1)),
+            Bound::Excluded(&h) => Bound::Excluded((ord_it(h, exc.0), exc.1)),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+
+        self.ordered_txids.range((
+            map_bound(range.start_bound(), (false, min_txid()), (true, max_txid())),
+            map_bound(range.end_bound(), (true, max_txid()), (false, min_txid())),
+        ))
     }
 
     pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut<I>> {
@@ -512,12 +501,12 @@ impl<I: ChainIndex> SparseChain<I> {
 
 /// Represents the set of changes as result of a successful [`Update`].
 #[derive(Debug, PartialEq)]
-pub struct ChangeSet<I: ChainIndex = TxHeight> {
+pub struct ChangeSet<I = TxHeight> {
     pub checkpoints: HashMap<u32, Change<BlockHash>>,
     pub txids: HashMap<Txid, Change<I>>,
 }
 
-impl<I: ChainIndex> Default for ChangeSet<I> {
+impl<I> Default for ChangeSet<I> {
     fn default() -> Self {
         Self {
             checkpoints: Default::default(),
@@ -526,7 +515,7 @@ impl<I: ChainIndex> Default for ChangeSet<I> {
     }
 }
 
-impl<I: ChainIndex + Clone + PartialEq> ChangeSet<I> {
+impl<I: ChainIndex> ChangeSet<I> {
     pub fn merge(mut self, new_set: Self) -> Result<Self, MergeFailure<I>> {
         for (height, new_change) in new_set.checkpoints {
             if let Some(change) = self.checkpoints.get(&height) {
@@ -578,7 +567,7 @@ impl<I: ChainIndex + Clone + PartialEq> ChangeSet<I> {
     }
 }
 
-impl<I: ChainIndex> ChangeSet<I> {
+impl<I> ChangeSet<I> {
     pub fn tx_additions(&self) -> impl Iterator<Item = Txid> + '_ {
         self.txids
             .iter()
@@ -684,33 +673,17 @@ impl<E: core::fmt::Debug> Display for MergeFailure<E> {
 impl<D: core::fmt::Display + core::fmt::Debug> std::error::Error for MergeFailure<D> {}
 
 /// Represents an index in which transactions are ordered by in [`SparseChain`].
-pub trait ChainIndex: Debug + Clone + Copy + Eq {
-    /// The [`ChainIndex`]'s extension.
-    ///
-    /// This can be used to add additional data (such as block time and block position) to
-    /// transactions, which will be reflected in how the transactions are to be sorted in
-    /// [`SparseChain`].
-    type Extension: Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + core::hash::Hash;
-
-    /// The minimum value for the extension type.
-    const EXTENSION_MIN: Self::Extension;
-
-    /// The maximum value for the extension type.
-    const EXTENSION_MAX: Self::Extension;
-
+///
+/// [`ChainIndex`] implementations must be [`Ord`] by [`TxHeight`] first.
+pub trait ChainIndex: Debug + Clone + Copy + Eq + PartialOrd + Ord + core::hash::Hash {
     /// Obtain the transaction height of the index.
     fn height(&self) -> TxHeight;
 
-    /// Obtain the index's extension.
-    fn extension(&self) -> Self::Extension;
+    /// Obtain the index's upper bound of a given height.
+    fn max_ord_of_height(height: TxHeight) -> Self;
 
-    /// Transforms the index into the key used in the internal ordered maps/sets.
-    fn into_ordered_key(self) -> (TxHeight, Self::Extension) {
-        (self.height(), self.extension())
-    }
-
-    /// Transforms the key back into the index.
-    fn from_ordered_key(key: (TxHeight, Self::Extension)) -> Self;
+    /// Obtain the index's lower bound of a given height.
+    fn min_ord_of_height(height: TxHeight) -> Self;
 }
 
 fn min_txid() -> Txid {
@@ -719,4 +692,47 @@ fn min_txid() -> Txid {
 
 fn max_txid() -> Txid {
     Txid::from_inner([0xff; 32])
+}
+
+#[cfg(test)]
+pub mod verify_chain_index {
+    use alloc::vec::Vec;
+
+    use super::ChainIndex;
+    use crate::TxHeight;
+
+    pub fn verify_chain_index<I: ChainIndex>(head_count: u32, tail_count: u32) {
+        let values = (0..head_count)
+            .chain(u32::MAX - tail_count..u32::MAX)
+            .flat_map(|i| {
+                [
+                    I::min_ord_of_height(TxHeight::Confirmed(i)),
+                    I::max_ord_of_height(TxHeight::Confirmed(i)),
+                ]
+            })
+            .chain([
+                I::min_ord_of_height(TxHeight::Unconfirmed),
+                I::max_ord_of_height(TxHeight::Unconfirmed),
+            ])
+            .collect::<Vec<_>>();
+
+        for i in 0..values.len() {
+            for j in 0..values.len() {
+                if i == j {
+                    assert_eq!(values[i], values[j]);
+                }
+                if i < j {
+                    assert!(values[i] <= values[j]);
+                }
+                if i > j {
+                    assert!(values[i] >= values[j]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn verify_tx_height() {
+        verify_chain_index::<TxHeight>(1000, 1000);
+    }
 }

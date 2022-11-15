@@ -58,24 +58,16 @@ macro_rules! changeset {
 pub struct TestIndex(TxHeight, u32);
 
 impl ChainIndex for TestIndex {
-    type Extension = u32;
-    const EXTENSION_MIN: u32 = u32::MIN;
-    const EXTENSION_MAX: u32 = u32::MAX;
-
     fn height(&self) -> TxHeight {
         self.0
     }
 
-    fn extension(&self) -> Self::Extension {
-        self.1
+    fn max_ord_of_height(height: TxHeight) -> Self {
+        Self(height, u32::MAX)
     }
 
-    fn into_ordered_key(self) -> (TxHeight, Self::Extension) {
-        (self.0, self.1)
-    }
-
-    fn from_ordered_key(key: (TxHeight, Self::Extension)) -> Self {
-        Self(key.0, key.1)
+    fn min_ord_of_height(height: TxHeight) -> Self {
+        Self(height, u32::MIN)
     }
 }
 
@@ -608,7 +600,7 @@ fn range_txids_by_height() {
         chain
             .range_txids_by_height(TxHeight::Confirmed(1)..)
             .collect::<Vec<_>>(),
-        txids.iter().cloned().collect::<Vec<_>>(),
+        txids.iter().collect::<Vec<_>>(),
     );
 
     // exclusive start
@@ -616,7 +608,7 @@ fn range_txids_by_height() {
         chain
             .range_txids_by_height((Bound::Excluded(TxHeight::Confirmed(1)), Bound::Unbounded,))
             .collect::<Vec<_>>(),
-        txids[2..].iter().cloned().collect::<Vec<_>>(),
+        txids[2..].iter().collect::<Vec<_>>(),
     );
 
     // inclusive end
@@ -624,7 +616,7 @@ fn range_txids_by_height() {
         chain
             .range_txids_by_height((Bound::Unbounded, Bound::Included(TxHeight::Confirmed(2))))
             .collect::<Vec<_>>(),
-        txids[..4].iter().cloned().collect::<Vec<_>>(),
+        txids[..4].iter().collect::<Vec<_>>(),
     );
 
     // exclusive end
@@ -632,7 +624,7 @@ fn range_txids_by_height() {
         chain
             .range_txids_by_height(..TxHeight::Confirmed(2))
             .collect::<Vec<_>>(),
-        txids[..2].iter().cloned().collect::<Vec<_>>(),
+        txids[..2].iter().collect::<Vec<_>>(),
     );
 }
 
@@ -658,13 +650,13 @@ fn range_txids_by_index() {
         chain
             .range_txids_by_index(TestIndex(TxHeight::Confirmed(1), u32::MIN)..)
             .collect::<Vec<_>>(),
-        txids.iter().cloned().collect::<Vec<_>>(),
+        txids.iter().collect::<Vec<_>>(),
     );
     assert_eq!(
         chain
             .range_txids_by_index(TestIndex(TxHeight::Confirmed(1), u32::MAX)..)
             .collect::<Vec<_>>(),
-        txids[1..].iter().cloned().collect::<Vec<_>>(),
+        txids[1..].iter().collect::<Vec<_>>(),
     );
 
     // exclusive start
@@ -675,7 +667,7 @@ fn range_txids_by_index() {
                 Bound::Unbounded
             ))
             .collect::<Vec<_>>(),
-        txids[1..].iter().cloned().collect::<Vec<_>>(),
+        txids[1..].iter().collect::<Vec<_>>(),
     );
     assert_eq!(
         chain
@@ -684,7 +676,7 @@ fn range_txids_by_index() {
                 Bound::Unbounded
             ))
             .collect::<Vec<_>>(),
-        txids[2..].iter().cloned().collect::<Vec<_>>(),
+        txids[2..].iter().collect::<Vec<_>>(),
     );
 
     // inclusive end
@@ -695,7 +687,7 @@ fn range_txids_by_index() {
                 Bound::Included(TestIndex(TxHeight::Confirmed(2), u32::MIN))
             ))
             .collect::<Vec<_>>(),
-        txids[..3].iter().cloned().collect::<Vec<_>>(),
+        txids[..3].iter().collect::<Vec<_>>(),
     );
     assert_eq!(
         chain
@@ -704,7 +696,7 @@ fn range_txids_by_index() {
                 Bound::Included(TestIndex(TxHeight::Confirmed(2), u32::MAX))
             ))
             .collect::<Vec<_>>(),
-        txids[..4].iter().cloned().collect::<Vec<_>>(),
+        txids[..4].iter().collect::<Vec<_>>(),
     );
 
     // exclusive end
@@ -712,13 +704,13 @@ fn range_txids_by_index() {
         chain
             .range_txids_by_index(..TestIndex(TxHeight::Confirmed(2), u32::MIN))
             .collect::<Vec<_>>(),
-        txids[..2].iter().cloned().collect::<Vec<_>>(),
+        txids[..2].iter().collect::<Vec<_>>(),
     );
     assert_eq!(
         chain
             .range_txids_by_index(..TestIndex(TxHeight::Confirmed(2), u32::MAX))
             .collect::<Vec<_>>(),
-        txids[..3].iter().cloned().collect::<Vec<_>>(),
+        txids[..3].iter().collect::<Vec<_>>(),
     );
 }
 
@@ -743,7 +735,7 @@ fn range_txids() {
                 .range_txids((TxHeight::Unconfirmed, *txid)..)
                 .map(|(_, txid)| txid)
                 .collect::<Vec<_>>(),
-            txids.range(*txid..).cloned().collect::<Vec<_>>(),
+            txids.range(*txid..).collect::<Vec<_>>(),
             "range with inclusive start should succeed"
         );
 
@@ -757,7 +749,6 @@ fn range_txids() {
                 .collect::<Vec<_>>(),
             txids
                 .range((Bound::Excluded(*txid), Bound::Unbounded,))
-                .cloned()
                 .collect::<Vec<_>>(),
             "range with exclusive start should succeed"
         );
@@ -767,7 +758,7 @@ fn range_txids() {
                 .range_txids(..(TxHeight::Unconfirmed, *txid))
                 .map(|(_, txid)| txid)
                 .collect::<Vec<_>>(),
-            txids.range(..*txid).cloned().collect::<Vec<_>>(),
+            txids.range(..*txid).collect::<Vec<_>>(),
             "range with exclusive end should succeed"
         );
 
@@ -781,7 +772,6 @@ fn range_txids() {
                 .collect::<Vec<_>>(),
             txids
                 .range((Bound::Included(*txid), Bound::Unbounded,))
-                .cloned()
                 .collect::<Vec<_>>(),
             "range with inclusive end should succeed"
         );
