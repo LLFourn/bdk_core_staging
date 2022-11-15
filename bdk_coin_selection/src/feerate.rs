@@ -1,9 +1,10 @@
+use crate::ord_float::Ordf32;
 use core::ops::{Add, Sub};
 
 /// Fee rate
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 // Internally stored as satoshi/weight unit
-pub struct FeeRate(f32);
+pub struct FeeRate(Ordf32);
 
 impl FeeRate {
     /// Create a new instance checking the value provided
@@ -15,7 +16,7 @@ impl FeeRate {
         assert!(value.is_normal() || value == 0.0);
         assert!(value.is_sign_positive());
 
-        Self(value)
+        Self(Ordf32(value))
     }
 
     /// Create a new instance of [`FeeRate`] given a float fee rate in btc/kvbytes
@@ -29,7 +30,7 @@ impl FeeRate {
 
     /// A feerate of zero
     pub fn zero() -> Self {
-        Self(0.0)
+        Self(Ordf32(0.0))
     }
 
     /// Create a new instance of [`FeeRate`] given a float fee rate in satoshi/vbyte
@@ -43,7 +44,7 @@ impl FeeRate {
 
     /// Create a new [`FeeRate`] with the default min relay fee value
     pub const fn default_min_relay_fee() -> Self {
-        Self(0.25)
+        Self(Ordf32(0.25))
     }
 
     /// Calculate fee rate from `fee` and weight units (`wu`).
@@ -63,11 +64,11 @@ impl FeeRate {
 
     /// Return the value as satoshi/vbyte
     pub fn as_sat_vb(&self) -> f32 {
-        self.0 * 4.0
+        self.0 .0 * 4.0
     }
 
     pub fn spwu(&self) -> f32 {
-        self.0
+        self.0 .0
     }
 }
 
@@ -75,7 +76,7 @@ impl Add<FeeRate> for FeeRate {
     type Output = Self;
 
     fn add(self, rhs: FeeRate) -> Self::Output {
-        Self(self.0 + rhs.0)
+        Self(Ordf32(self.0 .0 + rhs.0 .0))
     }
 }
 
@@ -83,6 +84,6 @@ impl Sub<FeeRate> for FeeRate {
     type Output = Self;
 
     fn sub(self, rhs: FeeRate) -> Self::Output {
-        Self(self.0 - rhs.0)
+        Self(Ordf32(self.0 .0 - rhs.0 .0))
     }
 }
