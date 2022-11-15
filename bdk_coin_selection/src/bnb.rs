@@ -1,5 +1,3 @@
-use crate::FeeRate;
-
 use super::CoinSelector;
 use alloc::collections::BinaryHeap;
 
@@ -62,7 +60,7 @@ impl<'a, M: BnBMetric> BnbIter<'a, M> {
             metric,
         };
 
-        if let Some(_) = iter.metric.requires_ordering_by_descending_spwu() {
+        if  iter.metric.requires_ordering_by_descending_value_pwu() {
             selector.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.value_pwu()));
         }
 
@@ -137,8 +135,8 @@ pub trait BnBMetric {
 
     fn score<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score>;
     fn bound<'a>(&mut self, cs: &CoinSelector<'a>) -> Option<Self::Score>;
-    fn requires_ordering_by_descending_spwu(&self) -> Option<FeeRate> {
-        None
+    fn requires_ordering_by_descending_value_pwu(&self) ->  bool {
+        false
     }
 }
 

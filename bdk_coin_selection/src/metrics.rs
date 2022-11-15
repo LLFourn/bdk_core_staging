@@ -196,8 +196,8 @@ where
         }
     }
 
-    fn requires_ordering_by_descending_spwu(&self) -> Option<FeeRate> {
-        Some(self.target.feerate)
+    fn requires_ordering_by_descending_value_pwu(&self) -> bool {
+        true
     }
 }
 
@@ -239,8 +239,8 @@ where
         Some(change_lower_bound(cs, self.target, &self.change_policy).is_some())
     }
 
-    fn requires_ordering_by_descending_spwu(&self) -> Option<FeeRate> {
-        Some(self.target.feerate)
+    fn requires_ordering_by_descending_value_pwu(&self) -> bool {
+        true
     }
 }
 
@@ -290,8 +290,9 @@ macro_rules! impl_for_tuple {
                 Some(($(self.$b.bound(cs)?),*))
             }
             #[allow(unused)]
-            fn requires_ordering_by_descending_spwu(&self) -> Option<FeeRate> {
-                None$(.or(self.$b.requires_ordering_by_descending_spwu()))*
+            fn requires_ordering_by_descending_value_pwu(&self) -> bool {
+                [$(self.$b.requires_ordering_by_descending_value_pwu()),*].iter().all(|x| *x)
+
             }
         }
     };
