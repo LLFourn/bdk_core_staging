@@ -1,8 +1,8 @@
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    sparse_chain::{self, SparseChain},
+    sparse_chain::SparseChain,
     tx_graph::TxGraph,
-    FullTxOut,
+    ChainIndex, FullTxOut,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 use core::ops::RangeBounds;
@@ -71,7 +71,7 @@ impl<I: Clone + Ord> SpkTracker<I> {
             .map(|(op, (index, txout))| (index.clone(), *op, txout))
     }
 
-    pub fn iter_unspent<'a, C: sparse_chain::ChainIndex>(
+    pub fn iter_unspent<'a, C: ChainIndex>(
         &'a self,
         chain: &'a SparseChain<C>,
         graph: &'a TxGraph,

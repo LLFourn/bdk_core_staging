@@ -1,7 +1,7 @@
 use bdk_core::{
     collections::{BTreeSet, Bound},
     sparse_chain::*,
-    BlockId, TxHeight,
+    BlockId, ChainIndex, TxHeight,
 };
 use bitcoin::{hashes::Hash, Txid};
 

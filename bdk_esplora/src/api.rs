@@ -42,9 +42,13 @@ pub struct TxStatus {
 
 impl TxStatus {
     pub fn into_confirmation_time(self) -> ConfirmationTime {
-        ConfirmationTime {
-            height: self.block_height.into(),
-            time: self.block_time,
+        if self.confirmed {
+            ConfirmationTime::Confirmed {
+                height: self.block_height.unwrap_or(0),
+                time: self.block_time.unwrap_or(0),
+            }
+        } else {
+            ConfirmationTime::Unconfirmed
         }
     }
 }

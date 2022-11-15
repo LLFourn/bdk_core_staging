@@ -2,15 +2,15 @@ use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use core::fmt::Debug;
 
 use crate::{
-    sparse_chain::{self, ChainIndex, SparseChain},
+    sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
-    BlockId, ConfirmationTime, TxHeight,
+    BlockId, ChainIndex, ConfirmationTime, TxHeight,
 };
 
 pub type TimestampedChainGraph = ChainGraph<ConfirmationTime>;
 
 #[derive(Clone, Debug)]
-pub struct ChainGraph<I: ChainIndex = TxHeight> {
+pub struct ChainGraph<I = TxHeight> {
     chain: SparseChain<I>,
     graph: TxGraph,
 }
@@ -24,7 +24,7 @@ impl<I: ChainIndex> Default for ChainGraph<I> {
     }
 }
 
-impl<I: sparse_chain::ChainIndex> ChainGraph<I> {
+impl<I: ChainIndex> ChainGraph<I> {
     pub fn insert_tx(
         &mut self,
         tx: Transaction,

@@ -4,28 +4,25 @@ use core::{
 };
 
 use crate::{
-    collections::*, tx_graph::TxGraph, BlockId, ConfirmationTime, FullTxOut, TxHeight, Vec,
+    collections::*, tx_graph::TxGraph, BlockId, ChainIndex, ConfirmationTime, FullTxOut, TxHeight,
+    Vec,
 };
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, Txid};
 
 /// A [`SparseChain`] in which the [`ChainIndex`] is extended by a [`Timestamp`].
 pub type TimestampedSparseChain = SparseChain<ConfirmationTime>;
 
-/// This is a non-monotone structure that tracks relevant [`Txid`]s that are ordered by
-/// [`ChainIndex`].
+/// This is a non-monotone structure that tracks relevant [`Txid`]s that are ordered by index `I`.
 ///
 /// To "merge" two [`SparseChain`]s, one can calculate the [`ChangeSet`] by calling
 /// [`Self::determine_changeset(update)`], and applying the [`ChangeSet`] via
 /// [`Self::apply_changeset(changeset)`]. For convenience, one can do the above two steps as one via
 /// [`Self::apply_update(update)`].
-///
-/// The generic `E` is used to extend the [`ChainIndex`], allowing for more definite ordering within
-/// a given height.
 #[derive(Clone, Debug)]
-pub struct SparseChain<I: ChainIndex = TxHeight> {
+pub struct SparseChain<I = TxHeight> {
     /// Block height to checkpoint data.
     checkpoints: BTreeMap<u32, BlockHash>,
-    /// Ordered txids where order is enforced with the prepended height and index extension.
+    /// Txids ordered by the index `I`.
     ordered_txids: BTreeSet<(I, Txid)>,
     /// Confirmation heights of txids.
     txid_to_index: HashMap<Txid, I>,
@@ -75,7 +72,7 @@ impl std::error::Error for InsertCheckpointErr {}
 
 /// Represents an update failure of [`SparseChain`].
 #[derive(Clone, Debug, PartialEq)]
-pub enum UpdateFailure<I: ChainIndex = TxHeight> {
+pub enum UpdateFailure<I = TxHeight> {
     /// The [`Update`] cannot be applied to this [`SparseChain`] because the chain suffix it
     /// represents did not connect to the existing chain. This error case contains the checkpoint
     /// height to include so that the chains can connect.
@@ -89,7 +86,7 @@ pub enum UpdateFailure<I: ChainIndex = TxHeight> {
     },
 }
 
-impl<I: ChainIndex + core::fmt::Debug> core::fmt::Display for UpdateFailure<I> {
+impl<I: core::fmt::Debug> core::fmt::Display for UpdateFailure<I> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NotConnected(h) =>
@@ -103,7 +100,7 @@ impl<I: ChainIndex + core::fmt::Debug> core::fmt::Display for UpdateFailure<I> {
 }
 
 #[cfg(feature = "std")]
-impl<I: ChainIndex + core::fmt::Debug> std::error::Error for UpdateFailure<I> {}
+impl<I: core::fmt::Debug> std::error::Error for UpdateFailure<I> {}
 
 impl<I: ChainIndex> SparseChain<I> {
     /// Creates a new chain from a list of block hashes and heights. The caller must guarantee they are in the same
@@ -674,67 +671,10 @@ impl<E: core::fmt::Debug> Display for MergeFailure<E> {
 #[cfg(feature = "std")]
 impl<D: core::fmt::Display + core::fmt::Debug> std::error::Error for MergeFailure<D> {}
 
-/// Represents an index in which transactions are ordered by in [`SparseChain`].
-///
-/// [`ChainIndex`] implementations must be [`Ord`] by [`TxHeight`] first.
-pub trait ChainIndex: Debug + Clone + Copy + Eq + PartialOrd + Ord + core::hash::Hash {
-    /// Obtain the transaction height of the index.
-    fn height(&self) -> TxHeight;
-
-    /// Obtain the index's upper bound of a given height.
-    fn max_ord_of_height(height: TxHeight) -> Self;
-
-    /// Obtain the index's lower bound of a given height.
-    fn min_ord_of_height(height: TxHeight) -> Self;
-}
-
 fn min_txid() -> Txid {
     Txid::from_inner([0x00; 32])
 }
 
 fn max_txid() -> Txid {
     Txid::from_inner([0xff; 32])
-}
-
-#[cfg(test)]
-pub mod verify_chain_index {
-    use alloc::vec::Vec;
-
-    use super::ChainIndex;
-    use crate::TxHeight;
-
-    pub fn verify_chain_index<I: ChainIndex>(head_count: u32, tail_count: u32) {
-        let values = (0..head_count)
-            .chain(u32::MAX - tail_count..u32::MAX)
-            .flat_map(|i| {
-                [
-                    I::min_ord_of_height(TxHeight::Confirmed(i)),
-                    I::max_ord_of_height(TxHeight::Confirmed(i)),
-                ]
-            })
-            .chain([
-                I::min_ord_of_height(TxHeight::Unconfirmed),
-                I::max_ord_of_height(TxHeight::Unconfirmed),
-            ])
-            .collect::<Vec<_>>();
-
-        for i in 0..values.len() {
-            for j in 0..values.len() {
-                if i == j {
-                    assert_eq!(values[i], values[j]);
-                }
-                if i < j {
-                    assert!(values[i] <= values[j]);
-                }
-                if i > j {
-                    assert!(values[i] >= values[j]);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn verify_tx_height() {
-        verify_chain_index::<TxHeight>(1000, 1000);
-    }
 }
