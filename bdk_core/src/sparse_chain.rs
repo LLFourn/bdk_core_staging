@@ -108,13 +108,15 @@ impl<I: ChainIndex + core::fmt::Debug> std::error::Error for UpdateFailure<I> {}
 impl<I: ChainIndex> SparseChain<I> {
     /// Creates a new chain from a list of block hashes and heights. The caller must guarantee they are in the same
     /// chain.
-    pub fn from_checkpoints<B, C>(checkpoints: C) -> Self
+    pub fn from_checkpoints<C>(checkpoints: C) -> Self
     where
-        B: Into<(u32, BlockHash)>,
-        C: IntoIterator<Item = B>,
+        C: IntoIterator<Item = BlockId>,
     {
         let mut chain = Self::default();
-        chain.checkpoints = checkpoints.into_iter().map(|block| block.into()).collect();
+        chain.checkpoints = checkpoints
+            .into_iter()
+            .map(|block_id| block_id.into())
+            .collect();
         chain
     }
 

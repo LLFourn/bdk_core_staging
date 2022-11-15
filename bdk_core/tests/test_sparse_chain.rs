@@ -3,14 +3,14 @@ use bdk_core::{
     sparse_chain::*,
     BlockId, TxHeight,
 };
-use bitcoin::{hashes::Hash, BlockHash, Txid};
+use bitcoin::{hashes::Hash, Txid};
 
 macro_rules! chain {
     ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
     (checkpoints: $($tail:tt)*) => { chain!( index: TxHeight, checkpoints: $($tail)*) };
     (index: $ind:ty, checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
         #[allow(unused_mut)]
-        let mut chain = SparseChain::<$ind>::from_checkpoints::<(u32, BlockHash), _>([$(($height, $block_hash)),*]);
+        let mut chain = SparseChain::<$ind>::from_checkpoints([$(($height, $block_hash).into()),*]);
 
         $(
             $(
@@ -568,8 +568,7 @@ fn checkpoint_limit_is_respected() {
 
 #[test]
 fn range_txids_by_height() {
-    let mut chain =
-        SparseChain::<TestIndex>::from_checkpoints([(1, h!("block 1")), (2, h!("block 2"))]);
+    let mut chain = chain!(index: TestIndex, checkpoints: [[1, h!("block 1")], [2, h!("block 2")]]);
 
     let txids: [(TestIndex, Txid); 4] = [
         (
@@ -630,8 +629,7 @@ fn range_txids_by_height() {
 
 #[test]
 fn range_txids_by_index() {
-    let mut chain =
-        SparseChain::<TestIndex>::from_checkpoints([(1, h!("block 1")), (2, h!("block 2"))]);
+    let mut chain = chain!(index: TestIndex, checkpoints: [[1, h!("block 1")],[2, h!("block 2")]]);
 
     let txids: [(TestIndex, Txid); 4] = [
         (TestIndex(TxHeight::Confirmed(1), u32::MIN), h!("tx 1 min")),
