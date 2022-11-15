@@ -44,12 +44,11 @@ where
                     INCLUDE_EXCESS,
                 );
 
-                // but don't stop there we might be able to select more stuff to remove the change output!
-                let should_explore_changeless =
-                    // there might be the possibility of changeless
-                    change_lower_bound.is_none()
-                    // AND we currently have change
-                    && current_change.is_some();
+                // But don't stop there we might be able to select negative value inputs which might
+                // lower excess and reduce waste either by:
+                // - removing the need for a change output
+                // - reducing the excess if the current selection is changeless (only possible when rate_diff is small).
+                let should_explore_changeless = change_lower_bound.is_none();
 
                 if should_explore_changeless {
                     let selection_with_as_much_negative_ev_as_possible = cs

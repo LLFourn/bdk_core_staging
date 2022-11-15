@@ -18,7 +18,7 @@ impl<'a, M: BnBMetric> Iterator for BnbIter<'a, M> {
         //     for thing in self.queue.iter() {
         //         println!("{} {:?}", &thing.selector, thing.lower_bound);
         //     }
-        //     // let _ = std::io::stdin().read_line(&mut String::new());
+        //     let _ = std::io::stdin().read_line(&mut String::new());
         // }
 
         let branch = self.queue.pop()?;

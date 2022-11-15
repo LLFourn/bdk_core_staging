@@ -238,6 +238,65 @@ fn waste_lower_long_term_feerate_but_still_need_to_select_all() {
     assert!(waste <= Ordf32(bench_waste));
 }
 
+#[test]
+fn waste_low_but_non_negative_rate_diff_means_adding_more_inputs_might_reduce_excess() {
+    let num_inputs = 22;
+    let target = 7620;
+    let feerate = 8.173157;
+    let min_fee = 0;
+    let base_weight = 35;
+    let long_term_feerate_diff = 0.0;
+    let change_weight = 1;
+    let change_spend_weight = 47;
+
+    let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
+    let long_term_feerate = FeeRate::from_sat_per_vb(0.0f32.max(feerate - long_term_feerate_diff));
+    let feerate = FeeRate::from_sat_per_vb(feerate);
+    let drain = Drain {
+        weight: change_weight,
+        spend_weight: change_spend_weight,
+        value: 0,
+    };
+
+    let change_policy = change_policy::min_waste(drain, long_term_feerate);
+    let wv = test_wv(&mut rng);
+    let candidates = wv.take(num_inputs).collect::<Vec<_>>();
+
+    let cs = CoinSelector::new(&candidates, base_weight);
+
+    let target = Target {
+        value: target,
+        feerate,
+        min_fee,
+    };
+
+    let solutions = cs.branch_and_bound(Waste {
+        target,
+        long_term_feerate,
+        change_policy: &change_policy,
+    });
+    let bench = {
+        let mut all_selected = cs.clone();
+        all_selected.select_all();
+        all_selected
+    };
+
+    let (_i, (_sol, waste)) = solutions
+        .enumerate()
+        .filter_map(|(i, sol)| Some((i, sol?)))
+        .last()
+        .expect("should find solution");
+
+    let bench_waste = bench.waste(
+        target,
+        long_term_feerate,
+        change_policy(&bench, target),
+        1.0,
+    );
+
+    assert!(waste <= Ordf32(bench_waste));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         timeout: 3_000,
