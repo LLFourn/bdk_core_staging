@@ -1,9 +1,21 @@
 use crate::{CoinSelector, Drain, FeeRate, Target};
 
-pub fn min_value(drain: Drain, min_value: u64) -> impl Fn(&CoinSelector, Target) -> Drain {
+/// Add a change output if the value it would receive is greater than or equal to `min_value`.
+///
+/// Note that the value field of the `drain` is ignored.
+pub fn min_value(mut drain: Drain, min_value: u64) -> impl Fn(&CoinSelector, Target) -> Drain {
     debug_assert!(drain.is_some());
+    let min_value: i64 = min_value
+        .try_into()
+        .expect("min_value is ridiculously large");
+    drain.value = 0;
     move |cs, target| {
-        if cs.excess(target, Drain::none()) >= drain.value as i64 {
+        let excess = cs.excess(target, drain);
+        if excess >= min_value {
+            let mut drain = drain;
+            drain.value = excess.try_into().expect(
+                "cannot be negative since we checked it against min_value which is positive",
+            );
             drain
         } else {
             Drain::none()
@@ -11,15 +23,25 @@ pub fn min_value(drain: Drain, min_value: u64) -> impl Fn(&CoinSelector, Target)
     }
 }
 
+/// Add a change output if it would reduce the overall waste of the transaction.
+///
+/// Note that the value field of the `drain` is ignored.
+/// The `value` will be set to whatever needs to be to reach the given target.
 pub fn min_waste(
-    drain: Drain,
+    mut drain: Drain,
     long_term_feerate: FeeRate,
 ) -> impl Fn(&CoinSelector, Target) -> Drain {
     debug_assert!(drain.is_some());
+    drain.value = 0;
+
     move |cs, target| {
-        if cs.excess(target, Drain::none())
-            > (drain.spend_weight as f32 * long_term_feerate.spwu()).ceil() as i64
-        {
+        let excess = cs.excess(target, Drain::none());
+        if excess > drain.waste(target.feerate, long_term_feerate).ceil() as i64 {
+            let mut drain = drain;
+            drain.value = cs
+                .excess(target, drain)
+                .try_into()
+                .expect("the excess must be positive because drain free excess was > waste");
             drain
         } else {
             Drain::none()
