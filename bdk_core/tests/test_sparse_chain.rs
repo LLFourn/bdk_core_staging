@@ -1,14 +1,16 @@
 use bdk_core::{
     collections::{BTreeSet, Bound},
-    *,
+    sparse_chain::*,
+    BlockId, ChainIndex, TxHeight,
 };
 use bitcoin::{hashes::Hash, Txid};
 
 macro_rules! chain {
     ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
-    (checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
+    (checkpoints: $($tail:tt)*) => { chain!( index: TxHeight, checkpoints: $($tail)*) };
+    (index: $ind:ty, checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
         #[allow(unused_mut)]
-        let mut chain = SparseChain::<()>::from_checkpoints([$(($height, $block_hash).into()),*]);
+        let mut chain = SparseChain::<$ind>::from_checkpoints([$(($height, $block_hash).into()),*]);
 
         $(
             $(
@@ -28,16 +30,16 @@ macro_rules! h {
 }
 
 macro_rules! changeset {
+    (checkpoints: $($tail:tt)*) => { changeset!(index: TxHeight, checkpoints: $($tail)*) };
     (
+        index: $ind:ty,
         checkpoints: [ $(( $height:expr, $cp_from:expr => $cp_to:expr )),* ]
         $(,txids: [ $(( $txid:expr, $tx_from:expr => $tx_to:expr )),* ])?
-
     ) => {{
         use bdk_core::collections::HashMap;
-        use bdk_core::Change;
 
         #[allow(unused_mut)]
-        ChangeSet::<()> {
+        ChangeSet::<$ind> {
             checkpoints: {
                 let mut changes = HashMap::default();
                 $(changes.insert($height, Change { from: $cp_from, to: $cp_to });)*
@@ -50,6 +52,32 @@ macro_rules! changeset {
             }
         }
     }};
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
+pub struct TestIndex(TxHeight, u32);
+
+impl ChainIndex for TestIndex {
+    fn height(&self) -> TxHeight {
+        self.0
+    }
+
+    fn max_ord_of_height(height: TxHeight) -> Self {
+        Self(height, u32::MAX)
+    }
+
+    fn min_ord_of_height(height: TxHeight) -> Self {
+        Self(height, u32::MIN)
+    }
+}
+
+impl TestIndex {
+    pub fn new<H>(height: H, ext: u32) -> Self
+    where
+        H: Into<TxHeight>,
+    {
+        Self(height.into(), ext)
+    }
 }
 
 #[test]
@@ -261,7 +289,7 @@ fn merging_mempool_of_empty_chains_doesnt_fail() {
 
 #[test]
 fn cannot_insert_confirmed_tx_without_checkpoints() {
-    let mut chain = SparseChain::<()>::default();
+    let mut chain = SparseChain::default();
     assert_eq!(
         chain.insert_tx(h!("A"), TxHeight::Confirmed(0)),
         Err(InsertTxErr::TxTooHigh)
@@ -326,44 +354,41 @@ fn fix_blockhash_before_agreement_point() {
 
 // TODO: Use macro
 #[test]
-fn cannot_change_index_of_confirmed_tx() {
-    let chain1 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
-        c.insert_tx(h!("tx1"), (TxHeight::Confirmed(1), 10))
-            .expect("should succeed");
-        c
-    };
-    let chain2 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
-        c.insert_tx(h!("tx1"), (TxHeight::Confirmed(1), 20))
-            .expect("should succeed");
-        c
-    };
+fn cannot_change_ext_index_of_confirmed_tx() {
+    let chain1 = chain!(
+        index: TestIndex,
+        checkpoints: [[1, h!("A")]],
+        txids: [(h!("tx0"), TestIndex(TxHeight::Confirmed(1), 10))]
+    );
+    let chain2 = chain!(
+        index: TestIndex,
+        checkpoints: [[1, h!("A")]],
+        txids: [(h!("tx0"), TestIndex(TxHeight::Confirmed(1), 20))]
+    );
+
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Err(UpdateFailure::InconsistentTx {
-            inconsistent_txid: h!("tx1"),
-            original_index: (TxHeight::Confirmed(1), 10).into(),
-            update_index: (TxHeight::Confirmed(1), 20).into(),
+            inconsistent_txid: h!("tx0"),
+            original_index: TestIndex(TxHeight::Confirmed(1), 10),
+            update_index: TestIndex(TxHeight::Confirmed(1), 20),
         }),
     )
 }
 
-// TODO: Use macro
 #[test]
 fn can_change_index_of_unconfirmed_tx() {
-    let chain1 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
-        c.insert_tx(h!("tx1"), (TxHeight::Unconfirmed, 10))
-            .expect("should succeed");
-        c
-    };
-    let chain2 = {
-        let mut c = SparseChain::<u32>::from_checkpoints([(1, h!("1")).into()]);
-        c.insert_tx(h!("tx1"), (TxHeight::Unconfirmed, 20))
-            .expect("should succeed");
-        c
-    };
+    let chain1 = chain!(
+        index: TestIndex,
+        checkpoints: [[1, h!("A")]],
+        txids: [(h!("tx1"), TestIndex(TxHeight::Unconfirmed, 10))]
+    );
+    let chain2 = chain!(
+        index: TestIndex,
+        checkpoints: [[1, h!("A")]],
+        txids: [(h!("tx1"), TestIndex(TxHeight::Unconfirmed, 20))]
+    );
+
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(ChangeSet {
@@ -371,8 +396,8 @@ fn can_change_index_of_unconfirmed_tx() {
             txids: [(
                 h!("tx1"),
                 Change::new_alteration(
-                    (TxHeight::Unconfirmed, 10).into(),
-                    (TxHeight::Unconfirmed, 20).into()
+                    TestIndex(TxHeight::Unconfirmed, 10),
+                    TestIndex(TxHeight::Unconfirmed, 20),
                 )
             )]
             .into()
@@ -542,17 +567,26 @@ fn checkpoint_limit_is_respected() {
 }
 
 #[test]
-fn range_txids_by_index() {
-    let mut chain = SparseChain::<u32>::from_checkpoints([
-        (1, h!("block 1")).into(),
-        (2, h!("block 2")).into(),
-    ]);
+fn range_txids_by_height() {
+    let mut chain = chain!(index: TestIndex, checkpoints: [[1, h!("block 1")], [2, h!("block 2")]]);
 
-    let txids: [(ChainIndex<u32>, Txid); 4] = [
-        ((TxHeight::Confirmed(1), u32::MIN).into(), h!("tx 1 min")),
-        ((TxHeight::Confirmed(1), u32::MAX).into(), h!("tx 1 max")),
-        ((TxHeight::Confirmed(2), u32::MIN).into(), h!("tx 2 min")),
-        ((TxHeight::Confirmed(2), u32::MAX).into(), h!("tx 2 max")),
+    let txids: [(TestIndex, Txid); 4] = [
+        (
+            TestIndex(TxHeight::Confirmed(1), u32::MIN),
+            Txid::from_inner([0x00; 32]),
+        ),
+        (
+            TestIndex(TxHeight::Confirmed(1), u32::MAX),
+            Txid::from_inner([0xfe; 32]),
+        ),
+        (
+            TestIndex(TxHeight::Confirmed(2), u32::MIN),
+            Txid::from_inner([0x01; 32]),
+        ),
+        (
+            TestIndex(TxHeight::Confirmed(2), u32::MAX),
+            Txid::from_inner([0xff; 32]),
+        ),
     ];
 
     // populate chain with txids
@@ -563,13 +597,62 @@ fn range_txids_by_index() {
     // inclusive start
     assert_eq!(
         chain
-            .range_txids_by_index((TxHeight::Confirmed(1), u32::MIN)..)
+            .range_txids_by_height(TxHeight::Confirmed(1)..)
+            .collect::<Vec<_>>(),
+        txids.iter().collect::<Vec<_>>(),
+    );
+
+    // exclusive start
+    assert_eq!(
+        chain
+            .range_txids_by_height((Bound::Excluded(TxHeight::Confirmed(1)), Bound::Unbounded,))
+            .collect::<Vec<_>>(),
+        txids[2..].iter().collect::<Vec<_>>(),
+    );
+
+    // inclusive end
+    assert_eq!(
+        chain
+            .range_txids_by_height((Bound::Unbounded, Bound::Included(TxHeight::Confirmed(2))))
+            .collect::<Vec<_>>(),
+        txids[..4].iter().collect::<Vec<_>>(),
+    );
+
+    // exclusive end
+    assert_eq!(
+        chain
+            .range_txids_by_height(..TxHeight::Confirmed(2))
+            .collect::<Vec<_>>(),
+        txids[..2].iter().collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn range_txids_by_index() {
+    let mut chain = chain!(index: TestIndex, checkpoints: [[1, h!("block 1")],[2, h!("block 2")]]);
+
+    let txids: [(TestIndex, Txid); 4] = [
+        (TestIndex(TxHeight::Confirmed(1), u32::MIN), h!("tx 1 min")),
+        (TestIndex(TxHeight::Confirmed(1), u32::MAX), h!("tx 1 max")),
+        (TestIndex(TxHeight::Confirmed(2), u32::MIN), h!("tx 2 min")),
+        (TestIndex(TxHeight::Confirmed(2), u32::MAX), h!("tx 2 max")),
+    ];
+
+    // populate chain with txids
+    for (index, txid) in txids {
+        chain.insert_tx(txid, index).expect("should succeed");
+    }
+
+    // inclusive start
+    assert_eq!(
+        chain
+            .range_txids_by_index(TestIndex(TxHeight::Confirmed(1), u32::MIN)..)
             .collect::<Vec<_>>(),
         txids.iter().collect::<Vec<_>>(),
     );
     assert_eq!(
         chain
-            .range_txids_by_index((TxHeight::Confirmed(1), u32::MAX)..)
+            .range_txids_by_index(TestIndex(TxHeight::Confirmed(1), u32::MAX)..)
             .collect::<Vec<_>>(),
         txids[1..].iter().collect::<Vec<_>>(),
     );
@@ -578,7 +661,7 @@ fn range_txids_by_index() {
     assert_eq!(
         chain
             .range_txids_by_index((
-                Bound::Excluded((TxHeight::Confirmed(1), u32::MIN)),
+                Bound::Excluded(TestIndex(TxHeight::Confirmed(1), u32::MIN)),
                 Bound::Unbounded
             ))
             .collect::<Vec<_>>(),
@@ -587,7 +670,7 @@ fn range_txids_by_index() {
     assert_eq!(
         chain
             .range_txids_by_index((
-                Bound::Excluded((TxHeight::Confirmed(1), u32::MAX)),
+                Bound::Excluded(TestIndex(TxHeight::Confirmed(1), u32::MAX)),
                 Bound::Unbounded
             ))
             .collect::<Vec<_>>(),
@@ -599,7 +682,7 @@ fn range_txids_by_index() {
         chain
             .range_txids_by_index((
                 Bound::Unbounded,
-                Bound::Included((TxHeight::Confirmed(2), u32::MIN))
+                Bound::Included(TestIndex(TxHeight::Confirmed(2), u32::MIN))
             ))
             .collect::<Vec<_>>(),
         txids[..3].iter().collect::<Vec<_>>(),
@@ -608,7 +691,7 @@ fn range_txids_by_index() {
         chain
             .range_txids_by_index((
                 Bound::Unbounded,
-                Bound::Included((TxHeight::Confirmed(2), u32::MAX))
+                Bound::Included(TestIndex(TxHeight::Confirmed(2), u32::MAX))
             ))
             .collect::<Vec<_>>(),
         txids[..4].iter().collect::<Vec<_>>(),
@@ -617,13 +700,13 @@ fn range_txids_by_index() {
     // exclusive end
     assert_eq!(
         chain
-            .range_txids_by_index(..(TxHeight::Confirmed(2), u32::MIN))
+            .range_txids_by_index(..TestIndex(TxHeight::Confirmed(2), u32::MIN))
             .collect::<Vec<_>>(),
         txids[..2].iter().collect::<Vec<_>>(),
     );
     assert_eq!(
         chain
-            .range_txids_by_index(..(TxHeight::Confirmed(2), u32::MAX))
+            .range_txids_by_index(..TestIndex(TxHeight::Confirmed(2), u32::MAX))
             .collect::<Vec<_>>(),
         txids[..3].iter().collect::<Vec<_>>(),
     );

@@ -1,18 +1,18 @@
 #![no_std]
 pub use alloc::{boxed::Box, vec::Vec};
 pub use bitcoin;
-use bitcoin::{hashes::Hash, BlockHash, TxOut};
+use bitcoin::TxOut;
 mod chain_graph;
 pub use chain_graph::*;
 mod spk_tracker;
 pub use spk_tracker::*;
-mod sparse_chain;
-pub use sparse_chain::*;
-mod tx_graph;
-pub use tx_graph::*;
+mod chain_data;
+pub use chain_data::*;
 pub mod coin_select;
 #[cfg(feature = "miniscript")]
 mod keychain_tracker;
+pub mod sparse_chain;
+pub mod tx_graph;
 #[cfg(feature = "miniscript")]
 pub use keychain_tracker::*;
 #[cfg(feature = "miniscript")]
@@ -35,70 +35,6 @@ extern crate std;
 
 #[cfg(all(not(feature = "std"), feature = "hashbrown"))]
 extern crate hashbrown;
-
-/// Block height and timestamp of a block
-#[derive(Debug, Clone, PartialEq, Eq, Default, Copy, PartialOrd, Ord)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(crate = "serde_crate")
-)]
-pub struct BlockTime {
-    /// confirmation block height
-    pub height: u32,
-    /// confirmation block timestamp
-    pub time: u64,
-}
-
-impl From<(u32, u64)> for BlockTime {
-    fn from((height, time): (u32, u64)) -> Self {
-        Self { height, time }
-    }
-}
-
-/// A reference to a block in the cannonical chain.
-#[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Deserialize, serde::Serialize),
-    serde(crate = "serde_crate")
-)]
-pub struct BlockId {
-    /// The height the block was confirmed at
-    pub height: u32,
-    /// The hash of the block
-    pub hash: BlockHash,
-}
-
-impl Default for BlockId {
-    fn default() -> Self {
-        Self {
-            height: Default::default(),
-            hash: BlockHash::from_inner([0u8; 32]),
-        }
-    }
-}
-
-impl From<(u32, BlockHash)> for BlockId {
-    fn from((height, hash): (u32, BlockHash)) -> Self {
-        Self { height, hash }
-    }
-}
-
-impl From<BlockId> for (u32, BlockHash) {
-    fn from(block_id: BlockId) -> Self {
-        (block_id.height, block_id.hash)
-    }
-}
-
-impl From<(&u32, &BlockHash)> for BlockId {
-    fn from((height, hash): (&u32, &BlockHash)) -> Self {
-        Self {
-            height: *height,
-            hash: *hash,
-        }
-    }
-}
 
 // When no-std use `alloc`'s Hash collections. This is activated by default
 #[cfg(all(not(feature = "std"), not(feature = "hashbrown")))]

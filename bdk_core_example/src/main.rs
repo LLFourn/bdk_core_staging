@@ -10,7 +10,7 @@ use bdk_core::{
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     descriptor_into_script_iter,
     miniscript::{Descriptor, DescriptorPublicKey},
-    ChainGraph, DescriptorExt, KeychainTracker,
+    ChainGraph, ChainIndex, DescriptorExt, KeychainTracker, TimestampedChainGraph,
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
@@ -193,7 +193,7 @@ fn main() -> anyhow::Result<()> {
             let (confirmed, unconfirmed) = tracker.iter_unspent(chain.chain(), chain.graph()).fold(
                 (0, 0),
                 |(confirmed, unconfirmed), ((keychain, _), utxo)| {
-                    if utxo.chain_index.height.is_confirmed() || keychain == Keychain::Internal {
+                    if utxo.chain_index.is_confirmed() || keychain == Keychain::Internal {
                         (confirmed + utxo.txout.value, unconfirmed)
                     } else {
                         (confirmed, unconfirmed + utxo.txout.value)
@@ -258,10 +258,10 @@ fn main() -> anyhow::Result<()> {
                     candidates.sort_by_key(|(_, utxo)| utxo.txout.value)
                 }
                 CoinSelectionAlgo::OldestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| utxo.chain_index.height)
+                    candidates.sort_by_key(|(_, utxo)| utxo.chain_index.height())
                 }
                 CoinSelectionAlgo::NewestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_index.height))
+                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_index.height()))
                 }
                 CoinSelectionAlgo::BranchAndBound => {}
             }
@@ -430,7 +430,7 @@ fn main() -> anyhow::Result<()> {
 pub fn fully_sync(
     client: &Client,
     tracker: &mut KeychainTracker<Keychain>,
-    chain: &mut ChainGraph<()>,
+    chain: &mut TimestampedChainGraph,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut active_indexes = vec![];

@@ -6,7 +6,7 @@ use bdk_core::{
         BlockHash, OutPoint, PackedLockTime, Script, Sequence, Transaction, TxIn, TxOut, Txid,
         Witness,
     },
-    BlockId, BlockTime, PrevOuts,
+    BlockId, ConfirmationTime, PrevOuts,
 };
 
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -41,10 +41,15 @@ pub struct TxStatus {
 }
 
 impl TxStatus {
-    pub fn to_block_time(&self) -> Option<BlockTime> {
-        let height = self.block_height?;
-        let time = self.block_time?;
-        Some(BlockTime { height, time })
+    pub fn into_confirmation_time(self) -> ConfirmationTime {
+        if self.confirmed {
+            ConfirmationTime::Confirmed {
+                height: self.block_height.unwrap_or(0),
+                time: self.block_time.unwrap_or(0),
+            }
+        } else {
+            ConfirmationTime::Unconfirmed
+        }
     }
 }
 
@@ -90,15 +95,8 @@ impl Tx {
         }
     }
 
-    pub fn confirmation_time(&self) -> Option<BlockTime> {
-        match self.status {
-            TxStatus {
-                confirmed: true,
-                block_height: Some(height),
-                block_time: Some(time),
-            } => Some(BlockTime { time, height }),
-            _ => None,
-        }
+    pub fn confirmation_time(&self) -> ConfirmationTime {
+        self.status.clone().into_confirmation_time()
     }
 
     pub fn previous_outputs(&self) -> PrevOuts {
