@@ -48,24 +48,16 @@ impl From<TxHeight> for Option<u32> {
 }
 
 impl sparse_chain::ChainIndex for TxHeight {
-    type Extension = ();
-    const EXTENSION_MIN: Self::Extension = ();
-    const EXTENSION_MAX: Self::Extension = ();
-
     fn height(&self) -> TxHeight {
         *self
     }
 
-    fn extension(&self) -> Self::Extension {
-        ()
+    fn max_ord_of_height(height: TxHeight) -> Self {
+        height
     }
 
-    fn into_ordered_key(self) -> (TxHeight, Self::Extension) {
-        (self, ())
-    }
-
-    fn from_ordered_key(key: (TxHeight, Self::Extension)) -> Self {
-        key.0
+    fn min_ord_of_height(height: TxHeight) -> Self {
+        height
     }
 }
 
@@ -76,7 +68,7 @@ impl TxHeight {
 }
 
 /// Block height and timestamp in which a transaction is confirmed in.
-#[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord, core::hash::Hash)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Deserialize, serde::Serialize),
@@ -88,27 +80,19 @@ pub struct ConfirmationTime {
 }
 
 impl sparse_chain::ChainIndex for ConfirmationTime {
-    type Extension = Option<u64>;
-    const EXTENSION_MIN: Self::Extension = None;
-    const EXTENSION_MAX: Self::Extension = Some(u64::MAX);
-
     fn height(&self) -> TxHeight {
         self.height
     }
 
-    fn extension(&self) -> Self::Extension {
-        self.time
-    }
-
-    fn into_ordered_key(self) -> (TxHeight, Self::Extension) {
-        (self.height, self.time)
-    }
-
-    fn from_ordered_key(key: (TxHeight, Self::Extension)) -> Self {
+    fn max_ord_of_height(height: TxHeight) -> Self {
         Self {
-            height: key.0,
-            time: key.1,
+            height,
+            time: Some(u64::MAX),
         }
+    }
+
+    fn min_ord_of_height(height: TxHeight) -> Self {
+        Self { height, time: None }
     }
 }
 
