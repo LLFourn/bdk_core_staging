@@ -299,7 +299,7 @@ fn waste_low_but_non_negative_rate_diff_means_adding_more_inputs_might_reduce_ex
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        timeout: 3_000,
+        timeout: 6_000,
         cases: 1_000,
         ..Default::default()
     })]
