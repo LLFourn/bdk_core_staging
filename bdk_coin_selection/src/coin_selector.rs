@@ -277,6 +277,10 @@ impl<'a> CoinSelector<'a> {
         self.sort_candidates_by(|a, b| key_fn(a).cmp(&key_fn(b)))
     }
 
+    pub fn sort_candidates_by_descending_value_pwu(&mut self) {
+        self.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.value_pwu()));
+    }
+
     pub fn waste(
         &self,
         target: Target,

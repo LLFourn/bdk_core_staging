@@ -61,7 +61,7 @@ impl<'a, M: BnBMetric> BnbIter<'a, M> {
         };
 
         if iter.metric.requires_ordering_by_descending_value_pwu() {
-            selector.sort_candidates_by_key(|(_, wv)| core::cmp::Reverse(wv.value_pwu()));
+            selector.sort_candidates_by_descending_value_pwu();
         }
 
         iter.consider_adding_to_queue(&selector, false);
