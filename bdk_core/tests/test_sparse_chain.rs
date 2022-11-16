@@ -33,8 +33,8 @@ macro_rules! changeset {
     (checkpoints: $($tail:tt)*) => { changeset!(index: TxHeight, checkpoints: $($tail)*) };
     (
         index: $ind:ty,
-        checkpoints: [ $(( $height:expr, $cp_from:expr => $cp_to:expr )),* ]
-        $(,txids: [ $(( $txid:expr, $tx_from:expr => $tx_to:expr )),* ])?
+        checkpoints: [ $(( $height:expr, $cp_to:expr )),* ]
+        $(,txids: [ $(( $txid:expr, $tx_to:expr )),* ])?
     ) => {{
         use bdk_core::collections::HashMap;
 
@@ -42,12 +42,12 @@ macro_rules! changeset {
         ChangeSet::<$ind> {
             checkpoints: {
                 let mut changes = HashMap::default();
-                $(changes.insert($height, Change { from: $cp_from, to: $cp_to });)*
+                $(changes.insert($height, $cp_to);)*
                 changes
             },
             txids: {
                 let mut changes = HashMap::default();
-                $($(changes.insert($txid, Change { from: $tx_from.map(|h: TxHeight| h.into()), to: $tx_to.map(|h: TxHeight| h.into()) });)*)?
+                $($(changes.insert($txid, $tx_to.map(|h: TxHeight| h.into()));)*)?
                 changes
             }
         }
@@ -86,7 +86,7 @@ fn add_first_checkpoint() {
     assert_eq!(
         chain.determine_changeset(&chain!([0, h!("A")])),
         Ok(changeset! {
-            checkpoints: [(0, None => Some(h!("A")))],
+            checkpoints: [(0, Some(h!("A")))],
             txids: []
         }),
         "add first tip"
@@ -99,7 +99,7 @@ fn add_second_tip() {
     assert_eq!(
         chain.determine_changeset(&chain!([0, h!("A")], [1, h!("B")])),
         Ok(changeset! {
-            checkpoints: [(1, None => Some(h!("B")))],
+            checkpoints: [(1, Some(h!("B")))],
             txids: []
         }),
         "extend tip by one"
@@ -144,7 +144,7 @@ fn duplicate_chains_with_different_txs_should_merge() {
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
             checkpoints: [],
-            txids: [(h!("tx1"), None => Some(TxHeight::Confirmed(0)))]
+            txids: [(h!("tx1"), Some(TxHeight::Confirmed(0)))]
         })
     );
 }
@@ -156,7 +156,7 @@ fn invalidate_first_and_only_checkpoint_without_tx_changes() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(0, Some(h!("A")) => Some(h!("A'")))],
+            checkpoints: [(0, Some(h!("A'")))],
             txids: []
         })
     );
@@ -169,8 +169,8 @@ fn invalidate_first_and_only_checkpoint_with_tx_move_forward() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(0, Some(h!("A")) => Some(h!("A'"))), (1, None => Some(h!("B")))],
-            txids: [(h!("tx0"), Some(TxHeight::Confirmed(0)) => Some(TxHeight::Confirmed(1)))]
+            checkpoints: [(0, Some(h!("A'"))), (1, Some(h!("B")))],
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(1)))]
         })
     );
 }
@@ -182,8 +182,8 @@ fn invalidate_first_and_only_checkpoint_with_tx_move_backward() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(0, None => Some(h!("A"))), (1, Some(h!("B")) => Some(h!("B'")))],
-            txids: [(h!("tx0"), Some(TxHeight::Confirmed(1)) => Some(TxHeight::Confirmed(0)))]
+            checkpoints: [(0, Some(h!("A"))), (1, Some(h!("B'")))],
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(0)))]
         })
     );
 }
@@ -212,8 +212,8 @@ fn move_invalidated_tx_into_earlier_checkpoint() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(1, Some(h!("B")) => Some(h!("B'")))],
-            txids: [(h!("tx0"), Some(TxHeight::Confirmed(1)) => Some(TxHeight::Confirmed(0)))]
+            checkpoints: [(1, Some(h!("B'")))],
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(0)))]
         })
     );
 }
@@ -225,8 +225,8 @@ fn invalidate_first_and_only_checkpoint_with_tx_move_to_mempool() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(0, Some(h!("A")) => Some(h!("A'")))],
-            txids: [(h!("tx0"), Some(TxHeight::Confirmed(0)) => Some(TxHeight::Unconfirmed))]
+            checkpoints: [(0, Some(h!("A'")))],
+            txids: [(h!("tx0"), Some(TxHeight::Unconfirmed))]
         })
     );
 }
@@ -239,7 +239,7 @@ fn confirm_tx_without_extending_chain() {
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
             checkpoints: [],
-            txids: [(h!("tx0"), Some(TxHeight::Unconfirmed) => Some(TxHeight::Confirmed(0)))]
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(0)))]
         })
     );
 }
@@ -251,8 +251,8 @@ fn confirm_tx_backwards_while_extending_chain() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(1, None => Some(h!("B")))],
-            txids: [(h!("tx0"), Some(TxHeight::Unconfirmed) => Some(TxHeight::Confirmed(0)))]
+            checkpoints: [(1, Some(h!("B")))],
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(0)))]
         })
     );
 }
@@ -267,8 +267,8 @@ fn confirm_tx_in_new_block() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(1, None => Some(h!("B")))],
-            txids: [(h!("tx0"), Some(TxHeight::Unconfirmed) => Some(TxHeight::Confirmed(1)))]
+            checkpoints: [(1, Some(h!("B")))],
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(1)))]
         })
     );
 }
@@ -282,7 +282,7 @@ fn merging_mempool_of_empty_chains_doesnt_fail() {
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
             checkpoints: [],
-            txids: [(h!("tx1"), None => Some(TxHeight::Unconfirmed))]
+            txids: [(h!("tx1"), Some(TxHeight::Unconfirmed))]
         })
     );
 }
@@ -305,7 +305,7 @@ fn empty_chain_can_add_unconfirmed_transactions() {
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
             checkpoints: [],
-            txids: [ (h!("tx0"), None => Some(TxHeight::Unconfirmed)) ]
+            txids: [ (h!("tx0"), Some(TxHeight::Unconfirmed)) ]
         })
     );
 }
@@ -319,7 +319,7 @@ fn can_update_with_shorter_chain() {
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
             checkpoints: [],
-            txids: [(h!("tx0"), None => Some(TxHeight::Confirmed(1)))]
+            txids: [(h!("tx0"), Some(TxHeight::Confirmed(1)))]
         })
     )
 }
@@ -332,7 +332,7 @@ fn can_introduce_older_checkpoints() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(1, None => Some(h!("B")))],
+            checkpoints: [(1, Some(h!("B")))],
             txids: []
         })
     );
@@ -346,7 +346,7 @@ fn fix_blockhash_before_agreement_point() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(0, Some(h!("im-wrong")) => Some(h!("fix")))],
+            checkpoints: [(0, Some(h!("fix")))],
             txids: []
         })
     )
@@ -393,14 +393,7 @@ fn can_change_index_of_unconfirmed_tx() {
         chain1.determine_changeset(&chain2),
         Ok(ChangeSet {
             checkpoints: [].into(),
-            txids: [(
-                h!("tx1"),
-                Change::new_alteration(
-                    TestIndex(TxHeight::Unconfirmed, 10),
-                    TestIndex(TxHeight::Unconfirmed, 20),
-                )
-            )]
-            .into()
+            txids: [(h!("tx1"), Some(TestIndex(TxHeight::Unconfirmed, 20)),)].into()
         }),
     )
 }
@@ -420,7 +413,7 @@ fn two_points_of_agreement() {
     assert_eq!(
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
-            checkpoints: [(0, None => Some(h!("A"))), (3, None => Some(h!("D")))]
+            checkpoints: [(0, Some(h!("A"))), (3, Some(h!("D")))]
         }),
     );
 }
@@ -472,16 +465,16 @@ fn transitive_invalidation_applies_to_checkpoints_higher_than_invalidation() {
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
             checkpoints: [
-                (2, Some(h!("B")) => Some(h!("B'"))),
-                (3, Some(h!("C")) => Some(h!("C'"))),
-                (4, None => Some(h!("D"))),
-                (5, Some(h!("E")) => None)
+                (2, Some(h!("B'"))),
+                (3, Some(h!("C'"))),
+                (4, Some(h!("D"))),
+                (5, None)
             ],
             txids: [
-                (h!("b1"), Some(TxHeight::Confirmed(1)) => Some(TxHeight::Confirmed(4))),
-                (h!("b2"), Some(TxHeight::Confirmed(2)) => Some(TxHeight::Confirmed(3))),
-                (h!("d"), Some(TxHeight::Confirmed(3)) => None),
-                (h!("e"), Some(TxHeight::Confirmed(5)) => None)
+                (h!("b1"), Some(TxHeight::Confirmed(4))),
+                (h!("b2"), Some(TxHeight::Confirmed(3))),
+                (h!("d"), None),
+                (h!("e"), None)
             ]
         })
     );
@@ -504,10 +497,10 @@ fn transitive_invalidation_applies_to_checkpoints_higher_than_invalidation_no_po
         chain1.determine_changeset(&chain2),
         Ok(changeset! {
             checkpoints: [
-                (1, Some(h!("B")) => Some(h!("B'"))),
-                (2, Some(h!("C")) => Some(h!("C'"))),
-                (3, None => Some(h!("D"))),
-                (4, Some(h!("E")) => None)
+                (1, Some(h!("B'"))),
+                (2, Some(h!("C'"))),
+                (3, Some(h!("D"))),
+                (4, None)
             ]
         })
     )
@@ -560,7 +553,7 @@ fn checkpoint_limit_is_respected() {
 
     assert_eq!(
         chain1.apply_update(&chain!([6, h!("F")], [7, h!("G")])),
-        Ok(changeset!(checkpoints: [(7, None => Some(h!("G")))]))
+        Ok(changeset!(checkpoints: [(7, Some(h!("G")))]))
     );
 
     assert_eq!(chain1.checkpoints().len(), 4);
