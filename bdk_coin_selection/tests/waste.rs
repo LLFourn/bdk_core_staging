@@ -163,17 +163,16 @@ fn waste_doesnt_take_too_long_to_finish() {
         change_policy: &change_policy,
     });
 
-    let (_i, (best, score)) = solutions
+    solutions
         .enumerate()
+        .inspect(|_| {
+            if start.elapsed().as_millis() > 1_000 {
+                panic!("took too long to finish")
+            }
+        })
         .filter_map(|(i, sol)| Some((i, sol?)))
         .last()
         .expect("should find solution");
-
-    if start.elapsed().as_millis() > 1_000 {
-        dbg!(score, _i, change_policy(&best, target));
-        println!("{}", best);
-        panic!("took too long to finish");
-    }
 }
 
 /// When long term feerate is lower than current adding new inputs should in general make things
@@ -379,9 +378,14 @@ proptest! {
                 let cmp_benchmarks = cmp_benchmarks.into_iter().filter(|cs| cs.is_target_met(target, change_policy(&cs, target)));
                 let sol_waste = sol.waste(target, long_term_feerate, change_policy(&sol, target), 1.0);
 
-                for (_bench_id, bench) in cmp_benchmarks.enumerate() {
+                for (_bench_id, mut bench) in cmp_benchmarks.enumerate() {
                     let bench_waste = bench.waste(target, long_term_feerate, change_policy(&bench, target), 1.0);
-                    dbg!(_bench_id);
+                    if sol_waste > bench_waste {
+                        dbg!(_bench_id);
+                        println!("bnb solution: {}", sol);
+                        bench.sort_candidates_by_descending_value_pwu();
+                        println!("found better: {}", bench);
+                    }
                     prop_assert!(sol_waste <= bench_waste);
                 }
             },
