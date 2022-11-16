@@ -1,58 +1,12 @@
+#[macro_use]
+mod common;
+
 use bdk_core::{
     collections::{BTreeSet, Bound},
     sparse_chain::*,
     BlockId, ChainIndex, TxHeight,
 };
 use bitcoin::{hashes::Hash, Txid};
-
-macro_rules! chain {
-    ($([$($tt:tt)*]),*) => { chain!( checkpoints: [$([$($tt)*]),*] ) };
-    (checkpoints: $($tail:tt)*) => { chain!( index: TxHeight, checkpoints: $($tail)*) };
-    (index: $ind:ty, checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
-        #[allow(unused_mut)]
-        let mut chain = SparseChain::<$ind>::from_checkpoints([$(($height, $block_hash).into()),*]);
-
-        $(
-            $(
-                chain.insert_tx($txid, $tx_height).unwrap();
-            )*
-        )?
-
-        chain
-    }};
-}
-
-macro_rules! h {
-    ($index:literal) => {{
-        use bitcoin::hashes::Hash;
-        Hash::hash($index.as_bytes())
-    }};
-}
-
-macro_rules! changeset {
-    (checkpoints: $($tail:tt)*) => { changeset!(index: TxHeight, checkpoints: $($tail)*) };
-    (
-        index: $ind:ty,
-        checkpoints: [ $(( $height:expr, $cp_to:expr )),* ]
-        $(,txids: [ $(( $txid:expr, $tx_to:expr )),* ])?
-    ) => {{
-        use bdk_core::collections::HashMap;
-
-        #[allow(unused_mut)]
-        ChangeSet::<$ind> {
-            checkpoints: {
-                let mut changes = HashMap::default();
-                $(changes.insert($height, $cp_to);)*
-                changes
-            },
-            txids: {
-                let mut changes = HashMap::default();
-                $($(changes.insert($txid, $tx_to.map(|h: TxHeight| h.into()));)*)?
-                changes
-            }
-        }
-    }};
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub struct TestIndex(TxHeight, u32);

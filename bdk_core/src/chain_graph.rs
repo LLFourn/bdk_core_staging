@@ -38,7 +38,7 @@ impl<I: ChainIndex> ChainGraph<I> {
     pub fn insert_output(
         &mut self,
         outpoint: OutPoint,
-        txout: TxOut,
+        txout: &TxOut,
         index: I,
     ) -> Result<bool, sparse_chain::InsertTxErr> {
         let changed = self.chain.insert_tx(outpoint.txid, index)?;
