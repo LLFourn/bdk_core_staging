@@ -282,7 +282,7 @@ impl<I: ChainIndex> SparseChain<I> {
 
     pub fn apply_changeset(&mut self, changeset: &ChangeSet<I>) {
         for (height, update_hash) in &changeset.checkpoints {
-            let original_hash = match update_hash {
+            let _original_hash = match update_hash {
                 Some(update_hash) => self.checkpoints.insert(*height, *update_hash),
                 None => self.checkpoints.remove(&height),
             };
