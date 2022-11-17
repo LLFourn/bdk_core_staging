@@ -5,7 +5,7 @@ use crate::{
     collections::HashSet,
     sparse_chain::{self, SparseChain},
     tx_graph::{self, TxGraph},
-    BlockId, ChainIndex, ConfirmationTime, TxHeight, Vec,
+    BlockId, ChainIndex, ConfirmationTime, TxHeight,
 };
 
 pub type TimestampedChainGraph = ChainGraph<ConfirmationTime>;
@@ -49,7 +49,7 @@ impl<I: ChainIndex> ChainGraph<I> {
     pub fn insert_output(
         &mut self,
         outpoint: OutPoint,
-        txout: &TxOut,
+        txout: TxOut,
         index: I,
     ) -> Result<bool, sparse_chain::InsertTxErr> {
         let changed = self.chain.insert_tx(outpoint.txid, index)?;

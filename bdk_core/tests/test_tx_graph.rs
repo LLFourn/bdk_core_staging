@@ -33,7 +33,7 @@ fn simple_update() {
     let mut graph = {
         let mut graph = TxGraph::default();
         for (outpoint, txout) in &original_ops {
-            assert!(graph.insert_txout(*outpoint, txout));
+            assert!(graph.insert_txout(*outpoint, txout.clone()));
         }
         graph
     };
@@ -41,7 +41,7 @@ fn simple_update() {
     let update = {
         let mut graph = TxGraph::default();
         for (outpoint, txout) in &update_ops {
-            assert!(graph.insert_txout(*outpoint, &txout));
+            assert!(graph.insert_txout(*outpoint, txout.clone()));
         }
         graph
     };

@@ -105,7 +105,7 @@ impl TxGraph {
     }
 
     /// Inserts an auxiliary txout. Returns true if txout is newly added.
-    pub fn insert_txout(&mut self, outpoint: OutPoint, txout: &TxOut) -> bool {
+    pub fn insert_txout(&mut self, outpoint: OutPoint, txout: TxOut) -> bool {
         let tx_entry = self
             .txs
             .entry(outpoint.txid)
@@ -115,7 +115,7 @@ impl TxGraph {
             TxNode::Whole(_) => false,
             TxNode::Partial(txouts) => match txouts.insert(outpoint.vout as _, txout.clone()) {
                 Some(old_txout) => {
-                    debug_assert_eq!(txout, &old_txout);
+                    debug_assert_eq!(txout, old_txout);
                     false
                 }
                 None => true,
@@ -236,7 +236,7 @@ impl TxGraph {
         }
 
         for (outpoint, txout) in &additions.txout {
-            self.insert_txout(*outpoint, txout);
+            self.insert_txout(*outpoint, txout.clone());
         }
     }
 }
