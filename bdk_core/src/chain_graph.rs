@@ -25,6 +25,16 @@ impl<I> Default for ChainGraph<I> {
     }
 }
 
+impl<I> ChainGraph<I> {
+    pub fn chain(&self) -> &SparseChain<I> {
+        &self.chain
+    }
+
+    pub fn graph(&self) -> &TxGraph {
+        &self.graph
+    }
+}
+
 impl<I: ChainIndex> ChainGraph<I> {
     pub fn insert_tx(
         &mut self,
@@ -56,14 +66,6 @@ impl<I: ChainIndex> ChainGraph<I> {
         block_id: BlockId,
     ) -> Result<bool, sparse_chain::InsertCheckpointErr> {
         self.chain.insert_checkpoint(block_id)
-    }
-
-    pub fn chain(&self) -> &SparseChain<I> {
-        &self.chain
-    }
-
-    pub fn graph(&self) -> &TxGraph {
-        &self.graph
     }
 
     pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
