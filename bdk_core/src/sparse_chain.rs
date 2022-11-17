@@ -286,14 +286,6 @@ impl<I: ChainIndex> SparseChain<I> {
                 Some(update_hash) => self.checkpoints.insert(*height, *update_hash),
                 None => self.checkpoints.remove(&height),
             };
-
-            #[cfg(feature = "std")]
-            std::println!(
-                "[updated checkpoint] height: {}, hash: {:?} => {:?}",
-                height,
-                original_hash,
-                update_hash
-            );
         }
 
         for (txid, update_index) in &changeset.txids {
@@ -307,14 +299,6 @@ impl<I: ChainIndex> SparseChain<I> {
                 self.txid_to_index.insert(*txid, *index);
                 self.ordered_txids.insert((*index, *txid));
             }
-
-            #[cfg(feature = "std")]
-            std::println!(
-                "[updated tx] txid: {}, index: {:?} => {:?}",
-                txid,
-                original_index,
-                update_index
-            );
         }
 
         self.prune_checkpoints();
