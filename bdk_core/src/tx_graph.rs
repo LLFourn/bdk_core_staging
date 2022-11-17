@@ -257,11 +257,14 @@ impl Additions {
         self.tx.is_empty() && self.txout.is_empty()
     }
 
-    pub fn txids<B: core::iter::FromIterator<Txid>>(&self) -> B {
+    /// Iterates over [`Txid`]s mentioned in [`Additions`], whether they be full transactions or
+    /// from individual outputs.
+    ///
+    /// This does not guarantee that there will not be duplicate txids.
+    pub fn txids(&self) -> impl Iterator<Item = Txid> + '_ {
         self.tx
             .iter()
             .map(Transaction::txid)
             .chain(self.txout.keys().map(|op| op.txid))
-            .collect()
     }
 }

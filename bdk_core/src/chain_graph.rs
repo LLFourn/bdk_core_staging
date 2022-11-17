@@ -72,13 +72,13 @@ impl<I: ChainIndex> ChainGraph<I> {
         let chain_changeset = self.chain.determine_changeset(&update.chain)?;
         let graph_additions = self.graph.determine_additions(&update.graph);
 
-        let added_txids = graph_additions.txids::<HashSet<_>>();
+        let added_txids = graph_additions.txids().collect::<HashSet<_>>();
 
         // ensure changeset adds exist in either graph_additions or self.graph
         let missing = chain_changeset
             .tx_additions()
             .filter(|txid| added_txids.contains(txid) || self.graph.contains_txid(*txid))
-            .collect::<Vec<_>>();
+            .collect::<HashSet<_>>();
         if !missing.is_empty() {
             return Err(UpdateFailure::Missing(missing));
         }
@@ -115,7 +115,7 @@ pub struct ChangeSet<I> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateFailure<I> {
     Chain(sparse_chain::UpdateFailure<I>),
-    Missing(Vec<Txid>),
+    Missing(HashSet<Txid>),
 }
 
 impl<I> core::fmt::Display for UpdateFailure<I> {
