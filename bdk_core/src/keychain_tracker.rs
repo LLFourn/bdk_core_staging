@@ -1,4 +1,4 @@
-use crate::{collections::*, SpkTracker};
+use crate::{collections::*, spk_tracker::SpkTracker};
 use bitcoin::{secp256k1::Secp256k1, Script};
 use core::{
     fmt::Debug,
@@ -41,7 +41,7 @@ impl<K> DerefMut for KeychainTracker<K> {
 }
 
 impl<K: Clone + Ord + Debug> KeychainTracker<K> {
-    pub fn iter_keychains(
+    pub fn keychains(
         &self,
         range: impl core::ops::RangeBounds<K>,
     ) -> impl DoubleEndedIterator<Item = (K, &Descriptor<DescriptorPublicKey>)> {
@@ -55,6 +55,15 @@ impl<K: Clone + Ord + Debug> KeychainTracker<K> {
         self.descriptors.insert(keychain, descriptor);
     }
 
+    /// Generates a map of keychain to an iterator over all that keychain's
+    pub fn start_wallet_scan(&self) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
+        self.keychains(..)
+            .map(|(keychain, descriptor)| {
+                (keychain, descriptor_into_script_iter(descriptor.clone()))
+            })
+            .collect()
+    }
+
     pub fn descriptor(&self, keychain: K) -> &Descriptor<DescriptorPublicKey> {
         self.descriptors
             .get(&keychain)
@@ -63,18 +72,34 @@ impl<K: Clone + Ord + Debug> KeychainTracker<K> {
 
     ///
     pub fn next_derivation_index(&self, keychain: K) -> u32 {
+        self.derivation_index(keychain)
+            .map(|index| index + 1)
+            .unwrap_or(0)
+    }
+
+    pub fn derivation_index(&self, keychain: K) -> Option<u32> {
         self.inner
             .script_pubkeys()
             .range(&(keychain.clone(), u32::MIN)..=&(keychain.clone(), u32::MAX))
+            .map(|((_, index), _)| *index)
             .last()
-            .map(|((_, last), _)| last + 1)
-            .unwrap_or(0)
     }
+
+    pub fn derivation_indicies(&self) -> BTreeMap<K, u32> {
+        self.keychains(..)
+            .filter_map(|(keychain, _)| Some((keychain.clone(), self.derivation_index(keychain)?)))
+            .collect()
+    }
+
+    pub fn derive_all_spks(&mut self, keychains: BTreeMap<K, u32>) -> bool {
+        keychains.into_iter().any(|(keychain, index)| self.derive_spks(keychain, index))
+    }
+
     /// Derives script pubkeys from the descriptor **up to and including** `end` and stores them
     /// unless a script already exists in that index.
     ///
     /// Returns whether any new were derived (or if they had already all been stored).
-    pub fn derive_spks(&mut self, keychain: K, end: u32) -> bool {
+    pub fn derive_spks(&mut self, keychain: K, index: u32) -> bool {
         let descriptor = self
             .descriptors
             .get(&keychain)
@@ -82,7 +107,7 @@ impl<K: Clone + Ord + Debug> KeychainTracker<K> {
         let secp = Secp256k1::verification_only();
         let end = match descriptor.has_wildcard() {
             false => 0,
-            true => end,
+            true => index,
         };
         let next_to_derive = self.next_derivation_index(keychain.clone());
         if next_to_derive > end {
@@ -148,58 +173,27 @@ impl<K: Clone + Ord + Debug> KeychainTracker<K> {
                 .unwrap()
         }
     }
+}
 
-    // pub fn create_psbt(
-    //     &self,
-    //     inputs: impl IntoIterator<Item = (OutPoint , Option<&Plan>)>,
-    //     outputs: impl IntoIterator<Item = TxOut>,
-    //     chain: &SparseChain,
-    // ) -> (Psbt, BTreeMap<usize, Descriptor<DefiniteDescriptorKey>>) {
-    //     let unsigned_tx = Transaction {
-    //         version: 0x02,
-    //         lock_time: 0x00,
-    //         input: inputs
-    //             .into_iter()
-    //             .map(|(previous_output, _)| TxIn {
-    //                 previous_output,
-    //                 ..Default::default()
-    //             })
-    //             .collect(),
-    //         output: outputs.into_iter().collect(),
-    //     };
+fn descriptor_into_script_iter(
+    descriptor: Descriptor<DescriptorPublicKey>,
+) -> impl Iterator<Item = (u32, Script)> + Clone + Send {
+    let secp = Secp256k1::verification_only();
+    let end = if descriptor.has_wildcard() {
+        // Because we only iterate over non-hardened indexes there are 2^31 values
+        (1 << 31) - 1
+    } else {
+        0
+    };
 
-    //     let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).unwrap();
-    //     let mut definite_descriptors = BTreeMap::new();
-
-    //     for ((input_index, psbt_input), txin) in psbt
-    //         .inputs
-    //         .iter_mut()
-    //         .enumerate()
-    //         .zip(&psbt.unsigned_tx.input)
-    //     {
-
-    //         if let Some(definite_descriptor) = definite_descriptor {
-    //             let prev_tx = chain
-    //                 .get_tx(txin.previous_output.txid)
-    //                 .expect("since the txout exists so must the transaction");
-    //             match definite_descriptor.desc_type().segwit_version() {
-    //                 Some(version) => {
-    //                     if version < WitnessVersion::V1 {
-    //                         psbt_input.non_witness_utxo = Some(prev_tx.tx.clone());
-    //                     }
-    //                     psbt_input.witness_utxo =
-    //                         Some(prev_tx.tx.output[txin.previous_output.vout as usize].clone());
-    //                 }
-    //                 None => psbt_input.non_witness_utxo = Some(prev_tx.tx.clone()),
-    //             }
-
-    //             psbt_input
-    //                 .update_with_descriptor_unchecked(&definite_descriptor)
-    //                 .expect("conversion error cannot happen if descriptor is well formed");
-    //             definite_descriptors.insert(input_index, definite_descriptor);
-    //         }
-    //     }
-
-    //     (psbt, definite_descriptors)
-    // }
+    (0..=end).map(move |i| {
+        (
+            i,
+            descriptor
+                .at_derivation_index(i)
+                .derived_descriptor(&secp)
+                .expect("the descritpor cannot need hardened derivation")
+                .script_pubkey(),
+        )
+    })
 }

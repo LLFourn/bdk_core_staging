@@ -7,14 +7,20 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
+    chain_graph::ChainGraph,
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
-    descriptor_into_script_iter,
     miniscript::{Descriptor, DescriptorPublicKey},
-    ChainGraph, ChainIndex, DescriptorExt, KeychainTracker, TimestampedChainGraph,
+    DescriptorExt, KeychainTracker,
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
-use std::{cmp::Reverse, time::Duration};
+use std::{
+    cmp::Reverse,
+    io::{self, Write},
+    path::PathBuf,
+    time::Duration,
+};
+mod db;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -22,6 +28,9 @@ use std::{cmp::Reverse, time::Duration};
 struct Args {
     #[clap(env = "DESCRIPTOR")]
     descriptor: String,
+
+    #[clap(env = "BDK_DB_DIR", default_value = "example_db")]
+    db_dir: PathBuf,
 
     #[clap(env = "CHANGE_DESCRIPTOR")]
     change_descriptor: Option<String>,
@@ -35,6 +44,15 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    Scan,
+    Sync {
+        #[clap(long)]
+        unused: bool,
+        #[clap(long)]
+        unspent: bool,
+        #[clap(long)]
+        all: bool,
+    },
     Address {
         #[clap(subcommand)]
         addr_cmd: AddressCmd,
@@ -109,6 +127,7 @@ pub enum AddressCmd {
         #[clap(long)]
         change: bool,
     },
+    Index,
 }
 
 #[derive(Subcommand, Debug)]
@@ -116,10 +135,19 @@ pub enum TxoCmd {
     List,
 }
 
-#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 pub enum Keychain {
     External,
     Internal,
+}
+
+impl core::fmt::Display for Keychain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Keychain::External => write!(f, "external"),
+            Keychain::Internal => write!(f, "internal"),
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -152,12 +180,88 @@ fn main() -> anyhow::Result<()> {
         Network::Signet => "https://mempool.space/signet/api",
     };
 
+    let mut db = db::Db::load(args.db_dir.as_path(), &mut chain, &mut tracker)?;
     let mut client = Client::new(ureq::Agent::new(), esplora_url);
-    client.parallel_requests = 5;
-
-    fully_sync(&client, &mut tracker, &mut chain)?;
 
     match args.command {
+        Commands::Scan => {
+            client.parallel_requests = 5;
+            let stop_gap = 10;
+
+            let spk_iterators = tracker
+                .start_wallet_scan()
+                .into_iter()
+                .map(|(keychain, iter)| {
+                    let mut first = true;
+                    (
+                        keychain,
+                        iter.inspect(move |(i, _)| {
+                            if first {
+                                eprint!("\nscanning {}: ", keychain);
+                                first = false;
+                            }
+
+                            eprint!("{} ", i);
+                            let _ = io::stdout().flush();
+                        }),
+                    )
+                })
+                .collect();
+
+            let wallet_scan = client
+                .wallet_scan(
+                    spk_iterators,
+                    Some(stop_gap),
+                    chain.chain().checkpoints().clone(),
+                )
+                .context("scanning the blockchain")?;
+
+            db.apply_wallet_scan(&mut chain, &mut tracker, wallet_scan)?;
+
+            eprintln!();
+        }
+        Commands::Sync {
+            mut unused,
+            mut unspent,
+            all,
+        } => {
+            if !(all || unused || unspent) {
+                unused = true;
+                unspent = true;
+            } else if all {
+                unused = false;
+                unspent = false
+            }
+            let mut spks = vec![];
+            if unused {
+                spks.extend(tracker.iter_unused().map(|(index, script)| {
+                    eprintln!("Checking if script at {:?} has been used", index);
+                    script.clone()
+                }));
+            }
+
+            if all {
+                spks.extend(tracker.script_pubkeys().iter().map(|(index, script)| {
+                    eprintln!("scanning {:?}", index);
+                    script.clone()
+                }));
+            }
+
+            if unspent {
+                spks.extend(tracker.iter_unspent(chain.chain(), chain.graph()).map(
+                    |(_index, ftxout)| {
+                        eprintln!("checking if {} has been spent", ftxout.outpoint);
+                        ftxout.txout.script_pubkey
+                    },
+                ));
+            }
+
+            let update = client
+                .spk_scan(spks.into_iter(), chain.chain().checkpoints().clone())
+                .context("scanning the blockchain")?;
+
+            db.apply_wallet_sync(&mut chain, &mut tracker, update)?;
+        }
         Commands::Address { addr_cmd } => {
             let new_address = match addr_cmd {
                 AddressCmd::Next => Some(tracker.derive_next_unused(Keychain::External)),
@@ -166,6 +270,9 @@ fn main() -> anyhow::Result<()> {
             };
 
             if let Some((index, spk)) = new_address {
+                let spk = spk.clone();
+                // update database since we're about to give out a new address
+                db.set_derivation_indicies(&tracker)?;
                 let address = Address::from_script(&spk, args.network)
                     .expect("should always be able to derive address");
                 eprintln!("This is the address at index {}", index);
@@ -174,6 +281,11 @@ fn main() -> anyhow::Result<()> {
 
             match addr_cmd {
                 AddressCmd::Next | AddressCmd::New => { /* covered */ }
+                AddressCmd::Index => {
+                    for (keychain, derivation_index) in tracker.derivation_indicies() {
+                        println!("{}: {}", keychain, derivation_index);
+                    }
+                }
                 AddressCmd::List { change } => {
                     let target_keychain = match change {
                         true => change_keychain,
@@ -181,7 +293,7 @@ fn main() -> anyhow::Result<()> {
                     };
                     for (index, spk) in tracker.script_pubkeys() {
                         if index.0 == target_keychain {
-                            let address = Address::from_script(&spk, args.network)
+                            let address = Address::from_script(spk, args.network)
                                 .expect("should always be able to derive address");
                             println!("{} used:{}", address, tracker.is_used(*index));
                         }
@@ -258,10 +370,10 @@ fn main() -> anyhow::Result<()> {
                     candidates.sort_by_key(|(_, utxo)| utxo.txout.value)
                 }
                 CoinSelectionAlgo::OldestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| utxo.chain_index.height())
+                    candidates.sort_by_key(|(_, utxo)| utxo.chain_index)
                 }
                 CoinSelectionAlgo::NewestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_index.height()))
+                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_index))
                 }
                 CoinSelectionAlgo::BranchAndBound => {}
             }
@@ -424,62 +536,5 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
-    Ok(())
-}
-
-pub fn fully_sync(
-    client: &Client,
-    tracker: &mut KeychainTracker<Keychain>,
-    chain: &mut TimestampedChainGraph,
-) -> anyhow::Result<()> {
-    let start = std::time::Instant::now();
-    let mut active_indexes = vec![];
-    let mut update = ChainGraph::default();
-
-    for (keychain, descriptor) in tracker.iter_keychains(..) {
-        eprint!("scanning {:?} addresses indexes ", keychain);
-        let (last_active_index, keychain_update) = client
-            .fetch_new_checkpoint(
-                descriptor_into_script_iter(descriptor.clone())
-                    .enumerate()
-                    .map(|(i, script)| (i as u32, script))
-                    .inspect(|(i, _)| {
-                        use std::io::{self, Write};
-                        eprint!("{} ", i);
-                        let _ = io::stdout().flush();
-                    }),
-                2,
-                chain.chain().checkpoints(),
-            )
-            .context("fetching transactions")?;
-
-        update
-            .apply_update(&keychain_update)
-            .map_err(|_| anyhow!("the updates for the two keychains were incompatible"))?;
-
-        if let Some(last_active_index) = last_active_index {
-            active_indexes.push((keychain, last_active_index));
-        }
-
-        eprintln!("success! ({}ms)", start.elapsed().as_millis())
-    }
-
-    match chain.apply_update(&update) {
-        Result::Ok(_changes) => { /* TODO: print out the changes nicely */ }
-        Result::Err(_reason) => {
-            unreachable!("we are the only ones accessing the tracker");
-        }
-    }
-
-    // for tx in update.graph().iter_full_txs() {
-    //     graph.insert_tx(tx);
-    // }
-
-    for (keychain, active_index) in active_indexes {
-        tracker.derive_spks(keychain, active_index);
-    }
-
-    tracker.scan(chain.graph());
-
     Ok(())
 }

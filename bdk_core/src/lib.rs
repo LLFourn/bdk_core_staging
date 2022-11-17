@@ -2,13 +2,14 @@
 pub use alloc::{boxed::Box, vec::Vec};
 pub use bitcoin;
 use bitcoin::TxOut;
-mod chain_graph;
-pub use chain_graph::*;
+pub mod chain_graph;
 mod spk_tracker;
 pub use spk_tracker::*;
 mod chain_data;
 pub use chain_data::*;
 pub mod coin_select;
+mod wallet_scan;
+pub use wallet_scan::*;
 #[cfg(feature = "miniscript")]
 mod keychain_tracker;
 pub mod sparse_chain;
