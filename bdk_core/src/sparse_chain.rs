@@ -18,7 +18,7 @@ pub type TimestampedSparseChain = SparseChain<ConfirmationTime>;
 /// [`Self::determine_changeset(update)`], and applying the [`ChangeSet`] via
 /// [`Self::apply_changeset(changeset)`]. For convenience, one can do the above two steps as one via
 /// [`Self::apply_update(update)`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SparseChain<I = TxHeight> {
     /// Block height to checkpoint data.
     checkpoints: BTreeMap<u32, BlockHash>,
@@ -30,7 +30,7 @@ pub struct SparseChain<I = TxHeight> {
     checkpoint_limit: Option<usize>,
 }
 
-impl<I: ChainIndex> Default for SparseChain<I> {
+impl<I> Default for SparseChain<I> {
     fn default() -> Self {
         Self {
             checkpoints: Default::default(),
@@ -158,12 +158,12 @@ impl<I: ChainIndex> SparseChain<I> {
             checkpoints: self
                 .checkpoints
                 .iter()
-                .map(|(height, hash)| (*height, Change::new_insertion(*hash)))
+                .map(|(height, hash)| (*height, Some(*hash)))
                 .collect(),
             txids: self
                 .ordered_txids
                 .iter()
-                .map(|(index, txid)| (*txid, Change::new_insertion(*index)))
+                .map(|(index, txid)| (*txid, Some(*index)))
                 .collect(),
         }
     }
@@ -222,7 +222,7 @@ impl<I: ChainIndex> SparseChain<I> {
             checkpoints: self
                 .checkpoints
                 .range(invalid_from..)
-                .map(|(height, hash)| (*height, Change::new_removal(*hash)))
+                .map(|(height, _)| (*height, None))
                 .collect(),
             txids: self
                 .ordered_txids
@@ -237,36 +237,34 @@ impl<I: ChainIndex> SparseChain<I> {
                             Txid::all_zeros(),
                         ),
                 )
-                .map(|(key, txid)| (*txid, Change::new_removal(*key)))
+                .map(|(_, txid)| (*txid, None))
                 .collect(),
         };
 
         for (&height, &new_hash) in &update.checkpoints {
             let original_hash = self.checkpoints.get(&height).cloned();
 
-            let is_inaction = change_set
+            let update_hash = *change_set
                 .checkpoints
                 .entry(height)
-                .and_modify(|change| change.to = Some(new_hash))
-                .or_insert_with(|| Change::new(original_hash, Some(new_hash)))
-                .is_inaction();
+                .and_modify(|change| *change = Some(new_hash))
+                .or_insert_with(|| Some(new_hash));
 
-            if is_inaction {
+            if original_hash == update_hash {
                 change_set.checkpoints.remove(&height);
             }
         }
 
         for (txid, new_index) in &update.txid_to_index {
-            let original_conf = self.txid_to_index.get(txid).cloned();
+            let original_index = self.txid_to_index.get(txid).cloned();
 
-            let is_inaction = change_set
+            let update_index = *change_set
                 .txids
                 .entry(*txid)
-                .and_modify(|change| change.to = Some(*new_index))
-                .or_insert_with(|| Change::new(original_conf, Some(*new_index)))
-                .is_inaction();
+                .and_modify(|change| *change = Some(*new_index))
+                .or_insert_with(|| Some(*new_index));
 
-            if is_inaction {
+            if original_index == update_index {
                 change_set.txids.remove(txid);
             }
         }
@@ -283,33 +281,40 @@ impl<I: ChainIndex> SparseChain<I> {
     }
 
     pub fn apply_changeset(&mut self, changeset: &ChangeSet<I>) {
-        for (&height, change) in &changeset.checkpoints {
-            let original_hash = match change.to {
-                Some(to) => self.checkpoints.insert(height, to),
+        for (height, update_hash) in &changeset.checkpoints {
+            let original_hash = match update_hash {
+                Some(update_hash) => self.checkpoints.insert(*height, *update_hash),
                 None => self.checkpoints.remove(&height),
             };
-            debug_assert_eq!(original_hash, change.from);
+
+            #[cfg(feature = "std")]
+            std::println!(
+                "[updated checkpoint] height: {}, hash: {:?} => {:?}",
+                height,
+                original_hash,
+                update_hash
+            );
         }
 
-        for (&txid, change) in &changeset.txids {
-            let (changed, original_index) = match (change.from, change.to) {
-                (None, None) => panic!("should not happen"),
-                (None, Some(to)) => (
-                    self.ordered_txids.insert((to, txid)),
-                    self.txid_to_index.insert(txid, to),
-                ),
-                (Some(from), None) => (
-                    self.ordered_txids.remove(&(from, txid)),
-                    self.txid_to_index.remove(&txid),
-                ),
-                (Some(from), Some(to)) => (
-                    self.ordered_txids.insert((to, txid))
-                        && self.ordered_txids.remove(&(from, txid)),
-                    self.txid_to_index.insert(txid, to),
-                ),
-            };
-            debug_assert!(changed);
-            debug_assert_eq!(original_index, change.from);
+        for (txid, update_index) in &changeset.txids {
+            let original_index = self.txid_to_index.remove(txid);
+
+            if let Some(index) = original_index {
+                self.ordered_txids.remove(&(index, *txid));
+            }
+
+            if let Some(index) = update_index {
+                self.txid_to_index.insert(*txid, *index);
+                self.ordered_txids.insert((*index, *txid));
+            }
+
+            #[cfg(feature = "std")]
+            std::println!(
+                "[updated tx] txid: {}, index: {:?} => {:?}",
+                txid,
+                original_index,
+                update_index
+            );
         }
 
         self.prune_checkpoints();
@@ -325,7 +330,7 @@ impl<I: ChainIndex> SparseChain<I> {
                     Txid::all_zeros(),
                 )..,
             )
-            .map(|(key, txid)| (*txid, Change::new_removal(*key)))
+            .map(|(_, txid)| (*txid, None))
             .collect();
 
         let changeset = ChangeSet::<I> {
@@ -499,10 +504,15 @@ impl<I: ChainIndex> SparseChain<I> {
 }
 
 /// Represents the set of changes as result of a successful [`Update`].
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
 pub struct ChangeSet<I = TxHeight> {
-    pub checkpoints: HashMap<u32, Change<BlockHash>>,
-    pub txids: HashMap<Txid, Change<I>>,
+    pub checkpoints: BTreeMap<u32, Option<BlockHash>>,
+    pub txids: BTreeMap<Txid, Option<I>>,
 }
 
 impl<I> Default for ChangeSet<I> {
@@ -515,54 +525,22 @@ impl<I> Default for ChangeSet<I> {
 }
 
 impl<I: ChainIndex> ChangeSet<I> {
-    pub fn merge(mut self, new_set: Self) -> Result<Self, MergeFailure<I>> {
+    pub fn merge(mut self, new_set: Self) -> Self {
         for (height, new_change) in new_set.checkpoints {
-            if let Some(change) = self.checkpoints.get(&height) {
-                if change.to != new_change.from {
-                    return Err(MergeFailure::Checkpoint(MergeConflict {
-                        key: height,
-                        change: change.clone(),
-                        new_change,
-                    }));
-                }
-            }
-
-            let is_inaction = self
-                .checkpoints
+            self.checkpoints
                 .entry(height)
-                .and_modify(|change| change.to = new_change.to)
-                .or_insert_with(|| new_change.clone())
-                .is_inaction();
-
-            if is_inaction {
-                self.checkpoints.remove_entry(&height);
-            }
+                .and_modify(|change| *change = new_change)
+                .or_insert_with(|| new_change.clone());
         }
 
         for (txid, new_change) in new_set.txids {
-            if let Some(change) = self.txids.get(&txid) {
-                if change.to != new_change.from {
-                    return Err(MergeFailure::Txid(MergeConflict {
-                        key: txid,
-                        change: change.clone(),
-                        new_change,
-                    }));
-                }
-            }
-
-            let is_inaction = self
-                .txids
+            self.txids
                 .entry(txid)
-                .and_modify(|change| change.to = new_change.clone().to)
-                .or_insert_with(|| new_change)
-                .is_inaction();
-
-            if is_inaction {
-                self.txids.remove_entry(&txid);
-            }
+                .and_modify(|change| *change = new_change)
+                .or_insert_with(|| new_change);
         }
 
-        Ok(self)
+        self
     }
 }
 
@@ -570,106 +548,9 @@ impl<I> ChangeSet<I> {
     pub fn tx_additions(&self) -> impl Iterator<Item = Txid> + '_ {
         self.txids
             .iter()
-            .filter_map(|(txid, change)| match (&change.from, &change.to) {
-                (None, Some(_)) => Some(*txid),
-                _ => None,
-            })
+            .filter_map(|(txid, new_value)| new_value.as_ref().map(|_| *txid))
     }
 }
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Change<V> {
-    pub from: Option<V>,
-    pub to: Option<V>,
-}
-
-impl<V> Change<V> {
-    pub fn new(from: Option<V>, to: Option<V>) -> Self {
-        Self { from, to }
-    }
-
-    pub fn new_removal(v: V) -> Self {
-        Self {
-            from: Some(v),
-            to: None,
-        }
-    }
-
-    pub fn new_insertion(v: V) -> Self {
-        Self {
-            from: None,
-            to: Some(v),
-        }
-    }
-
-    pub fn new_alteration(from: V, to: V) -> Self {
-        Self {
-            from: Some(from),
-            to: Some(to),
-        }
-    }
-}
-
-impl<V: PartialEq> Change<V> {
-    pub fn is_inaction(&self) -> bool {
-        self.from == self.to
-    }
-}
-
-impl<V: Display> Display for Change<V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // use core::fmt::Display as display_fmt;
-
-        fn fmt_opt<V: Display>(
-            opt: &Option<V>,
-            f: &mut core::fmt::Formatter<'_>,
-        ) -> core::fmt::Result {
-            match opt {
-                Some(v) => v.fmt(f),
-                None => Display::fmt("None", f),
-            }
-        }
-
-        Display::fmt("(", f)?;
-        fmt_opt(&self.from, f)?;
-        Display::fmt(" => ", f)?;
-        fmt_opt(&self.to, f)?;
-        Display::fmt(")", f)
-    }
-}
-
-#[derive(Debug)]
-pub enum MergeFailure<I> {
-    Checkpoint(MergeConflict<u32, BlockHash>),
-    Txid(MergeConflict<Txid, I>),
-}
-
-#[derive(Debug, Default)]
-pub struct MergeConflict<K, V> {
-    pub key: K,
-    pub change: Change<V>,
-    pub new_change: Change<V>,
-}
-
-impl<E: core::fmt::Debug> Display for MergeFailure<E> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            MergeFailure::Checkpoint(conflict) => write!(
-                f,
-                "merge conflict (checkpoint): height={}, original_change={}, merge_with={}",
-                conflict.key, conflict.change, conflict.new_change
-            ),
-            MergeFailure::Txid(conflict) => write!(
-                f,
-                "merge conflict (tx): txid={}, original_change={:?}, merge_with={:?}",
-                conflict.key, conflict.change, conflict.new_change
-            ),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl<D: core::fmt::Display + core::fmt::Debug> std::error::Error for MergeFailure<D> {}
 
 fn min_txid() -> Txid {
     Txid::from_inner([0x00; 32])

@@ -2,10 +2,23 @@ use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
 use crate::{collections::*, Vec};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TxGraph {
     txs: HashMap<Txid, TxNode>,
     spends: BTreeMap<OutPoint, HashSet<Txid>>,
+}
+
+/// Node of a [`TxGraph`]
+#[derive(Clone, Debug, PartialEq)]
+enum TxNode {
+    Whole(Transaction),
+    Partial(BTreeMap<u32, TxOut>),
+}
+
+impl Default for TxNode {
+    fn default() -> Self {
+        Self::Partial(BTreeMap::new())
+    }
 }
 
 impl TxGraph {
@@ -37,6 +50,11 @@ impl TxGraph {
         }
     }
 
+    /// Returns true when graph contains given tx of txid (whether it be partial or full).
+    pub fn contains_txid(&self, txid: Txid) -> bool {
+        self.txs.contains_key(&txid)
+    }
+
     /// Obtains a single tx output (if any) at specified outpoint.
     pub fn txout(&self, outpoint: OutPoint) -> Option<&TxOut> {
         match self.txs.get(&outpoint.txid)? {
@@ -46,8 +64,8 @@ impl TxGraph {
     }
 
     /// Returns a [`BTreeMap`] of outputs of a given txid.
-    pub fn txouts(&self, txid: &Txid) -> Option<BTreeMap<u32, &TxOut>> {
-        Some(match self.txs.get(txid)? {
+    pub fn txouts(&self, txid: Txid) -> Option<BTreeMap<u32, &TxOut>> {
+        Some(match self.txs.get(&txid)? {
             TxNode::Whole(tx) => tx
                 .output
                 .iter()
@@ -86,7 +104,7 @@ impl TxGraph {
         return true;
     }
 
-    /// Inserts an auxiliary txout. Returns false if txout already exists.
+    /// Inserts an auxiliary txout. Returns true if txout is newly added.
     pub fn insert_txout(&mut self, outpoint: OutPoint, txout: TxOut) -> bool {
         let tx_entry = self
             .txs
@@ -95,7 +113,13 @@ impl TxGraph {
 
         match tx_entry {
             TxNode::Whole(_) => false,
-            TxNode::Partial(txouts) => txouts.insert(outpoint.vout as _, txout).is_some(),
+            TxNode::Partial(txouts) => match txouts.insert(outpoint.vout as _, txout.clone()) {
+                Some(old_txout) => {
+                    debug_assert_eq!(txout, old_txout);
+                    false
+                }
+                None => true,
+            },
         }
     }
 
@@ -168,31 +192,79 @@ impl TxGraph {
 
     /// Extends this graph with another so that `self` becomes the union of the two sets of
     /// transactions.
-    pub fn extend(&mut self, other: TxGraph) {
-        for (txid, tx) in other.txs {
+    pub fn apply_update(&mut self, update: &TxGraph) -> Additions {
+        let additions = self.determine_additions(update);
+        self.apply_additions(&additions);
+        additions
+    }
+
+    pub fn determine_additions(&self, update: &TxGraph) -> Additions {
+        let mut additions = Additions::default();
+
+        for (&txid, tx) in &update.txs {
             match tx {
                 TxNode::Whole(tx) => {
-                    self.insert_tx(&tx);
+                    if self.tx(txid).is_none() {
+                        additions.tx.insert(tx.clone());
+                    }
                 }
                 TxNode::Partial(partial) => {
-                    for (vout, txout) in partial {
-                        self.insert_txout(OutPoint { txid, vout }, txout);
+                    for (&vout, txout) in partial {
+                        let op = OutPoint { txid, vout };
+                        let insert = match self.txouts(txid) {
+                            Some(txouts) => match txouts.get(&vout) {
+                                Some(existing_txout) => *existing_txout != txout,
+                                None => true,
+                            },
+                            None => true,
+                        };
+
+                        if insert {
+                            additions.txout.insert(op, txout.clone());
+                        }
                     }
                 }
             }
         }
+
+        additions
+    }
+
+    pub fn apply_additions(&mut self, additions: &Additions) {
+        for tx in &additions.tx {
+            self.insert_tx(tx);
+        }
+
+        for (outpoint, txout) in &additions.txout {
+            self.insert_txout(*outpoint, txout.clone());
+        }
     }
 }
 
-/// Node of a [`TxGraph`]
-#[derive(Clone, Debug)]
-enum TxNode {
-    Whole(Transaction),
-    Partial(BTreeMap<u32, TxOut>),
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
+pub struct Additions {
+    pub tx: BTreeSet<Transaction>,
+    pub txout: BTreeMap<OutPoint, TxOut>,
 }
 
-impl Default for TxNode {
-    fn default() -> Self {
-        Self::Partial(BTreeMap::new())
+impl Additions {
+    pub fn is_empty(&self) -> bool {
+        self.tx.is_empty() && self.txout.is_empty()
+    }
+
+    /// Iterates over [`Txid`]s mentioned in [`Additions`], whether they be full txs (`true`) or
+    /// individual outputs (`false`).
+    ///
+    /// This does not guarantee that there will not be duplicate txids.
+    pub fn txids(&self) -> impl Iterator<Item = (Txid, bool)> + '_ {
+        let partials = self.txout.keys().map(|op| (op.txid, false));
+        let fulls = self.tx.iter().map(|tx| (tx.txid(), true));
+
+        partials.chain(fulls)
     }
 }

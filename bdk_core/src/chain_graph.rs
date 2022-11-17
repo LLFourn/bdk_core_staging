@@ -3,24 +3,34 @@ use core::fmt::Debug;
 
 use crate::{
     sparse_chain::{self, SparseChain},
-    tx_graph::TxGraph,
+    tx_graph::{self, TxGraph},
     BlockId, ChainIndex, ConfirmationTime, TxHeight,
 };
 
 pub type TimestampedChainGraph = ChainGraph<ConfirmationTime>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChainGraph<I = TxHeight> {
     chain: SparseChain<I>,
     graph: TxGraph,
 }
 
-impl<I: ChainIndex> Default for ChainGraph<I> {
+impl<I> Default for ChainGraph<I> {
     fn default() -> Self {
         Self {
             chain: Default::default(),
             graph: Default::default(),
         }
+    }
+}
+
+impl<I> ChainGraph<I> {
+    pub fn chain(&self) -> &SparseChain<I> {
+        &self.chain
+    }
+
+    pub fn graph(&self) -> &TxGraph {
+        &self.graph
     }
 }
 
@@ -35,15 +45,8 @@ impl<I: ChainIndex> ChainGraph<I> {
         Ok(changed)
     }
 
-    pub fn insert_output(
-        &mut self,
-        outpoint: OutPoint,
-        txout: TxOut,
-        index: I,
-    ) -> Result<bool, sparse_chain::InsertTxErr> {
-        let changed = self.chain.insert_tx(outpoint.txid, index)?;
-        self.graph.insert_txout(outpoint, txout);
-        Ok(changed)
+    pub fn insert_output(&mut self, outpoint: OutPoint, txout: TxOut) -> bool {
+        self.graph.insert_txout(outpoint, txout)
     }
 
     pub fn insert_txid(&mut self, txid: Txid, index: I) -> Result<bool, sparse_chain::InsertTxErr> {
@@ -57,26 +60,42 @@ impl<I: ChainIndex> ChainGraph<I> {
         self.chain.insert_checkpoint(block_id)
     }
 
-    pub fn chain(&self) -> &SparseChain<I> {
-        &self.chain
+    /// Calculates the difference between self and `update` in the form of a [`ChangeSet`].
+    pub fn determine_changeset(
+        &self,
+        update: &Self,
+    ) -> Result<ChangeSet<I>, sparse_chain::UpdateFailure<I>> {
+        Ok(ChangeSet::<I> {
+            chain: self.chain.determine_changeset(&update.chain)?,
+            graph: self.graph.determine_additions(&update.graph),
+        })
     }
 
-    pub fn graph(&self) -> &TxGraph {
-        &self.graph
+    /// Applies a [`ChangeSet`] to the chain graph
+    pub fn apply_changeset(&mut self, changeset: &ChangeSet<I>) {
+        self.chain.apply_changeset(&changeset.chain);
+        self.graph.apply_additions(&changeset.graph);
     }
 
+    /// Applies the `update` chain graph. Note this is shorthand for calling [`determine_changeset`]
+    /// and [`apply_changeset`] in sequence.
     pub fn apply_update(
         &mut self,
         update: &Self,
-    ) -> Result<sparse_chain::ChangeSet<I>, sparse_chain::UpdateFailure<I>> {
-        let changeset = self.chain.determine_changeset(update.chain())?;
-        changeset
-            .tx_additions()
-            .map(|new_txid| update.graph.tx(new_txid).expect("tx should exist"))
-            .for_each(|tx| {
-                self.graph.insert_tx(tx);
-            });
-        self.chain.apply_changeset(&changeset);
+    ) -> Result<ChangeSet<I>, sparse_chain::UpdateFailure<I>> {
+        let changeset = self.determine_changeset(update)?;
+        self.apply_changeset(&changeset);
         Ok(changeset)
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
+pub struct ChangeSet<I> {
+    chain: sparse_chain::ChangeSet<I>,
+    graph: tx_graph::Additions,
 }
