@@ -3,13 +3,17 @@ use bdk_core::{
     bitcoin::{
         consensus,
         hashes::hex::ToHex,
-        secp256k1::Secp256k1,
+        secp256k1::{Secp256k1, Signing, Verification},
+        util::psbt,
         util::sighash::{Prevouts, SighashCache},
-        Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
+        Address, LockTime, Network, PackedLockTime, Sequence, Transaction, TxIn, TxOut, Witness,
     },
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     descriptor_into_script_iter,
-    miniscript::{Descriptor, DescriptorPublicKey},
+    miniscript::{
+        descriptor::KeyMap, plan::RequiredSig, DefiniteDescriptorKey, Descriptor,
+        DescriptorPublicKey,
+    },
     ChainGraph, ChainIndex, DescriptorExt, KeychainTracker, TimestampedChainGraph,
 };
 use bdk_esplora::ureq::{ureq, Client};
@@ -228,10 +232,9 @@ fn main() -> anyhow::Result<()> {
             coin_select,
         } => {
             use bdk_core::miniscript::plan::*;
-            let assets = Assets {
-                keys: keymap.iter().map(|(pk, _)| pk.clone()).collect(),
-                ..Default::default()
-            };
+            use bdk_core::miniscript::psbt::*;
+
+            let assets = keymap.iter().map(|(pk, _)| pk.clone()).collect::<Assets>();
 
             let mut candidates = tracker
                 .iter_unspent(chain.chain(), chain.graph())
@@ -239,29 +242,24 @@ fn main() -> anyhow::Result<()> {
                     Some((tracker.index_of_spk(&utxo.txout.script_pubkey)?, utxo))
                 })
                 .filter_map(|((keychain, index), utxo)| {
-                    Some((
-                        tracker
-                            .descriptor(keychain)
-                            .at_derivation_index(index)
-                            .plan_satisfaction(&assets)?,
-                        utxo,
-                    ))
+                    let derived_desc = tracker.descriptor(keychain).at_derivation_index(index);
+                    Some((derived_desc.get_plan(&assets)?, derived_desc, utxo))
                 })
                 .collect::<Vec<_>>();
 
             // apply coin selection algorithm
             match coin_select {
                 CoinSelectionAlgo::LargestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.txout.value))
+                    candidates.sort_by_key(|(_, _, utxo)| Reverse(utxo.txout.value))
                 }
                 CoinSelectionAlgo::SmallestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| utxo.txout.value)
+                    candidates.sort_by_key(|(_, _, utxo)| utxo.txout.value)
                 }
                 CoinSelectionAlgo::OldestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| utxo.chain_index.height())
+                    candidates.sort_by_key(|(_, _, utxo)| utxo.chain_index.height())
                 }
                 CoinSelectionAlgo::NewestFirst => {
-                    candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_index.height()))
+                    candidates.sort_by_key(|(_, _, utxo)| Reverse(utxo.chain_index.height()))
                 }
                 CoinSelectionAlgo::BranchAndBound => {}
             }
@@ -269,10 +267,10 @@ fn main() -> anyhow::Result<()> {
             // turn the txos we chose into a weight and value
             let wv_candidates = candidates
                 .iter()
-                .map(|(plan, utxo)| {
+                .map(|(plan, _, utxo)| {
                     WeightedValue::new(
                         utxo.txout.value,
-                        plan.expected_weight() as _,
+                        plan.satisfaction_weight() as _,
                         plan.witness_version().is_some(),
                     )
                 })
@@ -290,7 +288,7 @@ fn main() -> anyhow::Result<()> {
             let change_plan = tracker
                 .descriptor(change_keychain)
                 .at_derivation_index(change_index)
-                .plan_satisfaction(&assets)
+                .get_plan(&assets)
                 .expect("failed to obtain change plan");
 
             let mut change_output = TxOut {
@@ -304,7 +302,7 @@ fn main() -> anyhow::Result<()> {
                 ..CoinSelectorOpt::fund_outputs(
                     &outputs,
                     &change_output,
-                    change_plan.expected_weight() as u32,
+                    change_plan.satisfaction_weight() as u32,
                 )
             };
 
@@ -332,17 +330,12 @@ fn main() -> anyhow::Result<()> {
                 outputs.push(change_output)
             }
 
-            let mut transaction = Transaction {
+            let transaction = Transaction {
                 version: 0x02,
-                lock_time: chain
-                    .chain()
-                    .latest_checkpoint()
-                    .and_then(|block_id| LockTime::from_height(block_id.height).ok())
-                    .unwrap_or(LockTime::ZERO)
-                    .into(),
+                lock_time: PackedLockTime(0),
                 input: selected_txos
                     .iter()
-                    .map(|(_, utxo)| TxIn {
+                    .map(|(_, _, utxo)| TxIn {
                         previous_output: utxo.outpoint,
                         sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                         ..Default::default()
@@ -350,75 +343,64 @@ fn main() -> anyhow::Result<()> {
                     .collect(),
                 output: outputs,
             };
+            let mut locktime = chain
+                .chain()
+                .latest_checkpoint()
+                .and_then(|block_id| LockTime::from_height(block_id.height).ok())
+                .unwrap_or(LockTime::ZERO);
 
-            let prevouts = selected_txos
-                .iter()
-                .map(|(_, utxo)| utxo.txout.clone())
-                .collect::<Vec<_>>();
-            let sighash_prevouts = Prevouts::All(&prevouts);
+            let mut psbt = psbt::Psbt::from_unsigned_tx(transaction)?;
 
             // first set tx values for plan so that we don't change them while signing
-            for (i, (plan, _)) in selected_txos.iter().enumerate() {
-                if let Some(sequence) = plan.required_sequence() {
-                    transaction.input[i].sequence = sequence
+            for (i, (plan, desc, utxo)) in selected_txos.iter().enumerate() {
+                if let Some(sequence) = plan.relative_timelock {
+                    psbt.unsigned_tx.input[i].sequence = sequence
                 }
+                if let Some(plan_locktime) = plan.absolute_timelock {
+                    if plan_locktime > locktime {
+                        locktime = plan_locktime
+                    }
+                }
+
+                psbt.inputs[i].witness_utxo = Some(utxo.txout.clone());
+                psbt.update_input_with_descriptor(i, desc)?;
             }
+            psbt.unsigned_tx.lock_time = locktime.into();
 
-            // create a short lived transaction
-            let _sighash_tx = transaction.clone();
-            let mut sighash_cache = SighashCache::new(&_sighash_tx);
-
-            for (i, (plan, _)) in selected_txos.iter().enumerate() {
-                let requirements = plan.requirements();
-                let mut auth_data = SatisfactionMaterial::default();
+            for (i, (plan, _, _)) in selected_txos.iter().enumerate() {
                 assert!(
-                    !requirements.requires_hash_preimages(),
+                    plan.template.required_preimages().is_empty(),
                     "can't have hash pre-images since we didn't provide any"
                 );
-                assert!(
-                    requirements.signatures.sign_with_keymap(
-                        i,
-                        &keymap,
-                        &sighash_prevouts,
-                        None,
-                        None,
-                        &mut sighash_cache,
-                        &mut auth_data,
-                        &secp,
-                    )?,
-                    "we should have signed with this input"
-                );
 
-                match plan.try_complete(&auth_data) {
-                    PlanState::Complete {
-                        final_script_sig,
-                        final_script_witness,
-                    } => {
-                        if let Some(witness) = final_script_witness {
-                            transaction.input[i].witness = witness;
-                        }
+                for req in plan.template.required_signatures() {
+                    sign_psbt_with_keymap(req, &mut psbt, i, &keymap, &secp)?;
+                }
 
-                        if let Some(script_sig) = final_script_sig {
-                            transaction.input[i].script_sig = script_sig;
-                        }
+                // TODO: this assumes taproot scripts,
+                let stfr = PsbtInputSatisfier::new(&psbt, i);
+                match plan.template.try_completing(&stfr) {
+                    Some(witness) => {
+                        psbt.inputs[i].final_script_witness = Some(Witness::from_vec(witness))
                     }
-                    PlanState::Incomplete(_) => {
+                    None => {
                         return Err(anyhow!(
                             "we weren't able to complete the plan with our keys"
-                        ));
+                        ))
                     }
                 }
             }
 
             eprintln!("broadcasting transactions..");
+            let extracted_transaction = psbt.extract_tx();
             match client
-                .broadcast(&transaction)
+                .broadcast(&extracted_transaction)
                 .context("broadcasting transaction")
             {
-                Ok(_) => println!("{}", transaction.txid()),
+                Ok(_) => println!("{}", extracted_transaction.txid()),
                 Err(e) => eprintln!(
                     "Failed to broadcast transaction:\n{}\nError:{}",
-                    consensus::serialize(&transaction).to_hex(),
+                    consensus::serialize(&extracted_transaction).to_hex(),
                     e
                 ),
             }
@@ -482,4 +464,138 @@ pub fn fully_sync(
     tracker.scan(chain.graph());
 
     Ok(())
+}
+
+pub fn sign_psbt_with_keymap(
+    required_sig: RequiredSig<'_, DefiniteDescriptorKey>,
+    psbt: &mut psbt::Psbt,
+    input_index: usize,
+    keymap: &KeyMap,
+    // auth_data: &mut SatisfactionMaterial,
+    secp: &Secp256k1<impl Signing + Verification>,
+) -> anyhow::Result<bool> {
+    use bdk_core::bitcoin::secp256k1::{KeyPair, Message, PublicKey};
+    use bdk_core::bitcoin::{
+        util::schnorr::SchnorrSig, util::sighash::SchnorrSighashType, util::taproot, XOnlyPublicKey,
+    };
+    use bdk_core::miniscript::descriptor::DescriptorSecretKey;
+
+    let prevouts = psbt
+        .inputs
+        .iter()
+        .map(|i| {
+            i.witness_utxo
+                .clone()
+                .expect("witness_utxo must be present")
+        })
+        .collect::<Vec<_>>();
+    let prevouts = Prevouts::All(&prevouts);
+
+    // create a short lived transaction
+    let _sighash_tx = psbt.unsigned_tx.clone();
+    let mut sighash_cache = SighashCache::new(&_sighash_tx);
+
+    match required_sig {
+        RequiredSig::Ecdsa(_) => todo!(),
+        RequiredSig::SchnorrTapKey(req_key) => {
+            let schnorr_sighashty = psbt.inputs[input_index]
+                .sighash_type
+                .map(|ty| {
+                    ty.schnorr_hash_ty()
+                        .expect("Invalid sighash for schnorr sig")
+                })
+                .unwrap_or(SchnorrSighashType::Default);
+            let sighash = sighash_cache.taproot_key_spend_signature_hash(
+                input_index,
+                &prevouts,
+                schnorr_sighashty,
+            )?;
+
+            // TODO: ideally here we would look at the PSBT key origins to get the right key and
+            // figure out how to derive it. I'm lazy so I'll just iterate over all of them and
+            // see if they match
+
+            let (deriv_path, secret_key) = match keymap
+                .iter()
+                .find_map(|(pk, sk)| pk.is_parent(req_key).map(|path| (path, sk)))
+            {
+                Some(v) => v,
+                None => return Ok(false),
+            };
+            let secret_key = match secret_key {
+                DescriptorSecretKey::Single(single) => single.key.inner,
+                DescriptorSecretKey::XPrv(xprv) => {
+                    xprv.xkey
+                        .derive_priv(&secp, &xprv.derivation_path.extend(deriv_path))?
+                        .private_key
+                }
+            };
+
+            let pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+            let x_only_pubkey = XOnlyPublicKey::from(pubkey);
+
+            let tweak = taproot::TapTweakHash::from_key_and_tweak(
+                x_only_pubkey,
+                psbt.inputs[input_index].tap_merkle_root.clone(),
+            );
+            let keypair = KeyPair::from_secret_key(&secp, &secret_key.clone())
+                .add_xonly_tweak(&secp, &tweak.to_scalar())
+                .unwrap();
+
+            let msg = Message::from_slice(sighash.as_ref()).expect("Sighashes are 32 bytes");
+            let sig = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+
+            let bitcoin_sig = SchnorrSig {
+                sig,
+                hash_ty: schnorr_sighashty,
+            };
+
+            psbt.inputs[input_index].tap_key_sig = Some(bitcoin_sig);
+            Ok(true)
+        }
+        RequiredSig::SchnorrTapScript(req_key, leaf_hash) => {
+            let sighash_type = psbt.inputs[input_index]
+                .sighash_type
+                .map(|ty| {
+                    ty.schnorr_hash_ty()
+                        .expect("Invalid sighash for schnorr sig")
+                })
+                .unwrap_or(SchnorrSighashType::Default);
+            let sighash = sighash_cache.taproot_script_spend_signature_hash(
+                input_index,
+                &prevouts,
+                *leaf_hash,
+                sighash_type,
+            )?;
+
+            let (deriv_path, secret_key) = match keymap
+                .iter()
+                .find_map(|(pk, sk)| pk.is_parent(req_key).map(|path| (path, sk)))
+            {
+                Some(v) => v,
+                None => return Ok(false),
+            };
+            let secret_key = match secret_key {
+                DescriptorSecretKey::Single(single) => single.key.inner,
+                DescriptorSecretKey::XPrv(xprv) => {
+                    xprv.xkey
+                        .derive_priv(&secp, &xprv.derivation_path.extend(deriv_path))?
+                        .private_key
+                }
+            };
+            let keypair = KeyPair::from_secret_key(&secp, &secret_key.clone());
+            let x_only_pubkey = XOnlyPublicKey::from(keypair.public_key());
+            let msg = Message::from_slice(sighash.as_ref()).expect("Sighashes are 32 bytes");
+            let sig = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+            let bitcoin_sig = SchnorrSig {
+                sig,
+                hash_ty: sighash_type,
+            };
+
+            psbt.inputs[input_index]
+                .tap_script_sigs
+                .insert((x_only_pubkey, *leaf_hash), bitcoin_sig);
+            Ok(true)
+        }
+    }
 }
