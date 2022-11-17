@@ -257,14 +257,14 @@ impl Additions {
         self.tx.is_empty() && self.txout.is_empty()
     }
 
-    /// Iterates over [`Txid`]s mentioned in [`Additions`], whether they be full transactions or
-    /// from individual outputs.
+    /// Iterates over [`Txid`]s mentioned in [`Additions`], whether they be full txs (`true`) or
+    /// individual outputs (`false`).
     ///
     /// This does not guarantee that there will not be duplicate txids.
-    pub fn txids(&self) -> impl Iterator<Item = Txid> + '_ {
-        self.tx
-            .iter()
-            .map(Transaction::txid)
-            .chain(self.txout.keys().map(|op| op.txid))
+    pub fn txids(&self) -> impl Iterator<Item = (Txid, bool)> + '_ {
+        let partials = self.txout.keys().map(|op| (op.txid, false));
+        let fulls = self.tx.iter().map(|tx| (tx.txid(), true));
+
+        partials.chain(fulls)
     }
 }

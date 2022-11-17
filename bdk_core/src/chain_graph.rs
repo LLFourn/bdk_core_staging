@@ -1,8 +1,8 @@
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
-use core::fmt::{Debug, Pointer};
+use core::fmt::Debug;
 
 use crate::{
-    collections::HashSet,
+    collections::HashMap,
     sparse_chain::{self, SparseChain},
     tx_graph::{self, TxGraph},
     BlockId, ChainIndex, ConfirmationTime, TxHeight,
@@ -68,25 +68,35 @@ impl<I: ChainIndex> ChainGraph<I> {
         self.chain.insert_checkpoint(block_id)
     }
 
-    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
+    /// Calculates the difference between self and `update` in the form of a [`ChangeSet`].
+    ///
+    /// Additionally, missing transactions are returned in the form of [`HashMap<Txid, bool>`],
+    /// where the value is `true` for partially missing, and `false` for fully missing.
+    pub fn determine_changeset(
+        &self,
+        update: &Self,
+    ) -> Result<(ChangeSet<I>, HashMap<Txid, bool>), sparse_chain::UpdateFailure<I>> {
         let chain_changeset = self.chain.determine_changeset(&update.chain)?;
         let graph_additions = self.graph.determine_additions(&update.graph);
 
-        let added_txids = graph_additions.txids().collect::<HashSet<_>>();
+        let added_txids = graph_additions.txids().collect::<HashMap<_, _>>();
 
-        // ensure changeset adds exist in either graph_additions or self.graph
         let missing = chain_changeset
             .tx_additions()
-            .filter(|txid| added_txids.contains(txid) || self.graph.contains_txid(*txid))
-            .collect::<HashSet<_>>();
-        if !missing.is_empty() {
-            return Err(UpdateFailure::Missing(missing));
-        }
+            .filter_map(|txid| match added_txids.get(&txid).cloned() {
+                Some(true) => None,                // not missing
+                Some(false) => Some((txid, true)), // partially missing
+                None => Some((txid, false)),       // completely missing
+            })
+            .collect::<HashMap<_, _>>();
 
-        Ok(ChangeSet::<I> {
-            chain: chain_changeset,
-            graph: graph_additions,
-        })
+        Ok((
+            ChangeSet::<I> {
+                chain: chain_changeset,
+                graph: graph_additions,
+            },
+            missing,
+        ))
     }
 
     pub fn apply_changeset(&mut self, changeset: &ChangeSet<I>) {
@@ -94,10 +104,13 @@ impl<I: ChainIndex> ChainGraph<I> {
         self.graph.apply_additions(&changeset.graph);
     }
 
-    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
-        let changeset = self.determine_changeset(update)?;
+    pub fn apply_update(
+        &mut self,
+        update: &Self,
+    ) -> Result<(ChangeSet<I>, HashMap<Txid, bool>), sparse_chain::UpdateFailure<I>> {
+        let (changeset, missing) = self.determine_changeset(update)?;
         self.apply_changeset(&changeset);
-        Ok(changeset)
+        Ok((changeset, missing))
     }
 }
 
@@ -110,28 +123,4 @@ impl<I: ChainIndex> ChainGraph<I> {
 pub struct ChangeSet<I> {
     chain: sparse_chain::ChangeSet<I>,
     graph: tx_graph::Additions,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum UpdateFailure<I> {
-    Chain(sparse_chain::UpdateFailure<I>),
-    Missing(HashSet<Txid>),
-}
-
-impl<I> core::fmt::Display for UpdateFailure<I> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            UpdateFailure::Chain(err) => err.fmt(f),
-            UpdateFailure::Missing(txid) => write!(f, "missing txs: {:?}", txid),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl<I: core::fmt::Debug> std::error::Error for UpdateFailure<I> {}
-
-impl<I> From<sparse_chain::UpdateFailure<I>> for UpdateFailure<I> {
-    fn from(err: sparse_chain::UpdateFailure<I>) -> Self {
-        Self::Chain(err)
-    }
 }
