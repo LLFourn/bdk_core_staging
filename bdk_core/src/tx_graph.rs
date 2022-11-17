@@ -50,6 +50,11 @@ impl TxGraph {
         }
     }
 
+    /// Returns true when graph contains given tx of txid (whether it be partial or full).
+    pub fn contains_txid(&self, txid: Txid) -> bool {
+        self.txs.contains_key(&txid)
+    }
+
     /// Obtains a single tx output (if any) at specified outpoint.
     pub fn txout(&self, outpoint: OutPoint) -> Option<&TxOut> {
         match self.txs.get(&outpoint.txid)? {
@@ -187,9 +192,10 @@ impl TxGraph {
 
     /// Extends this graph with another so that `self` becomes the union of the two sets of
     /// transactions.
-    pub fn apply_update(&mut self, update: &TxGraph) {
+    pub fn apply_update(&mut self, update: &TxGraph) -> Additions {
         let additions = self.determine_additions(update);
-        self.apply_additions(additions)
+        self.apply_additions(&additions);
+        additions
     }
 
     pub fn determine_additions(&self, update: &TxGraph) -> Additions {
@@ -224,13 +230,13 @@ impl TxGraph {
         additions
     }
 
-    pub fn apply_additions(&mut self, additions: Additions) {
-        for tx in additions.tx {
-            self.insert_tx(&tx);
+    pub fn apply_additions(&mut self, additions: &Additions) {
+        for tx in &additions.tx {
+            self.insert_tx(tx);
         }
 
-        for (outpoint, txout) in additions.txout {
-            self.insert_txout(outpoint, &txout);
+        for (outpoint, txout) in &additions.txout {
+            self.insert_txout(*outpoint, txout);
         }
     }
 }
@@ -249,5 +255,13 @@ pub struct Additions {
 impl Additions {
     pub fn is_empty(&self) -> bool {
         self.tx.is_empty() && self.txout.is_empty()
+    }
+
+    pub fn txids<B: core::iter::FromIterator<Txid>>(&self) -> B {
+        self.tx
+            .iter()
+            .map(Transaction::txid)
+            .chain(self.txout.keys().map(|op| op.txid))
+            .collect()
     }
 }

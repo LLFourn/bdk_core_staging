@@ -1,21 +1,22 @@
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
-use core::fmt::Debug;
+use core::fmt::{Debug, Pointer};
 
 use crate::{
+    collections::HashSet,
     sparse_chain::{self, SparseChain},
-    tx_graph::TxGraph,
-    BlockId, ChainIndex, ConfirmationTime, TxHeight,
+    tx_graph::{self, TxGraph},
+    BlockId, ChainIndex, ConfirmationTime, TxHeight, Vec,
 };
 
 pub type TimestampedChainGraph = ChainGraph<ConfirmationTime>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChainGraph<I = TxHeight> {
     chain: SparseChain<I>,
     graph: TxGraph,
 }
 
-impl<I: ChainIndex> Default for ChainGraph<I> {
+impl<I> Default for ChainGraph<I> {
     fn default() -> Self {
         Self {
             chain: Default::default(),
@@ -65,18 +66,70 @@ impl<I: ChainIndex> ChainGraph<I> {
         &self.graph
     }
 
-    pub fn apply_update(
-        &mut self,
-        update: &Self,
-    ) -> Result<sparse_chain::ChangeSet<I>, sparse_chain::UpdateFailure<I>> {
-        let changeset = self.chain.determine_changeset(update.chain())?;
-        changeset
+    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
+        let chain_changeset = self.chain.determine_changeset(&update.chain)?;
+        let graph_additions = self.graph.determine_additions(&update.graph);
+
+        let added_txids = graph_additions.txids::<HashSet<_>>();
+
+        // ensure changeset adds exist in either graph_additions or self.graph
+        let missing = chain_changeset
             .tx_additions()
-            .map(|new_txid| update.graph.tx(new_txid).expect("tx should exist"))
-            .for_each(|tx| {
-                self.graph.insert_tx(tx);
-            });
-        self.chain.apply_changeset(&changeset);
+            .filter(|txid| added_txids.contains(txid) || self.graph.contains_txid(*txid))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(UpdateFailure::Missing(missing));
+        }
+
+        Ok(ChangeSet::<I> {
+            chain: chain_changeset,
+            graph: graph_additions,
+        })
+    }
+
+    pub fn apply_changeset(&mut self, changeset: &ChangeSet<I>) {
+        self.chain.apply_changeset(&changeset.chain);
+        self.graph.apply_additions(&changeset.graph);
+    }
+
+    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
+        let changeset = self.determine_changeset(update)?;
+        self.apply_changeset(&changeset);
         Ok(changeset)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
+pub struct ChangeSet<I> {
+    chain: sparse_chain::ChangeSet<I>,
+    graph: tx_graph::Additions,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateFailure<I> {
+    Chain(sparse_chain::UpdateFailure<I>),
+    Missing(Vec<Txid>),
+}
+
+impl<I> core::fmt::Display for UpdateFailure<I> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            UpdateFailure::Chain(err) => err.fmt(f),
+            UpdateFailure::Missing(txid) => write!(f, "missing txs: {:?}", txid),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl<I: core::fmt::Debug> std::error::Error for UpdateFailure<I> {}
+
+impl<I> From<sparse_chain::UpdateFailure<I>> for UpdateFailure<I> {
+    fn from(err: sparse_chain::UpdateFailure<I>) -> Self {
+        Self::Chain(err)
     }
 }

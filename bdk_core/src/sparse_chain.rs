@@ -18,7 +18,7 @@ pub type TimestampedSparseChain = SparseChain<ConfirmationTime>;
 /// [`Self::determine_changeset(update)`], and applying the [`ChangeSet`] via
 /// [`Self::apply_changeset(changeset)`]. For convenience, one can do the above two steps as one via
 /// [`Self::apply_update(update)`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SparseChain<I = TxHeight> {
     /// Block height to checkpoint data.
     checkpoints: BTreeMap<u32, BlockHash>,
@@ -30,7 +30,7 @@ pub struct SparseChain<I = TxHeight> {
     checkpoint_limit: Option<usize>,
 }
 
-impl<I: ChainIndex> Default for SparseChain<I> {
+impl<I> Default for SparseChain<I> {
     fn default() -> Self {
         Self {
             checkpoints: Default::default(),
@@ -504,10 +504,15 @@ impl<I: ChainIndex> SparseChain<I> {
 }
 
 /// Represents the set of changes as result of a successful [`Update`].
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
 pub struct ChangeSet<I = TxHeight> {
-    pub checkpoints: HashMap<u32, Option<BlockHash>>,
-    pub txids: HashMap<Txid, Option<I>>,
+    pub checkpoints: BTreeMap<u32, Option<BlockHash>>,
+    pub txids: BTreeMap<Txid, Option<I>>,
 }
 
 impl<I> Default for ChangeSet<I> {

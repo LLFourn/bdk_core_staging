@@ -31,17 +31,17 @@ macro_rules! changeset {
         checkpoints: [ $(( $height:expr, $cp_to:expr )),* ]
         $(,txids: [ $(( $txid:expr, $tx_to:expr )),* ])?
     ) => {{
-        use bdk_core::collections::HashMap;
+        use bdk_core::collections::BTreeMap;
 
         #[allow(unused_mut)]
         ChangeSet::<$ind> {
             checkpoints: {
-                let mut changes = HashMap::default();
+                let mut changes = BTreeMap::default();
                 $(changes.insert($height, $cp_to);)*
                 changes
             },
             txids: {
-                let mut changes = HashMap::default();
+                let mut changes = BTreeMap::default();
                 $($(changes.insert($txid, $tx_to.map(|h: TxHeight| h.into()));)*)?
                 changes
             }
