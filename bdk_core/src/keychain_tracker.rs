@@ -92,7 +92,9 @@ impl<K: Clone + Ord + Debug> KeychainTracker<K> {
     }
 
     pub fn derive_all_spks(&mut self, keychains: BTreeMap<K, u32>) -> bool {
-        keychains.into_iter().any(|(keychain, index)| self.derive_spks(keychain, index))
+        keychains
+            .into_iter()
+            .any(|(keychain, index)| self.derive_spks(keychain, index))
     }
 
     /// Derives script pubkeys from the descriptor **up to and including** `end` and stores them

@@ -87,6 +87,10 @@ where
         update: ChainGraph<I>,
     ) -> anyhow::Result<()> {
         let changeset = chain_graph.determine_changeset(&update)?;
+        if changeset.is_empty() {
+            return Ok(());
+        }
+        eprintln!("got a non-empty update!");
         tracker.scan(update.graph());
 
         bincode::encode_into_std_write(

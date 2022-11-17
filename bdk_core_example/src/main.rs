@@ -29,7 +29,7 @@ struct Args {
     #[clap(env = "DESCRIPTOR")]
     descriptor: String,
 
-    #[clap(env = "BDK_DB_DIR", default_value = "example_db")]
+    #[clap(env = "BDK_DB_DIR", default_value = ".bdk_example_db")]
     db_dir: PathBuf,
 
     #[clap(env = "CHANGE_DESCRIPTOR")]
@@ -215,10 +215,9 @@ fn main() -> anyhow::Result<()> {
                     chain.chain().checkpoints().clone(),
                 )
                 .context("scanning the blockchain")?;
+            eprintln!();
 
             db.apply_wallet_scan(&mut chain, &mut tracker, wallet_scan)?;
-
-            eprintln!();
         }
         Commands::Sync {
             mut unused,
@@ -235,7 +234,7 @@ fn main() -> anyhow::Result<()> {
             let mut spks = vec![];
             if unused {
                 spks.extend(tracker.iter_unused().map(|(index, script)| {
-                    eprintln!("Checking if script at {:?} has been used", index);
+                    eprintln!("Checking if address at {:?} has been used", index);
                     script.clone()
                 }));
             }

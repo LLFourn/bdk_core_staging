@@ -534,6 +534,10 @@ impl<I> ChangeSet<I> {
             .iter()
             .filter_map(|(txid, new_value)| new_value.as_ref().map(|_| *txid))
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.checkpoints.is_empty() && self.txids.is_empty()
+    }
 }
 
 fn min_txid() -> Txid {

@@ -99,3 +99,9 @@ pub struct ChangeSet<I> {
     chain: sparse_chain::ChangeSet<I>,
     graph: tx_graph::Additions,
 }
+
+impl<I> ChangeSet<I> {
+    pub fn is_empty(&self) -> bool {
+        self.chain.is_empty() && self.graph.is_empty()
+    }
+}

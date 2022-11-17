@@ -10,7 +10,7 @@ pub struct WalletScanUpdate<K, I> {
     pub last_active_indexes: BTreeMap<K, u32>,
 }
 
-impl<K,I> Default for WalletScanUpdate<K,I> {
+impl<K, I> Default for WalletScanUpdate<K, I> {
     fn default() -> Self {
         Self {
             update: Default::default(),
