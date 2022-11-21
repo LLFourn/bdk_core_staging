@@ -1,12 +1,9 @@
 #[macro_use]
 mod common;
 
-use bdk_core::{
-    collections::{BTreeSet, Bound},
-    sparse_chain::*,
-    BlockId, ChainIndex, TxHeight,
-};
+use bdk_core::{collections::BTreeSet, sparse_chain::*, BlockId, ChainIndex, TxHeight};
 use bitcoin::{hashes::Hash, Txid};
+use core::ops::Bound;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub struct TestIndex(TxHeight, u32);

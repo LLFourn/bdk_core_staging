@@ -6,8 +6,9 @@ use bdk_core::{
         BlockHash, Script, Transaction, Txid,
     },
     chain_graph::ChainGraph,
+    keychain::KeychainScan,
     sparse_chain::{InsertCheckpointErr, InsertTxErr},
-    BlockId, ConfirmationTime, KeychainScan,
+    BlockId, ConfirmationTime,
 };
 use std::collections::{BTreeMap, BTreeSet};
 pub use ureq;

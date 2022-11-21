@@ -1,5 +1,8 @@
-use crate::{collections::*, spk_tracker::SpkTracker};
-use bitcoin::{secp256k1::Secp256k1, Script};
+use bdk_core::{
+    bitcoin::{secp256k1::Secp256k1, Script},
+    collections::*,
+    SpkTracker,
+};
 use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},

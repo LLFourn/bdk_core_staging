@@ -1,6 +1,11 @@
 use anyhow::Context;
-use bdk_core::{
-    chain_graph::ChainGraph, ChainIndex, KeychainChangeSet, KeychainScan, KeychainTracker,
+use bdk_keychain::{
+    bdk_core::{
+        chain_graph::ChainGraph,
+        keychain::{KeychainChangeSet, KeychainScan},
+        ChainIndex,
+    },
+    KeychainTracker,
 };
 use std::{
     collections::BTreeMap,

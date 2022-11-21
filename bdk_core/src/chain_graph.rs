@@ -110,7 +110,7 @@ impl<I> Default for ChangeSet<I> {
     fn default() -> Self {
         Self {
             chain: Default::default(),
-            graph: Default::default()
+            graph: Default::default(),
         }
     }
 }

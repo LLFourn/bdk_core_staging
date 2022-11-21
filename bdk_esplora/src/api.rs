@@ -6,8 +6,14 @@ use bdk_core::{
         BlockHash, OutPoint, PackedLockTime, Script, Sequence, Transaction, TxIn, TxOut, Txid,
         Witness,
     },
-    BlockId, ConfirmationTime, PrevOuts,
+    BlockId, ConfirmationTime,
 };
+
+#[derive(Clone, Debug)]
+pub enum PrevOuts {
+    Coinbase,
+    Spend(Vec<TxOut>),
+}
 
 #[derive(serde::Deserialize, Clone, Debug)]
 pub struct PrevOut {

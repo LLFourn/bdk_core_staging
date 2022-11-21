@@ -1,5 +1,4 @@
-use crate::Box;
-use bitcoin::{secp256k1::Secp256k1, Script};
+use bdk_core::bitcoin::{secp256k1::Secp256k1, Script};
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 pub trait DescriptorExt {
@@ -27,11 +26,11 @@ pub fn descriptor_into_script_iter(
         0
     };
 
-    Box::new((0..=end).map(move |i| {
+    (0..=end).map(move |i| {
         descriptor
             .at_derivation_index(i)
             .derived_descriptor(&secp)
             .expect("the descritpor cannot need hardened derivation")
             .script_pubkey()
-    }))
+    })
 }

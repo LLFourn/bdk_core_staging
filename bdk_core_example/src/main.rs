@@ -9,10 +9,14 @@ use bdk_core::{
     },
     chain_graph::ChainGraph,
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
-    miniscript::{Descriptor, DescriptorPublicKey},
-    ConfirmationTime, DescriptorExt, KeychainTracker,
+    ConfirmationTime,
 };
 use bdk_esplora::ureq::{ureq, Client};
+use bdk_keychain::{
+    bdk_core,
+    miniscript::{Descriptor, DescriptorPublicKey},
+    DescriptorExt, KeychainTracker,
+};
 use clap::{Parser, Subcommand};
 use std::{
     cmp::Reverse,
@@ -350,7 +354,7 @@ fn main() -> anyhow::Result<()> {
             address,
             coin_select,
         } => {
-            use bdk_core::miniscript::plan::*;
+            use bdk_keychain::miniscript::plan::*;
             let assets = Assets {
                 keys: keymap.iter().map(|(pk, _)| pk.clone()).collect(),
                 ..Default::default()

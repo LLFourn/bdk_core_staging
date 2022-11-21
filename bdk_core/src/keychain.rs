@@ -1,5 +1,7 @@
-use crate::chain_graph::{self, ChainGraph};
-use crate::collections::BTreeMap;
+use crate::{
+    chain_graph::{self, ChainGraph},
+    collections::BTreeMap,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 /// An update that includes the last active indexes of each keychain.
@@ -38,15 +40,16 @@ pub struct KeychainChangeSet<I, K> {
     pub keychain: BTreeMap<K, u32>,
 }
 
-
 impl<I, K> Default for KeychainChangeSet<I, K> {
     fn default() -> Self {
-        Self { chain_graph: Default::default(), keychain: Default::default() }
+        Self {
+            chain_graph: Default::default(),
+            keychain: Default::default(),
+        }
     }
 }
 
-
-impl<I,K> KeychainChangeSet<I,K> {
+impl<I, K> KeychainChangeSet<I, K> {
     pub fn is_empty(&self) -> bool {
         self.chain_graph.is_empty() && self.keychain.is_empty()
     }
