@@ -3,8 +3,8 @@ pub use alloc::{boxed::Box, vec::Vec};
 pub use bitcoin;
 
 pub mod chain_graph;
-mod spk_tracker;
-pub use spk_tracker::*;
+mod spk_txout_index;
+pub use spk_txout_index::*;
 mod chain_data;
 pub use chain_data::*;
 pub mod coin_select;

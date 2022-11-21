@@ -1,7 +1,7 @@
 use bdk_core::{
     bitcoin::{secp256k1::Secp256k1, Script},
     collections::*,
-    SpkTracker,
+    SpkTxOutIndex,
 };
 use core::{
     fmt::Debug,
@@ -11,26 +11,26 @@ use miniscript::{Descriptor, DescriptorPublicKey};
 
 /// A convienient way of tracking script pubkeys associated with one or more descriptors together.
 ///
-/// `DeRef`s to the inner [`SpkTracker`]
+/// `DeRef`s to the inner [`SpkTxOutIndex`]
 ///
-/// [`SpkTracker`]: crate::SpkTracker
+/// [`SpkTxOutIndex`]: crate::SpkTxOutIndex
 #[derive(Clone, Debug)]
 pub struct KeychainTracker<K> {
-    inner: SpkTracker<(K, u32)>,
+    inner: SpkTxOutIndex<(K, u32)>,
     descriptors: BTreeMap<K, Descriptor<DescriptorPublicKey>>,
 }
 
 impl<K> Default for KeychainTracker<K> {
     fn default() -> Self {
         Self {
-            inner: SpkTracker::default(),
+            inner: SpkTxOutIndex::default(),
             descriptors: BTreeMap::default(),
         }
     }
 }
 
 impl<K> Deref for KeychainTracker<K> {
-    type Target = SpkTracker<(K, u32)>;
+    type Target = SpkTxOutIndex<(K, u32)>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
