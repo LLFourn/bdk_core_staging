@@ -7,7 +7,7 @@ use bdk_core::{
     },
     chain_graph::ChainGraph,
     sparse_chain::{InsertCheckpointErr, InsertTxErr},
-    BlockId, ConfirmationTime, WalletScanUpdate,
+    BlockId, ConfirmationTime, KeychainScan,
 };
 use std::collections::{BTreeMap, BTreeSet};
 pub use ureq;
@@ -199,11 +199,11 @@ impl Client {
         keychains: BTreeMap<K, I>,
         stop_gap: Option<usize>,
         existing_chain: BTreeMap<u32, BlockHash>,
-    ) -> Result<WalletScanUpdate<K, ConfirmationTime>, UpdateError>
+    ) -> Result<KeychainScan<K, ConfirmationTime>, UpdateError>
     where
         I: Iterator<Item = (u32, Script)>,
     {
-        let mut wallet_scan = WalletScanUpdate::default();
+        let mut wallet_scan = KeychainScan::default();
         let update = &mut wallet_scan.update;
 
         for (&existing_height, &existing_hash) in existing_chain.iter().rev() {

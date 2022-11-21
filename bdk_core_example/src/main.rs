@@ -10,7 +10,7 @@ use bdk_core::{
     chain_graph::ChainGraph,
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     miniscript::{Descriptor, DescriptorPublicKey},
-    DescriptorExt, KeychainTracker,
+    ConfirmationTime, DescriptorExt, KeychainTracker,
 };
 use bdk_esplora::ureq::{ureq, Client};
 use clap::{Parser, Subcommand};
@@ -135,7 +135,19 @@ pub enum TxoCmd {
     List,
 }
 
-#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    bincode::Encode,
+    bincode::Decode,
+    serde::Deserialize,
+    serde::Serialize,
+)]
 pub enum Keychain {
     External,
     Internal,
@@ -180,7 +192,7 @@ fn main() -> anyhow::Result<()> {
         Network::Signet => "https://mempool.space/signet/api",
     };
 
-    let mut db = db::Db::load(args.db_dir.as_path(), &mut chain, &mut tracker)?;
+    let mut db = db::Db::<ConfirmationTime>::load(args.db_dir.as_path(), &mut chain, &mut tracker)?;
     let mut client = Client::new(ureq::Agent::new(), esplora_url);
 
     match args.command {

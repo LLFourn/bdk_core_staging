@@ -8,8 +8,8 @@ pub use spk_tracker::*;
 mod chain_data;
 pub use chain_data::*;
 pub mod coin_select;
-mod wallet_scan;
-pub use wallet_scan::*;
+mod keychain;
+pub use keychain::*;
 #[cfg(feature = "miniscript")]
 mod keychain_tracker;
 pub mod sparse_chain;

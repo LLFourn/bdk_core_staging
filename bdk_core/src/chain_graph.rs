@@ -105,3 +105,12 @@ impl<I> ChangeSet<I> {
         self.chain.is_empty() && self.graph.is_empty()
     }
 }
+
+impl<I> Default for ChangeSet<I> {
+    fn default() -> Self {
+        Self {
+            chain: Default::default(),
+            graph: Default::default()
+        }
+    }
+}
