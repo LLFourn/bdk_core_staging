@@ -272,7 +272,7 @@ impl<I: ChainIndex> SparseChain<I> {
         Result::Ok(change_set)
     }
 
-    /// Applies a new [`Update`] to the tracker.
+    /// Applies a new [`Update`] to the sparse chain.
     #[must_use]
     pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
         let changeset = self.determine_changeset(update)?;

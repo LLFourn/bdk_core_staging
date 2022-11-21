@@ -1,26 +1,56 @@
 use bdk_core::{
-    bitcoin::{secp256k1::Secp256k1, Script},
+    bitcoin::{secp256k1::Secp256k1, OutPoint, Script, Transaction, TxOut},
     collections::*,
+    tx_graph::TxGraph,
     SpkTxOutIndex,
 };
-use core::{
-    fmt::Debug,
-    ops::{Deref, DerefMut},
-};
+use core::{fmt::Debug, ops::Deref};
 use miniscript::{Descriptor, DescriptorPublicKey};
 
-/// A convienient way of tracking script pubkeys associated with one or more descriptors together.
+/// A convienient wrapper around [`SpkTxOutIndex`] that sets the script pubkeys basaed on a miniscript
+/// [`Descriptor<DescriptorPublicKey>`][`Descriptor`]s.
 ///
-/// `DeRef`s to the inner [`SpkTxOutIndex`]
+/// ## Synopsis
 ///
+/// ```
+/// use bdk_keychain::KeychainTxOutIndex;
+/// # use bdk_keychain::{ miniscript::{Descriptor, DescriptorPublicKey} };
+/// # use core::str::FromStr;
+///
+/// // imagine our service has internal and external addresses but also addresses for users
+/// #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
+/// enum MyKeychain {
+///     External,
+///     Internal,
+///     MyAppUser {
+///         user_id: u32
+///     }
+/// }
+///
+/// let mut txout_index = KeychainTxOutIndex::<MyKeychain>::default();
+///
+/// # let secp = bdk_keychain::bdk_core::bitcoin::secp256k1::Secp256k1::signing_only();
+/// # let (external_descriptor,_) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)").unwrap();
+/// # let (internal_descriptor,_) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/*)").unwrap();
+/// # let descriptor_for_user_42 = external_descriptor.clone();
+///
+/// txout_index.add_keychain(MyKeychain::External, external_descriptor);
+/// txout_index.add_keychain(MyKeychain::Internal, internal_descriptor);
+/// txout_index.add_keychain(MyKeychain::MyAppUser { user_id: 42 }, descriptor_for_user_42);
+///
+/// let new_spk_for_user =  txout_index.derive_new(MyKeychain::MyAppUser { user_id: 42 });
+/// ```
+///
+/// [`Ord`]: core::cmp::Ord
 /// [`SpkTxOutIndex`]: crate::SpkTxOutIndex
+/// [`Descriptor`]: miniscript::Descriptor
 #[derive(Clone, Debug)]
-pub struct KeychainTracker<K> {
+pub struct KeychainTxOutIndex<K> {
     inner: SpkTxOutIndex<(K, u32)>,
     descriptors: BTreeMap<K, Descriptor<DescriptorPublicKey>>,
 }
 
-impl<K> Default for KeychainTracker<K> {
+impl<K> Default for KeychainTxOutIndex<K> {
     fn default() -> Self {
         Self {
             inner: SpkTxOutIndex::default(),
@@ -29,7 +59,7 @@ impl<K> Default for KeychainTracker<K> {
     }
 }
 
-impl<K> Deref for KeychainTracker<K> {
+impl<K> Deref for KeychainTxOutIndex<K> {
     type Target = SpkTxOutIndex<(K, u32)>;
 
     fn deref(&self) -> &Self::Target {
@@ -37,13 +67,23 @@ impl<K> Deref for KeychainTracker<K> {
     }
 }
 
-impl<K> DerefMut for KeychainTracker<K> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
+impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
+    pub fn scan_graph(&mut self, graph: &TxGraph) {
+        self.inner.scan_graph(graph);
     }
-}
 
-impl<K: Clone + Ord + Debug> KeychainTracker<K> {
+    pub fn scan_tx(&mut self, tx: &Transaction) {
+        self.inner.scan_tx(tx);
+    }
+
+    pub fn scan_txout(&mut self, op: OutPoint, txout: TxOut) {
+        self.inner.scan_txout(op, txout)
+    }
+
+    pub fn inner(&self) -> &SpkTxOutIndex<(K, u32)> {
+        &self.inner
+    }
+
     pub fn keychains(
         &self,
         range: impl core::ops::RangeBounds<K>,
@@ -73,7 +113,7 @@ impl<K: Clone + Ord + Debug> KeychainTracker<K> {
             .expect("keychain does not exist")
     }
 
-    ///
+    /// Get the next
     pub fn next_derivation_index(&self, keychain: K) -> u32 {
         self.derivation_index(keychain)
             .map(|index| index + 1)
@@ -133,8 +173,8 @@ impl<K: Clone + Ord + Debug> KeychainTracker<K> {
 
     /// Derives a new script pubkey for a keychain.
     ///
-    /// The tracker returns a new script pubkey for each call to this method and stores it internally so
-    /// it will be able to find transactions related to it.
+    /// The index returns a new script pubkey for each call to this method and stores it internally
+    /// so it will be able to find transactions related to it.
     pub fn derive_new(&mut self, keychain: K) -> (u32, &Script) {
         let secp = Secp256k1::verification_only();
         let next_derivation_index = self.next_derivation_index(keychain.clone());

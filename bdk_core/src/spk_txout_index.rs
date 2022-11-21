@@ -51,7 +51,7 @@ impl<I> Default for SpkTxOutIndex<I> {
 
 impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// Scan a transaction graph for outputs with script pubkeys matching those in the index.
-    pub fn scan(&mut self, graph: &TxGraph) {
+    pub fn scan_graph(&mut self, graph: &TxGraph) {
         graph
             .iter_all_txouts()
             .for_each(|(op, txo)| self.scan_txout(op, txo.clone()))
@@ -61,12 +61,18 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     pub fn scan_tx(&mut self, tx: &Transaction) {
         let txid = tx.txid();
         for (i, txout) in tx.output.iter().enumerate() {
-            self.scan_txout(OutPoint { txid , vout: i as u32 }, txout.clone())
+            self.scan_txout(
+                OutPoint {
+                    txid,
+                    vout: i as u32,
+                },
+                txout.clone(),
+            )
         }
     }
 
     /// Scan a single `TxOut` for a matching script pubkey
-    fn scan_txout(&mut self, op: OutPoint, txout: TxOut) {
+    pub fn scan_txout(&mut self, op: OutPoint, txout: TxOut) {
         if let Some(spk_i) = self.index_of_spk(&txout.script_pubkey) {
             self.txouts.insert(op.clone(), (spk_i.clone(), txout));
             self.spk_txouts
