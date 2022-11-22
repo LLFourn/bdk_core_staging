@@ -1,11 +1,7 @@
 use anyhow::Context;
 use bdk_keychain::{
-    bdk_core::{
-        chain_graph::ChainGraph,
-        keychain::{KeychainChangeSet, KeychainScan},
-        ChainIndex,
-    },
-    KeychainTxOutIndex,
+    bdk_core::{keychain::KeychainChangeSet, ChainIndex},
+    KeychainTracker,
 };
 use std::{
     collections::BTreeMap,
@@ -29,8 +25,7 @@ where
 {
     pub fn load(
         db_path: &Path,
-        chain_graph: &mut ChainGraph<I>,
-        txout_index: &mut KeychainTxOutIndex<Keychain>,
+        tracker: &mut KeychainTracker<Keychain, I>,
     ) -> anyhow::Result<Self> {
         let mut db_file = OpenOptions::new()
             .read(true)
@@ -43,9 +38,11 @@ where
             let pos = db_file.stream_position()?;
 
             match bincode::decode_from_std_read(&mut db_file, bincode::config::standard()) {
-                Ok(bincode::serde::Compat(changeset @ KeychainChangeSet::<I, Keychain> { .. })) => {
-                    txout_index.derive_all_spks(changeset.keychain);
-                    chain_graph.apply_changeset(&changeset.chain_graph);
+                Ok(bincode::serde::Compat(changeset @ KeychainChangeSet::<Keychain, I> { .. })) => {
+                    tracker
+                        .txout_index
+                        .derive_all_spks(&changeset.derivation_indices);
+                    tracker.apply_changeset(changeset);
                 }
                 Err(e) => {
                     if let bincode::error::DecodeError::Io { inner, .. } = &e {
@@ -63,51 +60,16 @@ where
             }
         }
 
-        // we only scan for txouts we own after loading the transactions to avoid missing anything
-        txout_index.scan_graph(chain_graph.graph());
-
         Ok(Self {
-            keychain_cache: txout_index.derivation_indicies(),
+            keychain_cache: tracker.txout_index.derivation_indices(),
             db_file,
             chain_index: Default::default(),
         })
     }
 
-    pub fn apply_wallet_scan(
+    pub fn append_changeset(
         &mut self,
-        chain_graph: &mut ChainGraph<I>,
-        txout_index: &mut KeychainTxOutIndex<Keychain>,
-        keychain_scan: KeychainScan<Keychain, I>,
-    ) -> anyhow::Result<()> {
-        txout_index.derive_all_spks(keychain_scan.last_active_indexes);
-        txout_index.scan_graph(keychain_scan.update.graph());
-        let chain_changeset = chain_graph.determine_changeset(&keychain_scan.update)?;
-
-        let changeset = KeychainChangeSet {
-            chain_graph: chain_changeset.clone(),
-            keychain: self.derivation_index_changes(txout_index),
-        };
-
-        self.append_changeset(changeset)?;
-
-        chain_graph.apply_changeset(&chain_changeset);
-        Ok(())
-    }
-
-    fn derivation_index_changes(
-        &self,
-        txout_index: &KeychainTxOutIndex<Keychain>,
-    ) -> BTreeMap<Keychain, u32> {
-        txout_index
-            .derivation_indicies()
-            .into_iter()
-            .filter(|(keychain, index)| self.keychain_cache.get(keychain) != Some(index))
-            .collect()
-    }
-
-    fn append_changeset(
-        &mut self,
-        changeset: KeychainChangeSet<I, Keychain>,
+        changeset: &KeychainChangeSet<Keychain, I>,
     ) -> anyhow::Result<()> {
         if !changeset.is_empty() {
             bincode::encode_into_std_write(
@@ -120,36 +82,19 @@ where
         Ok(())
     }
 
-    pub fn apply_wallet_sync(
+    pub fn set_derivation_indices(
         &mut self,
-        chain_graph: &mut ChainGraph<I>,
-        txout_index: &mut KeychainTxOutIndex<Keychain>,
-        update: ChainGraph<I>,
-    ) -> anyhow::Result<()> {
-        txout_index.scan_graph(update.graph());
-        let changeset = chain_graph.determine_changeset(&update)?;
-
-        let keychain_changeset = KeychainChangeSet {
-            chain_graph: changeset.clone(),
-            keychain: Default::default(),
-        };
-
-        self.append_changeset(keychain_changeset)?;
-
-        chain_graph.apply_changeset(&changeset);
-        Ok(())
-    }
-
-    pub fn set_derivation_indicies(
-        &mut self,
-        txout_index: &KeychainTxOutIndex<Keychain>,
+        indices: BTreeMap<Keychain, u32>,
     ) -> anyhow::Result<()> {
         let keychain_changeset = KeychainChangeSet {
             chain_graph: Default::default(),
-            keychain: self.derivation_index_changes(txout_index),
+            derivation_indices: indices
+                .into_iter()
+                .filter(|(keychain, index)| self.keychain_cache.get(keychain) != Some(index))
+                .collect(),
         };
 
-        self.append_changeset(keychain_changeset)?;
+        self.append_changeset(&keychain_changeset)?;
 
         Ok(())
     }

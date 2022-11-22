@@ -433,6 +433,9 @@ impl<I: ChainIndex> SparseChain<I> {
         ))
     }
 
+    /// Given a transaction graph and a particular outpoint attempts to retrieve a `FullTxOut`. This
+    /// function will return `Some(full_txout)` only if the output's transaction is in `self` and
+    /// the graph.
     pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut<I>> {
         let chain_index = self.tx_index(outpoint.txid)?;
 
@@ -446,7 +449,6 @@ impl<I: ChainIndex> SparseChain<I> {
                     .iter()
                     .filter(|&txid| self.txid_to_index.contains_key(txid))
                     .collect::<Vec<_>>();
-                debug_assert!(txids.len() <= 1, "conflicting txs in sparse chain");
                 txids.get(0).cloned()
             })
             .flatten()

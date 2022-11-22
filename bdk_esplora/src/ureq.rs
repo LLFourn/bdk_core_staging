@@ -50,7 +50,7 @@ impl core::fmt::Display for UpdateError {
             UpdateError::Deserialization { url } => {
                 write!(f, "Failed to deserialize response from {}", url)
             }
-            UpdateError::Reorg => write!(f, "Reorg occured while the sync was in progress",),
+            UpdateError::Reorg => write!(f, "Reorg occurred while the sync was in progress",),
         }
     }
 }

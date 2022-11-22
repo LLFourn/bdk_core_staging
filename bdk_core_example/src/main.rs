@@ -7,7 +7,6 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    chain_graph::ChainGraph,
     coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     ConfirmationTime,
 };
@@ -15,7 +14,7 @@ use bdk_esplora::ureq::{ureq, Client};
 use bdk_keychain::{
     bdk_core,
     miniscript::{Descriptor, DescriptorPublicKey},
-    DescriptorExt, KeychainTxOutIndex,
+    DescriptorExt, KeychainTracker,
 };
 use clap::{Parser, Subcommand};
 use std::{
@@ -172,9 +171,10 @@ fn main() -> anyhow::Result<()> {
     let (descriptor, mut keymap) =
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
 
-    let mut txout_index = KeychainTxOutIndex::default();
-    let mut chain = ChainGraph::default();
-    txout_index.add_keychain(Keychain::External, descriptor);
+    let mut keychain_tracker = KeychainTracker::default();
+    keychain_tracker
+        .txout_index
+        .add_keychain(Keychain::External, descriptor);
 
     let internal = args
         .change_descriptor
@@ -183,7 +183,9 @@ fn main() -> anyhow::Result<()> {
 
     let change_keychain = if let Some((internal_descriptor, internal_keymap)) = internal {
         keymap.extend(internal_keymap);
-        txout_index.add_keychain(Keychain::Internal, internal_descriptor);
+        keychain_tracker
+            .txout_index
+            .add_keychain(Keychain::Internal, internal_descriptor);
         Keychain::Internal
     } else {
         Keychain::External
@@ -196,8 +198,7 @@ fn main() -> anyhow::Result<()> {
         Network::Signet => "https://mempool.space/signet/api",
     };
 
-    let mut db =
-        db::Db::<ConfirmationTime>::load(args.db_dir.as_path(), &mut chain, &mut txout_index)?;
+    let mut db = db::Db::<ConfirmationTime>::load(args.db_dir.as_path(), &mut keychain_tracker)?;
     let mut client = Client::new(ureq::Agent::new(), esplora_url);
 
     match args.command {
@@ -205,7 +206,8 @@ fn main() -> anyhow::Result<()> {
             client.parallel_requests = 5;
             let stop_gap = 10;
 
-            let spk_iterators = txout_index
+            let spk_iterators = keychain_tracker
+                .txout_index
                 .start_wallet_scan()
                 .into_iter()
                 .map(|(keychain, iter)| {
@@ -229,18 +231,21 @@ fn main() -> anyhow::Result<()> {
                 .wallet_scan(
                     spk_iterators,
                     Some(stop_gap),
-                    chain.chain().checkpoints().clone(),
+                    keychain_tracker.chain_graph().chain().checkpoints().clone(),
                 )
                 .context("scanning the blockchain")?;
             eprintln!();
 
-            db.apply_wallet_scan(&mut chain, &mut txout_index, wallet_scan)?;
+            let changeset = keychain_tracker.determine_changeset(&wallet_scan)?;
+            db.append_changeset(&changeset)?;
+            keychain_tracker.apply_changeset(changeset);
         }
         Commands::Sync {
             mut unused,
             mut unspent,
             all,
         } => {
+            let txout_index = &keychain_tracker.txout_index;
             if !(all || unused || unspent) {
                 unused = true;
                 unspent = true;
@@ -264,31 +269,38 @@ fn main() -> anyhow::Result<()> {
             }
 
             if unspent {
-                spks.extend(txout_index.iter_unspent(chain.chain(), chain.graph()).map(
-                    |(_index, ftxout)| {
-                        eprintln!("checking if {} has been spent", ftxout.outpoint);
-                        ftxout.txout.script_pubkey
-                    },
-                ));
+                spks.extend(keychain_tracker.utxos().map(|(_index, ftxout)| {
+                    eprintln!("checking if {} has been spent", ftxout.outpoint);
+                    ftxout.txout.script_pubkey
+                }));
             }
 
-            let update = client
-                .spk_scan(spks.into_iter(), chain.chain().checkpoints().clone())
+            let scan = client
+                .spk_scan(
+                    spks.into_iter(),
+                    keychain_tracker.chain_graph().chain().checkpoints().clone(),
+                )
                 .context("scanning the blockchain")?;
 
-            db.apply_wallet_sync(&mut chain, &mut txout_index, update)?;
+            let changeset = keychain_tracker
+                .chain_graph()
+                .determine_changeset(&scan)?
+                .into();
+            db.append_changeset(&changeset)?;
+            keychain_tracker.apply_changeset(changeset);
         }
         Commands::Address { addr_cmd } => {
+            let txout_index = &mut keychain_tracker.txout_index;
             let new_address = match addr_cmd {
-                AddressCmd::Next => Some(txout_index.derive_next_unused(Keychain::External)),
-                AddressCmd::New => Some(txout_index.derive_new(Keychain::External)),
+                AddressCmd::Next => Some(txout_index.derive_next_unused(&Keychain::External)),
+                AddressCmd::New => Some(txout_index.derive_new(&Keychain::External)),
                 _ => None,
             };
 
             if let Some((index, spk)) = new_address {
                 let spk = spk.clone();
                 // update database since we're about to give out a new address
-                db.set_derivation_indicies(&txout_index)?;
+                db.set_derivation_indices(txout_index.derivation_indices())?;
                 let address = Address::from_script(&spk, args.network)
                     .expect("should always be able to derive address");
                 eprintln!("This is the address at index {}", index);
@@ -298,7 +310,7 @@ fn main() -> anyhow::Result<()> {
             match addr_cmd {
                 AddressCmd::Next | AddressCmd::New => { /* covered */ }
                 AddressCmd::Index => {
-                    for (keychain, derivation_index) in txout_index.derivation_indicies() {
+                    for (keychain, derivation_index) in txout_index.derivation_indices() {
                         println!("{}: {}", keychain, derivation_index);
                     }
                 }
@@ -318,35 +330,34 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Balance => {
-            let (confirmed, unconfirmed) = txout_index
-                .iter_unspent(chain.chain(), chain.graph())
-                .fold((0, 0), |(confirmed, unconfirmed), ((keychain, _), utxo)| {
+            let (confirmed, unconfirmed) = keychain_tracker.utxos().fold(
+                (0, 0),
+                |(confirmed, unconfirmed), ((keychain, _), utxo)| {
                     if utxo.chain_index.is_confirmed() || keychain == Keychain::Internal {
                         (confirmed + utxo.txout.value, unconfirmed)
                     } else {
                         (confirmed, unconfirmed + utxo.txout.value)
                     }
-                });
+                },
+            );
 
             println!("confirmed: {}", confirmed);
             println!("unconfirmed: {}", unconfirmed);
         }
         Commands::Txo { utxo_cmd } => match utxo_cmd {
             TxoCmd::List => {
-                for (spk_index, txout) in
-                    txout_index.iter_txout().filter_map(|(spk_i, op, _txout)| {
-                        chain
-                            .chain()
-                            .full_txout(chain.graph(), op)
-                            .map(|utxo| (spk_i, utxo))
-                    })
-                {
-                    let script = txout_index.spk_at_index(spk_index).unwrap();
-                    let address = Address::from_script(script, args.network).unwrap();
+                for (spk_index, full_txout) in keychain_tracker.txouts() {
+                    let address =
+                        Address::from_script(&full_txout.txout.script_pubkey, args.network)
+                            .unwrap();
 
                     println!(
                         "{:?} {} {} {} spent:{:?}",
-                        spk_index, txout.txout.value, txout.outpoint, address, txout.spent_by
+                        spk_index,
+                        full_txout.txout.value,
+                        full_txout.outpoint,
+                        address,
+                        full_txout.spent_by
                     )
                 }
             }
@@ -362,21 +373,7 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             };
 
-            let mut candidates = txout_index
-                .iter_unspent(chain.chain(), chain.graph())
-                .filter_map(|(_, utxo)| {
-                    Some((txout_index.index_of_spk(&utxo.txout.script_pubkey)?, utxo))
-                })
-                .filter_map(|((keychain, index), utxo)| {
-                    Some((
-                        txout_index
-                            .descriptor(keychain)
-                            .at_derivation_index(index)
-                            .plan_satisfaction(&assets)?,
-                        utxo,
-                    ))
-                })
-                .collect::<Vec<_>>();
+            let mut candidates = keychain_tracker.planned_utxos(&assets).collect::<Vec<_>>();
 
             // apply coin selection algorithm
             match coin_select {
@@ -413,11 +410,14 @@ fn main() -> anyhow::Result<()> {
             }];
 
             let (change_index, change_script) = {
-                let (index, script) = txout_index.derive_next_unused(change_keychain);
+                let (index, script) = keychain_tracker
+                    .txout_index
+                    .derive_next_unused(&change_keychain);
                 (index, script.clone())
             };
-            let change_plan = txout_index
-                .descriptor(change_keychain)
+            let change_plan = keychain_tracker
+                .txout_index
+                .descriptor(&change_keychain)
                 .at_derivation_index(change_index)
                 .plan_satisfaction(&assets)
                 .expect("failed to obtain change plan");
@@ -429,7 +429,10 @@ fn main() -> anyhow::Result<()> {
 
             let cs_opts = CoinSelectorOpt {
                 target_feerate: 0.5,
-                min_drain_value: txout_index.descriptor(change_keychain).dust_value(),
+                min_drain_value: keychain_tracker
+                    .txout_index
+                    .descriptor(&change_keychain)
+                    .dust_value(),
                 ..CoinSelectorOpt::fund_outputs(
                     &outputs,
                     &change_output,
@@ -463,7 +466,7 @@ fn main() -> anyhow::Result<()> {
 
             let mut transaction = Transaction {
                 version: 0x02,
-                lock_time: chain
+                lock_time: keychain_tracker
                     .chain()
                     .latest_checkpoint()
                     .and_then(|block_id| LockTime::from_height(block_id.height).ok())

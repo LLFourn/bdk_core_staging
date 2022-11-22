@@ -1,4 +1,3 @@
-use bdk_core::bitcoin::{secp256k1::Secp256k1, Script};
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 pub trait DescriptorExt {
@@ -13,24 +12,4 @@ impl DescriptorExt for Descriptor<DescriptorPublicKey> {
             .dust_value()
             .to_sat()
     }
-}
-
-pub fn descriptor_into_script_iter(
-    descriptor: Descriptor<DescriptorPublicKey>,
-) -> impl Iterator<Item = Script> + Clone + Send {
-    let secp = Secp256k1::verification_only();
-    let end = if descriptor.has_wildcard() {
-        // Because we only iterate over non-hardened indexes there are 2^31 values
-        (1 << 31) - 1
-    } else {
-        0
-    };
-
-    (0..=end).map(move |i| {
-        descriptor
-            .at_derivation_index(i)
-            .derived_descriptor(&secp)
-            .expect("the descritpor cannot need hardened derivation")
-            .script_pubkey()
-    })
 }

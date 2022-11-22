@@ -4,7 +4,7 @@ use core::fmt::Debug;
 use crate::{
     sparse_chain::{self, SparseChain},
     tx_graph::{self, TxGraph},
-    BlockId, ChainIndex, ConfirmationTime, TxHeight,
+    BlockId, ChainIndex, ConfirmationTime, ForEachTxout, FullTxOut, TxHeight,
 };
 
 pub type TimestampedChainGraph = ChainGraph<ConfirmationTime>;
@@ -87,6 +87,11 @@ impl<I: ChainIndex> ChainGraph<I> {
         self.apply_changeset(&changeset);
         Ok(changeset)
     }
+
+    /// Get the full transaction output at an outpoint if it exists in the chain and the graph.
+    pub fn full_txout(&self, outpoint: OutPoint) -> Option<FullTxOut<I>> {
+        self.chain().full_txout(self.graph(), outpoint)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,8 +101,8 @@ impl<I: ChainIndex> ChainGraph<I> {
     serde(crate = "serde_crate")
 )]
 pub struct ChangeSet<I> {
-    chain: sparse_chain::ChangeSet<I>,
-    graph: tx_graph::Additions,
+    pub chain: sparse_chain::ChangeSet<I>,
+    pub graph: tx_graph::Additions,
 }
 
 impl<I> ChangeSet<I> {
@@ -112,5 +117,17 @@ impl<I> Default for ChangeSet<I> {
             chain: Default::default(),
             graph: Default::default(),
         }
+    }
+}
+
+impl<I> AsRef<TxGraph> for ChainGraph<I> {
+    fn as_ref(&self) -> &TxGraph {
+        self.graph()
+    }
+}
+
+impl<I> ForEachTxout for ChangeSet<I> {
+    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+        self.graph.for_each_txout(f)
     }
 }

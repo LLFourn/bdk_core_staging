@@ -1,9 +1,4 @@
-use crate::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    sparse_chain::SparseChain,
-    tx_graph::TxGraph,
-    ChainIndex, FullTxOut,
-};
+use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
 /// An index storing [`TxOut`]s that had a script pubkey that matches those in an updatable list.
@@ -50,31 +45,26 @@ impl<I> Default for SpkTxOutIndex<I> {
 }
 
 impl<I: Clone + Ord> SpkTxOutIndex<I> {
-    /// Scan a transaction graph for outputs with script pubkeys matching those in the index.
-    pub fn scan_graph(&mut self, graph: &TxGraph) {
-        graph
-            .iter_all_txouts()
-            .for_each(|(op, txo)| self.scan_txout(op, txo.clone()))
-    }
-
-    /// Scans all the outputs in a transaction for script pubkeys matching those in the index.
-    pub fn scan_tx(&mut self, tx: &Transaction) {
-        let txid = tx.txid();
-        for (i, txout) in tx.output.iter().enumerate() {
-            self.scan_txout(
-                OutPoint {
-                    txid,
-                    vout: i as u32,
-                },
-                txout.clone(),
-            )
-        }
+    /// Scans an objecting containing many txouts.
+    ///
+    /// Typically this is used in two situations:
+    ///
+    /// 1. After loading transaction data from disk you may scan over all the txouts to restore all
+    /// your txouts.
+    /// 2. When getting new data from the chain it is efficient to scan it first in isolation.
+    ///
+    /// See [`ForEachTxout`] for the types that support this.
+    ///
+    /// [`ForEachTxout`]: crate::ForEachTxout
+    pub fn scan(&mut self, txouts: &impl ForEachTxout) {
+        txouts.for_each_txout(&mut |(op, txout)| self.scan_txout(op, txout))
     }
 
     /// Scan a single `TxOut` for a matching script pubkey
-    pub fn scan_txout(&mut self, op: OutPoint, txout: TxOut) {
+    pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) {
         if let Some(spk_i) = self.index_of_spk(&txout.script_pubkey) {
-            self.txouts.insert(op.clone(), (spk_i.clone(), txout));
+            self.txouts
+                .insert(op.clone(), (spk_i.clone(), txout.clone()));
             self.spk_txouts
                 .entry(spk_i.clone())
                 .or_default()
@@ -90,28 +80,6 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         self.txouts
             .iter()
             .map(|(op, (index, txout))| (index.clone(), *op, txout))
-    }
-
-    pub fn iter_unspent<'a, C: ChainIndex>(
-        &'a self,
-        chain: &'a SparseChain<C>,
-        graph: &'a TxGraph,
-    ) -> impl DoubleEndedIterator<Item = (I, FullTxOut<C>)> + '_ {
-        self.iter_txout().filter_map(|(index, outpoint, txout)| {
-            if !chain.is_unspent(graph, outpoint)? {
-                return None;
-            }
-            let chain_index = chain.tx_index(outpoint.txid)?;
-            Some((
-                index,
-                FullTxOut {
-                    outpoint,
-                    txout: txout.clone(),
-                    chain_index,
-                    spent_by: Default::default(),
-                },
-            ))
-        })
     }
 
     /// Finds all txouts on a transaction that has previously been scanned and indexed.
@@ -198,5 +166,34 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
             .find(|output| self.spk_indexes.contains_key(&output.script_pubkey))
             .is_some();
         input_matches || output_matches
+    }
+}
+
+/// Trait to do something with every txout contained in a structure. We'd prefer to use an iterator
+/// here but rust's type system makes it extremely hard to do this (without trait objects).
+pub trait ForEachTxout {
+    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut)));
+}
+
+impl ForEachTxout for Transaction {
+    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+        let txid = self.txid();
+        for (i, txout) in self.output.iter().enumerate() {
+            f((
+                OutPoint {
+                    txid,
+                    vout: i as u32,
+                },
+                txout,
+            ))
+        }
+    }
+}
+
+impl ForEachTxout for bitcoin::Block {
+    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+        for tx in self.txdata.iter() {
+            tx.for_each_txout(f)
+        }
     }
 }
