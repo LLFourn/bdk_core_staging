@@ -56,7 +56,7 @@ fn simple_update() {
         }
     );
 
-    graph.apply_additions(&additions);
+    graph.apply_additions(additions);
     assert_eq!(graph.iter_all_txouts().count(), 3);
     assert_eq!(graph.iter_full_transactions().count(), 0);
     assert_eq!(graph.iter_partial_transactions().count(), 2);

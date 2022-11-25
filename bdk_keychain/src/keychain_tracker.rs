@@ -49,7 +49,7 @@ where
         self.txout_index
             .store_all_up_to(&changeset.derivation_indices);
         self.txout_index.scan(&changeset);
-        self.chain_graph.apply_changeset(&changeset.chain_graph);
+        self.chain_graph.apply_changeset(changeset.chain_graph);
     }
 
     pub fn txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {

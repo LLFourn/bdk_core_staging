@@ -80,28 +80,24 @@ impl TxGraph {
     }
 
     /// Add transaction, returns true when [`TxGraph`] is updated.
-    pub fn insert_tx(&mut self, tx: &Transaction) -> bool {
+    pub fn insert_tx(&mut self, tx: Transaction) -> bool {
         let txid = tx.txid();
 
         if let Some(TxNode::Whole(old_tx)) = self.txs.insert(txid, TxNode::Whole(tx.clone())) {
-            debug_assert_eq!(&old_tx, tx);
+            debug_assert_eq!(old_tx, tx);
             return false;
         }
 
         tx.input
-            .iter()
+            .into_iter()
             .map(|txin| txin.previous_output)
+            // coinbase spends are not to be counted
+            .filter(|outpoint| !outpoint.is_null())
             .for_each(|outpoint| {
                 self.spends.entry(outpoint).or_default().insert(txid);
             });
 
-        (0..tx.output.len() as u32)
-            .map(|vout| OutPoint { txid, vout })
-            .for_each(|outpoint| {
-                self.spends.entry(outpoint).or_default();
-            });
-
-        return true;
+        true
     }
 
     /// Inserts an auxiliary txout. Returns true if txout is newly added.
@@ -192,10 +188,9 @@ impl TxGraph {
 
     /// Extends this graph with another so that `self` becomes the union of the two sets of
     /// transactions.
-    pub fn apply_update(&mut self, update: &TxGraph) -> Additions {
-        let additions = self.determine_additions(update);
-        self.apply_additions(&additions);
-        additions
+    pub fn apply_update(&mut self, update: TxGraph) {
+        let additions = self.determine_additions(&update);
+        self.apply_additions(additions);
     }
 
     pub fn determine_additions(&self, update: &TxGraph) -> Additions {
@@ -230,8 +225,8 @@ impl TxGraph {
         additions
     }
 
-    pub fn apply_additions(&mut self, additions: &Additions) {
-        for tx in &additions.tx {
+    pub fn apply_additions(&mut self, additions: Additions) {
+        for tx in additions.tx {
             self.insert_tx(tx);
         }
 

@@ -39,7 +39,7 @@ impl<I: ChainIndex> ChainGraph<I> {
         index: I,
     ) -> Result<bool, sparse_chain::InsertTxErr> {
         let changed = self.chain.insert_tx(tx.txid(), index)?;
-        self.graph.insert_tx(&tx);
+        self.graph.insert_tx(tx);
         Ok(changed)
     }
 
@@ -70,9 +70,9 @@ impl<I: ChainIndex> ChainGraph<I> {
     }
 
     /// Applies a [`ChangeSet`] to the chain graph
-    pub fn apply_changeset(&mut self, changeset: &ChangeSet<I>) {
-        self.chain.apply_changeset(&changeset.chain);
-        self.graph.apply_additions(&changeset.graph);
+    pub fn apply_changeset(&mut self, changeset: ChangeSet<I>) {
+        self.chain.apply_changeset(changeset.chain);
+        self.graph.apply_additions(changeset.graph);
     }
 
     /// Applies the `update` chain graph. Note this is shorthand for calling [`determine_changeset`]
@@ -80,13 +80,10 @@ impl<I: ChainIndex> ChainGraph<I> {
     ///
     /// [`apply_changeset`]: Self::apply_changeset
     /// [`determine_changeset`]: Self::determine_changeset
-    pub fn apply_update(
-        &mut self,
-        update: &Self,
-    ) -> Result<ChangeSet<I>, sparse_chain::UpdateFailure<I>> {
-        let changeset = self.determine_changeset(update)?;
-        self.apply_changeset(&changeset);
-        Ok(changeset)
+    pub fn apply_update(&mut self, update: Self) -> Result<(), sparse_chain::UpdateFailure<I>> {
+        let changeset = self.determine_changeset(&update)?;
+        self.apply_changeset(changeset);
+        Ok(())
     }
 
     /// Get the full transaction output at an outpoint if it exists in the chain and the graph.

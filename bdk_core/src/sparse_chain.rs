@@ -267,13 +267,13 @@ impl<I: ChainIndex> SparseChain<I> {
     }
 
     /// Tries to update `self` with another chain that connects to it.
-    pub fn apply_update(&mut self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
-        let changeset = self.determine_changeset(update)?;
-        self.apply_changeset(&changeset);
-        Ok(changeset)
+    pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<I>> {
+        let changeset = self.determine_changeset(&update)?;
+        self.apply_changeset(changeset);
+        Ok(())
     }
 
-    pub fn apply_changeset(&mut self, changeset: &ChangeSet<I>) {
+    pub fn apply_changeset(&mut self, changeset: ChangeSet<I>) {
         for (height, update_hash) in &changeset.checkpoints {
             let _original_hash = match update_hash {
                 Some(update_hash) => self.checkpoints.insert(*height, *update_hash),
@@ -297,8 +297,7 @@ impl<I: ChainIndex> SparseChain<I> {
         self.prune_checkpoints();
     }
 
-    /// Clear the mempool list. Use with caution.
-    pub fn clear_mempool(&mut self) -> ChangeSet<I> {
+    pub fn clear_mempool_changeset(&self) -> ChangeSet<I> {
         let txids = self
             .ordered_txids
             .range(
@@ -310,13 +309,16 @@ impl<I: ChainIndex> SparseChain<I> {
             .map(|(_, txid)| (*txid, None))
             .collect();
 
-        let changeset = ChangeSet::<I> {
+        ChangeSet::<I> {
             txids,
             ..Default::default()
-        };
+        }
+    }
 
-        self.apply_changeset(&changeset);
-        changeset
+    /// Clear the mempool list. Use with caution.
+    pub fn clear_mempool(&mut self) {
+        let changeset = self.clear_mempool_changeset();
+        self.apply_changeset(changeset);
     }
 
     /// Insert an arbitrary txid. This assumes that we have at least one checkpoint and the tx does
