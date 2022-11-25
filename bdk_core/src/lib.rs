@@ -1,16 +1,16 @@
 #![no_std]
-pub use alloc::{boxed::Box, vec::Vec};
 pub use bitcoin;
-
 pub mod chain_graph;
 mod spk_txout_index;
 pub use spk_txout_index::*;
 mod chain_data;
 pub use chain_data::*;
 pub mod coin_select;
+mod for_each_txout;
 pub mod keychain;
 pub mod sparse_chain;
 pub mod tx_graph;
+pub use for_each_txout::*;
 
 #[allow(unused_imports)]
 #[macro_use]
@@ -31,6 +31,7 @@ extern crate hashbrown;
 
 // When no-std use `alloc`'s Hash collections. This is activated by default
 #[cfg(all(not(feature = "std"), not(feature = "hashbrown")))]
+#[doc(hidden)]
 pub mod collections {
     #![allow(dead_code)]
     pub type HashSet<K> = alloc::collections::BTreeSet<K>;
@@ -40,12 +41,14 @@ pub mod collections {
 
 // When we have std use `std`'s all collections
 #[cfg(all(feature = "std", not(feature = "hashbrown")))]
+#[doc(hidden)]
 pub mod collections {
     pub use std::collections::*;
 }
 
 // With special feature `hashbrown` use `hashbrown`'s hash collections, and else from `alloc`.
 #[cfg(feature = "hashbrown")]
+#[doc(hidden)]
 pub mod collections {
     #![allow(dead_code)]
     pub type HashSet<K> = hashbrown::HashSet<K>;

@@ -1,17 +1,16 @@
+use crate::{
+    sparse_chain::{self, ChainIndex, SparseChain},
+    tx_graph::{self, TxGraph},
+    BlockId, ForEachTxout, FullTxOut, TxHeight,
+};
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use core::fmt::Debug;
 
-use crate::{
-    sparse_chain::{self, SparseChain},
-    tx_graph::{self, TxGraph},
-    BlockId, ChainIndex, ForEachTxout, FullTxOut, TxHeight,
-};
-
-/// A convenient combination of a [`SparseChain<I>`] and a [`TxGraph].
+/// A convenient combination of a [`SparseChain<I>`] and a [`TxGraph`].
 ///
 /// Very often you want to store transaction data when you record a transaction's existence. Adding
-/// a transaction to a `ChainGraph` allows you to atomically store the `txid` in the internal
-/// `SparseChain<I>` while also storing the transaction data in the interal `TxGraph`.
+/// a transaction to a `ChainGraph` atomically stores the `txid` in its `SparseChain<I>`
+/// while also storing the transaction data in its `TxGraph`.
 ///
 /// The `ChainGraph` does not guarantee any 1:1 mapping between transactions in the `chain` and
 /// `graph` or vis versa. Both fields are public so they can mutated indepdendly. Even if you only
@@ -78,6 +77,9 @@ impl<I: ChainIndex> ChainGraph<I> {
 
     /// Applies the `update` chain graph. Note this is shorthand for calling [`determine_changeset`]
     /// and [`apply_changeset`] in sequence.
+    ///
+    /// [`apply_changeset`]: Self::apply_changeset
+    /// [`determine_changeset`]: Self::determine_changeset
     pub fn apply_update(
         &mut self,
         update: &Self,

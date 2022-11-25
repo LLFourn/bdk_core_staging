@@ -1,13 +1,17 @@
-use crate::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use crate::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    ForEachTxout,
+};
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
-/// An index storing [`TxOut`]s that had a script pubkey that matches those in an updatable list.
+/// An index storing [`TxOut`]s that have a script pubkey that matches those in a list.
+///
 /// The basic idea is that you insert script pubkeys you care about into the index with [`add_spk`]
 /// and then when you call [`scan`] the index will look at any txouts you pass in and
 /// store and index any txouts matching one of its script pubkeys.
 ///
 /// Each script pubkey is associated with a application defined index script index `I` which must be
-/// [`Ord`]. Usually this is used to store the derivation index of the script pubkey or even a
+/// [`Ord`]. Usually this is used to associate the derivation index of the script pubkey or even a
 /// combination of `(keychain, derivation_index)`.
 ///
 /// Note there is no harm in scanning transactions that disappear from the blockchain or were never
@@ -18,6 +22,7 @@ use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 /// [`TxOut`]: bitcoin::TxOut
 /// [`add_spk`]: Self::add_spk
 /// [`Ord`]: core::cmp::Ord
+/// [`scan`]: Self::scan
 /// [`SparseChain`]: crate::sparse_chain::SparseChain
 #[derive(Clone, Debug)]
 pub struct SpkTxOutIndex<I> {
@@ -52,10 +57,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     ///
     /// 1. After loading transaction data from disk you may scan over all the txouts to restore all
     /// your txouts.
-    /// 2. When getting new data from the chain you usually scan it before incoporating it into your chain state.
-    ///
-    /// Note there is no harm in scanning transactions that disappear from the blockchain or were
-    /// never in there in the first place.
+    /// 2. When getting new data from the chain you usually scan it before incorporating it into your chain state.
     ///
     /// See [`ForEachTxout`] for the types that support this.
     ///
@@ -77,7 +79,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         }
     }
 
-    /// Iterate over all known txouts that spend to tracked scriptPubKeys.
+    /// Iterate over all known txouts that spend to tracked script pubkeys.
     pub fn iter_txout(
         &self,
     ) -> impl DoubleEndedIterator<Item = (&I, OutPoint, &TxOut)> + ExactSizeIterator {
@@ -169,34 +171,5 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
             .find(|output| self.spk_indexes.contains_key(&output.script_pubkey))
             .is_some();
         input_matches || output_matches
-    }
-}
-
-/// Trait to do something with every txout contained in a structure. We'd prefer to use an iterator
-/// here but rust's type system makes it extremely hard to do this (without trait objects).
-pub trait ForEachTxout {
-    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut)));
-}
-
-impl ForEachTxout for Transaction {
-    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
-        let txid = self.txid();
-        for (i, txout) in self.output.iter().enumerate() {
-            f((
-                OutPoint {
-                    txid,
-                    vout: i as u32,
-                },
-                txout,
-            ))
-        }
-    }
-}
-
-impl ForEachTxout for bitcoin::Block {
-    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
-        for tx in self.txdata.iter() {
-            tx.for_each_txout(f)
-        }
     }
 }

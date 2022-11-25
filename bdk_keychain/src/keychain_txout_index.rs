@@ -37,11 +37,11 @@ use miniscript::{Descriptor, DescriptorPublicKey};
 /// txout_index.add_keychain(MyKeychain::Internal, internal_descriptor);
 /// txout_index.add_keychain(MyKeychain::MyAppUser { user_id: 42 }, descriptor_for_user_42);
 ///
-/// let new_spk_for_user =  txout_index.derive_new(MyKeychain::MyAppUser { user_id: 42 });
+/// let new_spk_for_user =  txout_index.derive_new(&MyKeychain::MyAppUser { user_id: 42 });
 /// ```
 ///
 /// [`Ord`]: core::cmp::Ord
-/// [`SpkTxOutIndex`]: crate::SpkTxOutIndex
+/// [`SpkTxOutIndex`]: bdk_core::SpkTxOutIndex
 /// [`Descriptor`]: miniscript::Descriptor
 #[derive(Clone, Debug)]
 pub struct KeychainTxOutIndex<K> {
@@ -77,7 +77,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// See [`ForEachTxout`] for the types that support this.
     ///
-    /// [`ForEachTxout`]: crate::ForEachTxout
+    /// [`ForEachTxout`]: bdk_core::ForEachTxout
     pub fn scan(&mut self, txouts: &impl ForEachTxout) {
         self.inner.scan(txouts);
     }
@@ -131,13 +131,14 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .expect("keychain does not exist")
     }
 
-    /// Get the next
+    /// Get the derivation index after the current one
     pub fn next_derivation_index(&self, keychain: &K) -> u32 {
         self.derivation_index(keychain)
             .map(|index| index + 1)
             .unwrap_or(0)
     }
 
+    /// Get the current derivation index. This is the highest index in the keychain we have stored.
     pub fn derivation_index(&self, keychain: &K) -> Option<u32> {
         self.inner
             .script_pubkeys()
@@ -157,7 +158,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Returns whether any new script pubkeys were derived (or if they had already all been
     /// stored).
     ///
-    /// [`derive_spks_up_to`]: Self::derive_spks_up_to
+    /// [`derive_spks_up_to`]: Self::store_up_to
     pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> bool {
         keychains
             .into_iter()

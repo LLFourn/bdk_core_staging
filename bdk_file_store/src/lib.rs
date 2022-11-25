@@ -1,6 +1,6 @@
 use anyhow::Context;
 use bdk_keychain::{
-    bdk_core::{keychain::KeychainChangeSet, ChainIndex},
+    bdk_core::{keychain::KeychainChangeSet, sparse_chain},
     KeychainTracker,
 };
 use std::{
@@ -22,7 +22,7 @@ pub struct KeychainStore<K, I> {
 impl<K, I> KeychainStore<K, I>
 where
     K: Ord + Clone + core::fmt::Debug,
-    I: ChainIndex,
+    I: sparse_chain::ChainIndex,
     KeychainChangeSet<K, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
     pub fn load(db_path: &Path, tracker: &mut KeychainTracker<K, I>) -> anyhow::Result<Self> {

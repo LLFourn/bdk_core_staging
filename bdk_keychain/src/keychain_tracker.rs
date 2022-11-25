@@ -3,7 +3,7 @@ use bdk_core::{
     keychain::{KeychainChangeSet, KeychainScan},
     sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
-    ChainIndex, FullTxOut,
+    FullTxOut,
 };
 use miniscript::plan::{Assets, CanDerive, Plan};
 
@@ -24,7 +24,7 @@ pub struct KeychainTracker<K, I> {
 
 impl<K, I> KeychainTracker<K, I>
 where
-    I: ChainIndex,
+    I: sparse_chain::ChainIndex,
     K: Ord + Clone + core::fmt::Debug,
 {
     pub fn determine_changeset(

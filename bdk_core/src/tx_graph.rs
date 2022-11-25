@@ -1,6 +1,6 @@
+use crate::{collections::*, ForEachTxout};
+use alloc::vec::Vec;
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
-
-use crate::{collections::*, ForEachTxout, Vec};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TxGraph {
