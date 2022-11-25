@@ -168,9 +168,7 @@ pub struct FullTxOut<I> {
 /// Represents an index in which transactions are ordered by in [`SparseChain`].
 ///
 /// [`ChainIndex`] implementations must be [`Ord`] by [`TxHeight`] first.
-pub trait ChainIndex:
-    core::fmt::Debug + Clone + Copy + Eq + PartialOrd + Ord + core::hash::Hash
-{
+pub trait ChainIndex: core::fmt::Debug + Clone + Eq + PartialOrd + Ord + core::hash::Hash {
     /// Obtain the transaction height of the index.
     fn height(&self) -> TxHeight;
 

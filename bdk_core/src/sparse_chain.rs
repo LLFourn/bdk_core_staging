@@ -163,7 +163,7 @@ impl<I: ChainIndex> SparseChain<I> {
             txids: self
                 .ordered_txids
                 .iter()
-                .map(|(index, txid)| (*txid, Some(*index)))
+                .map(|(index, txid)| (*txid, Some(index.clone())))
                 .collect(),
         }
     }
@@ -201,17 +201,17 @@ impl<I: ChainIndex> SparseChain<I> {
             }
         }
 
-        for (&txid, &update_index) in &update.txid_to_index {
+        for (&txid, update_index) in &update.txid_to_index {
             // ensure all currently confirmed txs are still at the same height (unless, if they are
             // to be invalidated, or originally unconfirmed)
-            if let Some(&original_index) = self.txid_to_index.get(&txid) {
+            if let Some(original_index) = &self.txid_to_index.get(&txid) {
                 if original_index.height() < TxHeight::Confirmed(invalid_from)
-                    && original_index != update_index
+                    && original_index != &update_index
                 {
                     return Err(UpdateFailure::InconsistentTx {
                         inconsistent_txid: txid,
-                        original_index,
-                        update_index,
+                        original_index: I::clone(original_index),
+                        update_index: update_index.clone(),
                     });
                 }
             }
@@ -258,13 +258,13 @@ impl<I: ChainIndex> SparseChain<I> {
         for (txid, new_index) in &update.txid_to_index {
             let original_index = self.txid_to_index.get(txid).cloned();
 
-            let update_index = *change_set
+            let update_index = change_set
                 .txids
                 .entry(*txid)
-                .and_modify(|change| *change = Some(*new_index))
-                .or_insert_with(|| Some(*new_index));
+                .and_modify(|change| *change = Some(new_index.clone()))
+                .or_insert_with(|| Some(new_index.clone()));
 
-            if original_index == update_index {
+            if original_index == *update_index {
                 change_set.txids.remove(txid);
             }
         }
@@ -296,8 +296,8 @@ impl<I: ChainIndex> SparseChain<I> {
             }
 
             if let Some(index) = update_index {
-                self.txid_to_index.insert(*txid, *index);
-                self.ordered_txids.insert((*index, *txid));
+                self.txid_to_index.insert(*txid, index.clone());
+                self.ordered_txids.insert((index.clone(), *txid));
             }
         }
 
@@ -342,15 +342,15 @@ impl<I: ChainIndex> SparseChain<I> {
             return Err(InsertTxErr::TxTooHigh);
         }
 
-        if let Some(&original_index) = self.txid_to_index.get(&txid) {
-            if original_index.height().is_confirmed() && original_index != index {
+        if let Some(original_index) = self.txid_to_index.get(&txid) {
+            if original_index.height().is_confirmed() && *original_index != index {
                 return Err(InsertTxErr::TxMoved);
             }
 
             return Ok(false);
         }
 
-        self.txid_to_index.insert(txid, index);
+        self.txid_to_index.insert(txid, index.clone());
         self.ordered_txids.insert((index, txid));
 
         Ok(true)
@@ -381,8 +381,8 @@ impl<I: ChainIndex> SparseChain<I> {
         R: RangeBounds<(I, Txid)>,
     {
         let map_bound = |b: Bound<&(I, Txid)>| match b {
-            Bound::Included(&(index, txid)) => Bound::Included((index, txid)),
-            Bound::Excluded(&(index, txid)) => Bound::Excluded((index, txid)),
+            Bound::Included((index, txid)) => Bound::Included((index.clone(), *txid)),
+            Bound::Excluded((index, txid)) => Bound::Excluded((index.clone(), *txid)),
             Bound::Unbounded => Bound::Unbounded,
         };
 
@@ -398,8 +398,8 @@ impl<I: ChainIndex> SparseChain<I> {
         R: RangeBounds<I>,
     {
         let map_bound = |b: Bound<&I>, inc: Txid, exc: Txid| match b {
-            Bound::Included(&index) => Bound::Included((index, inc)),
-            Bound::Excluded(&index) => Bound::Excluded((index, exc)),
+            Bound::Included(index) => Bound::Included((index.clone(), inc)),
+            Bound::Excluded(index) => Bound::Excluded((index.clone(), exc)),
             Bound::Unbounded => Bound::Unbounded,
         };
 
@@ -522,7 +522,7 @@ impl<I: ChainIndex> ChangeSet<I> {
         for (txid, new_change) in new_set.txids {
             self.txids
                 .entry(txid)
-                .and_modify(|change| *change = new_change)
+                .and_modify(|change| *change = new_change.clone())
                 .or_insert_with(|| new_change);
         }
 
