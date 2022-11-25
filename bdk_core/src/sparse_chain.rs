@@ -77,7 +77,7 @@ pub enum UpdateFailure<I = TxHeight> {
     /// represents did not connect to the existing chain. This error case contains the checkpoint
     /// height to include so that the chains can connect.
     NotConnected(u32),
-    /// The [`Update`] canot be applied, because there are inconsistent tx states.
+    /// The [`Update`] cannot be applied, because there are inconsistent tx states.
     /// This only reports the first inconsistency.
     InconsistentTx {
         inconsistent_txid: Txid,
@@ -117,7 +117,7 @@ impl<I: ChainIndex> SparseChain<I> {
         chain
     }
 
-    /// Get the BlockId for the last known tip.
+    /// Get the `BlockId` for the last known tip.
     pub fn latest_checkpoint(&self) -> Option<BlockId> {
         self.checkpoints
             .iter()
@@ -137,7 +137,7 @@ impl<I: ChainIndex> SparseChain<I> {
         self.txid_to_index.get(&txid).cloned()
     }
 
-    /// Return an iterator over all checkpoints, in descensing order.
+    /// Return an iterator over all checkpoints, in descending order.
     pub fn checkpoints(&self) -> &BTreeMap<u32, BlockHash> {
         &self.checkpoints
     }
@@ -326,7 +326,7 @@ impl<I: ChainIndex> SparseChain<I> {
         changeset
     }
 
-    /// Insert an arbitary txid. This assumes that we have at least one checkpoint and the tx does
+    /// Insert an arbitrary txid. This assumes that we have at least one checkpoint and the tx does
     /// not already exist in [`SparseChain`]. Returns a [`ChangeSet`] on success.
     pub fn insert_tx(&mut self, txid: Txid, index: I) -> Result<bool, InsertTxErr> {
         let new_height = index.height();
