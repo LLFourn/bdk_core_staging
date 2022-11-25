@@ -9,10 +9,12 @@ use miniscript::plan::{Assets, CanDerive, Plan};
 
 use crate::KeychainTxOutIndex;
 
-/// A combination of a `KeychainTxOutIndex<K>` and a `ChainGraph<I>`.
+/// A convenient combination of a `KeychainTxOutIndex<K>` and a `ChainGraph<I>`.
 ///
-/// We keep the internal `chain_graph` field is kept private so that whenever you add new chain data
-/// when can scan it with the `txout_index` before it gets added to the `chain_graph`.
+/// The `KeychainTracker<K, I>` atomically updates its `KeychainTxOutIndex<K>` whenever new chain data is
+/// incorporated into its internal `chain_graph`.
+///
+/// [`KeychainTxOutIndex<K>`]: crate::KeychainTxOutIndex
 #[derive(Clone, Debug)]
 pub struct KeychainTracker<K, I> {
     /// script pubkey index
@@ -81,11 +83,15 @@ where
     }
 
     pub fn graph(&self) -> &TxGraph {
-        self.chain_graph().graph()
+        &self.chain_graph().graph
     }
 
     pub fn chain(&self) -> &SparseChain<I> {
-        self.chain_graph().chain()
+        &self.chain_graph().chain
+    }
+
+    pub fn chain_mut(&mut self) -> &mut SparseChain<I> {
+        &mut self.chain_graph.chain
     }
 }
 

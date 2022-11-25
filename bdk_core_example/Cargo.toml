@@ -7,8 +7,7 @@ edition = "2021"
 [dependencies]
 clap = { version = "3.2.5", features = ["derive", "env"] }
 bdk_keychain = { path = "../bdk_keychain", features = ["serde"] }
-
-anyhow = "1"
+bdk_file_store = { path = "../bdk_file_store" }
 bdk_esplora = { path = "../bdk_esplora" }
-bincode = {  version = "2.0.0-rc.2", features = ["serde"] }
+anyhow = "1"
 serde = "1"

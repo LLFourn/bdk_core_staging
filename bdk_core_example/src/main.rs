@@ -11,6 +11,7 @@ use bdk_core::{
     ConfirmationTime,
 };
 use bdk_esplora::ureq::{ureq, Client};
+use bdk_file_store::KeychainStore;
 use bdk_keychain::{
     bdk_core,
     miniscript::{Descriptor, DescriptorPublicKey},
@@ -23,7 +24,6 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
-mod db;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -139,17 +139,7 @@ pub enum TxoCmd {
 }
 
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialOrd,
-    Ord,
-    PartialEq,
-    Eq,
-    bincode::Encode,
-    bincode::Decode,
-    serde::Deserialize,
-    serde::Serialize,
+    Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, serde::Deserialize, serde::Serialize,
 )]
 pub enum Keychain {
     External,
@@ -198,7 +188,10 @@ fn main() -> anyhow::Result<()> {
         Network::Signet => "https://mempool.space/signet/api",
     };
 
-    let mut db = db::Db::<ConfirmationTime>::load(args.db_dir.as_path(), &mut keychain_tracker)?;
+    let mut db = KeychainStore::<Keychain, ConfirmationTime>::load(
+        args.db_dir.as_path(),
+        &mut keychain_tracker,
+    )?;
     let mut client = Client::new(ureq::Agent::new(), esplora_url);
 
     match args.command {
@@ -231,7 +224,7 @@ fn main() -> anyhow::Result<()> {
                 .wallet_scan(
                     spk_iterators,
                     Some(stop_gap),
-                    keychain_tracker.chain_graph().chain().checkpoints().clone(),
+                    keychain_tracker.chain().checkpoints().clone(),
                 )
                 .context("scanning the blockchain")?;
             eprintln!();
@@ -253,33 +246,33 @@ fn main() -> anyhow::Result<()> {
                 unused = false;
                 unspent = false
             }
-            let mut spks = vec![];
+            let mut spks: Box<dyn Iterator<Item = bdk_core::bitcoin::Script>> =
+                Box::new(core::iter::empty());
             if unused {
-                spks.extend(txout_index.iter_unused().map(|(index, script)| {
+                spks = Box::new(spks.chain(txout_index.iter_unused().map(|(index, script)| {
                     eprintln!("Checking if address at {:?} has been used", index);
                     script.clone()
-                }));
+                })));
             }
 
             if all {
-                spks.extend(txout_index.script_pubkeys().iter().map(|(index, script)| {
-                    eprintln!("scanning {:?}", index);
-                    script.clone()
-                }));
+                spks = Box::new(spks.chain(txout_index.script_pubkeys().iter().map(
+                    |(index, script)| {
+                        eprintln!("scanning {:?}", index);
+                        script.clone()
+                    },
+                )));
             }
 
             if unspent {
-                spks.extend(keychain_tracker.utxos().map(|(_index, ftxout)| {
+                spks = Box::new(spks.chain(keychain_tracker.utxos().map(|(_index, ftxout)| {
                     eprintln!("checking if {} has been spent", ftxout.outpoint);
                     ftxout.txout.script_pubkey
-                }));
+                })));
             }
 
             let scan = client
-                .spk_scan(
-                    spks.into_iter(),
-                    keychain_tracker.chain_graph().chain().checkpoints().clone(),
-                )
+                .spk_scan(spks, keychain_tracker.chain().checkpoints().clone())
                 .context("scanning the blockchain")?;
 
             let changeset = keychain_tracker

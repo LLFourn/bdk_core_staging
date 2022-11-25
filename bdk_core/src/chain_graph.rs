@@ -4,15 +4,24 @@ use core::fmt::Debug;
 use crate::{
     sparse_chain::{self, SparseChain},
     tx_graph::{self, TxGraph},
-    BlockId, ChainIndex, ConfirmationTime, ForEachTxout, FullTxOut, TxHeight,
+    BlockId, ChainIndex, ForEachTxout, FullTxOut, TxHeight,
 };
 
-pub type TimestampedChainGraph = ChainGraph<ConfirmationTime>;
-
+/// A convenient combination of a [`SparseChain<I>`] and a [`TxGraph].
+///
+/// Very often you want to store transaction data when you record a transaction's existence. Adding
+/// a transaction to a `ChainGraph` allows you to atomically store the `txid` in the internal
+/// `SparseChain<I>` while also storing the transaction data in the interal `TxGraph`.
+///
+/// The `ChainGraph` does not guarantee any 1:1 mapping between transactions in the `chain` and
+/// `graph` or vis versa. Both fields are public so they can mutated indepdendly. Even if you only
+/// modify the `ChainGraph` through its atomic API, keep in mind that `TxGraph` does not allow
+/// deletions while `SparseChain` does so deleting a transaction from the chain cannot delete it
+/// from the graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainGraph<I = TxHeight> {
-    chain: SparseChain<I>,
-    graph: TxGraph,
+    pub chain: SparseChain<I>,
+    pub graph: TxGraph,
 }
 
 impl<I> Default for ChainGraph<I> {
@@ -21,16 +30,6 @@ impl<I> Default for ChainGraph<I> {
             chain: Default::default(),
             graph: Default::default(),
         }
-    }
-}
-
-impl<I> ChainGraph<I> {
-    pub fn chain(&self) -> &SparseChain<I> {
-        &self.chain
-    }
-
-    pub fn graph(&self) -> &TxGraph {
-        &self.graph
     }
 }
 
@@ -90,7 +89,7 @@ impl<I: ChainIndex> ChainGraph<I> {
 
     /// Get the full transaction output at an outpoint if it exists in the chain and the graph.
     pub fn full_txout(&self, outpoint: OutPoint) -> Option<FullTxOut<I>> {
-        self.chain().full_txout(self.graph(), outpoint)
+        self.chain.full_txout(&self.graph, outpoint)
     }
 }
 
@@ -122,7 +121,7 @@ impl<I> Default for ChangeSet<I> {
 
 impl<I> AsRef<TxGraph> for ChainGraph<I> {
     fn as_ref(&self) -> &TxGraph {
-        self.graph()
+        &self.graph
     }
 }
 
