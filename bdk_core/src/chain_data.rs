@@ -1,5 +1,7 @@
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, TxOut, Txid};
 
+use crate::sparse_chain;
+
 /// Represents the height in which a transaction is confirmed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(
@@ -45,7 +47,7 @@ impl From<TxHeight> for Option<u32> {
     }
 }
 
-impl ChainIndex for TxHeight {
+impl crate::sparse_chain::ChainIndex for TxHeight {
     fn height(&self) -> TxHeight {
         *self
     }
@@ -77,7 +79,7 @@ pub enum ConfirmationTime {
     Unconfirmed,
 }
 
-impl ChainIndex for ConfirmationTime {
+impl sparse_chain::ChainIndex for ConfirmationTime {
     fn height(&self) -> TxHeight {
         match self {
             ConfirmationTime::Confirmed { height, .. } => TxHeight::Confirmed(*height),
@@ -163,68 +165,4 @@ pub struct FullTxOut<I> {
     pub txout: TxOut,
     pub chain_index: I,
     pub spent_by: Option<Txid>,
-}
-
-/// Represents an index in which transactions are ordered by in [`SparseChain`].
-///
-/// [`ChainIndex`] implementations must be [`Ord`] by [`TxHeight`] first.
-pub trait ChainIndex:
-    core::fmt::Debug + Clone + Copy + Eq + PartialOrd + Ord + core::hash::Hash
-{
-    /// Obtain the transaction height of the index.
-    fn height(&self) -> TxHeight;
-
-    /// Obtain the index's upper bound of a given height.
-    fn max_ord_of_height(height: TxHeight) -> Self;
-
-    /// Obtain the index's lower bound of a given height.
-    fn min_ord_of_height(height: TxHeight) -> Self;
-}
-
-#[cfg(test)]
-pub mod verify_chain_index {
-    use alloc::vec::Vec;
-
-    use super::ChainIndex;
-    use crate::{ConfirmationTime, TxHeight};
-
-    pub fn verify_chain_index<I: ChainIndex>(head_count: u32, tail_count: u32) {
-        let values = (0..head_count)
-            .chain(u32::MAX - tail_count..u32::MAX)
-            .flat_map(|i| {
-                [
-                    I::min_ord_of_height(TxHeight::Confirmed(i)),
-                    I::max_ord_of_height(TxHeight::Confirmed(i)),
-                ]
-            })
-            .chain([
-                I::min_ord_of_height(TxHeight::Unconfirmed),
-                I::max_ord_of_height(TxHeight::Unconfirmed),
-            ])
-            .collect::<Vec<_>>();
-
-        for i in 0..values.len() {
-            for j in 0..values.len() {
-                if i == j {
-                    assert_eq!(values[i], values[j]);
-                }
-                if i < j {
-                    assert!(values[i] <= values[j]);
-                }
-                if i > j {
-                    assert!(values[i] >= values[j]);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn verify_tx_height() {
-        verify_chain_index::<TxHeight>(1000, 1000);
-    }
-
-    #[test]
-    fn verify_confirmation_time() {
-        verify_chain_index::<ConfirmationTime>(1000, 1000);
-    }
 }

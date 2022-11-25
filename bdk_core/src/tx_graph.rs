@@ -1,6 +1,6 @@
+use crate::{collections::*, ForEachTxout};
+use alloc::vec::Vec;
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
-
-use crate::{collections::*, Vec};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TxGraph {
@@ -266,5 +266,35 @@ impl Additions {
         let fulls = self.tx.iter().map(|tx| (tx.txid(), true));
 
         partials.chain(fulls)
+    }
+
+    pub fn txouts(&self) -> impl Iterator<Item = (OutPoint, &TxOut)> {
+        self.tx
+            .iter()
+            .flat_map(|tx| {
+                tx.output
+                    .iter()
+                    .enumerate()
+                    .map(|(vout, txout)| (OutPoint::new(tx.txid(), vout as _), txout))
+            })
+            .chain(self.txout.iter().map(|(op, txout)| (*op, txout)))
+    }
+}
+
+impl<T: AsRef<TxGraph>> ForEachTxout for T {
+    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+        self.as_ref().iter_all_txouts().for_each(f)
+    }
+}
+
+impl AsRef<TxGraph> for TxGraph {
+    fn as_ref(&self) -> &TxGraph {
+        self
+    }
+}
+
+impl ForEachTxout for Additions {
+    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+        self.txouts().for_each(f)
     }
 }

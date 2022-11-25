@@ -1,10 +1,7 @@
-use core::fmt::{Debug, Display};
-
-use crate::{
-    collections::{BTreeSet, HashMap},
-    Vec,
-};
+use crate::collections::{BTreeSet, HashMap};
+use alloc::vec::Vec;
 use bitcoin::{LockTime, Transaction, TxOut};
+use core::fmt::{Debug, Display};
 
 mod coin_selector;
 pub use coin_selector::*;

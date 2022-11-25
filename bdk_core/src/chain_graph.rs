@@ -1,18 +1,26 @@
+use crate::{
+    sparse_chain::{self, ChainIndex, SparseChain},
+    tx_graph::{self, TxGraph},
+    BlockId, ForEachTxout, FullTxOut, TxHeight,
+};
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use core::fmt::Debug;
 
-use crate::{
-    sparse_chain::{self, SparseChain},
-    tx_graph::{self, TxGraph},
-    BlockId, ChainIndex, ConfirmationTime, TxHeight,
-};
-
-pub type TimestampedChainGraph = ChainGraph<ConfirmationTime>;
-
+/// A convenient combination of a [`SparseChain<I>`] and a [`TxGraph`].
+///
+/// Very often you want to store transaction data when you record a transaction's existence. Adding
+/// a transaction to a `ChainGraph` atomically stores the `txid` in its `SparseChain<I>`
+/// while also storing the transaction data in its `TxGraph`.
+///
+/// The `ChainGraph` does not guarantee any 1:1 mapping between transactions in the `chain` and
+/// `graph` or vis versa. Both fields are public so they can mutated indepdendly. Even if you only
+/// modify the `ChainGraph` through its atomic API, keep in mind that `TxGraph` does not allow
+/// deletions while `SparseChain` does so deleting a transaction from the chain cannot delete it
+/// from the graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainGraph<I = TxHeight> {
-    chain: SparseChain<I>,
-    graph: TxGraph,
+    pub chain: SparseChain<I>,
+    pub graph: TxGraph,
 }
 
 impl<I> Default for ChainGraph<I> {
@@ -21,16 +29,6 @@ impl<I> Default for ChainGraph<I> {
             chain: Default::default(),
             graph: Default::default(),
         }
-    }
-}
-
-impl<I> ChainGraph<I> {
-    pub fn chain(&self) -> &SparseChain<I> {
-        &self.chain
-    }
-
-    pub fn graph(&self) -> &TxGraph {
-        &self.graph
     }
 }
 
@@ -79,6 +77,9 @@ impl<I: ChainIndex> ChainGraph<I> {
 
     /// Applies the `update` chain graph. Note this is shorthand for calling [`determine_changeset`]
     /// and [`apply_changeset`] in sequence.
+    ///
+    /// [`apply_changeset`]: Self::apply_changeset
+    /// [`determine_changeset`]: Self::determine_changeset
     pub fn apply_update(
         &mut self,
         update: &Self,
@@ -86,6 +87,11 @@ impl<I: ChainIndex> ChainGraph<I> {
         let changeset = self.determine_changeset(update)?;
         self.apply_changeset(&changeset);
         Ok(changeset)
+    }
+
+    /// Get the full transaction output at an outpoint if it exists in the chain and the graph.
+    pub fn full_txout(&self, outpoint: OutPoint) -> Option<FullTxOut<I>> {
+        self.chain.full_txout(&self.graph, outpoint)
     }
 }
 
@@ -96,6 +102,33 @@ impl<I: ChainIndex> ChainGraph<I> {
     serde(crate = "serde_crate")
 )]
 pub struct ChangeSet<I> {
-    chain: sparse_chain::ChangeSet<I>,
-    graph: tx_graph::Additions,
+    pub chain: sparse_chain::ChangeSet<I>,
+    pub graph: tx_graph::Additions,
+}
+
+impl<I> ChangeSet<I> {
+    pub fn is_empty(&self) -> bool {
+        self.chain.is_empty() && self.graph.is_empty()
+    }
+}
+
+impl<I> Default for ChangeSet<I> {
+    fn default() -> Self {
+        Self {
+            chain: Default::default(),
+            graph: Default::default(),
+        }
+    }
+}
+
+impl<I> AsRef<TxGraph> for ChainGraph<I> {
+    fn as_ref(&self) -> &TxGraph {
+        &self.graph
+    }
+}
+
+impl<I> ForEachTxout for ChangeSet<I> {
+    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+        self.graph.for_each_txout(f)
+    }
 }
