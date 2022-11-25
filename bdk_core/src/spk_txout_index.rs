@@ -26,15 +26,15 @@ use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 /// [`SparseChain`]: crate::sparse_chain::SparseChain
 #[derive(Clone, Debug)]
 pub struct SpkTxOutIndex<I> {
-    /// Derived script_pubkeys ordered by derivation index.
+    /// script pubkeys ordered by index
     script_pubkeys: BTreeMap<I, Script>,
-    /// A reverse lookup from out script_pubkeys to derivation index
+    /// A reverse lookup from spk to spk index
     spk_indexes: HashMap<Script, I>,
-    /// A set of unused derivation indices.
+    /// The set of unused indexes.
     unused: BTreeSet<I>,
-    /// Index the `OutPoint` to the index of script pubkey.
+    /// Lookup index and txout by outpoint.
     txouts: BTreeMap<OutPoint, (I, TxOut)>,
-    /// A lookup from script pubkey derivation index to related outpoints
+    /// Lookup from spk index to outpoints that had that spk
     spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
 }
 
