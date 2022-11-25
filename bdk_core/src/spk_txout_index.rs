@@ -3,16 +3,17 @@ use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
 /// An index storing [`TxOut`]s that had a script pubkey that matches those in an updatable list.
 /// The basic idea is that you insert script pubkeys you care about into the index with [`add_spk`]
-/// and then the index will look at any transaction data you pass into and store any `TxOut`s with
-/// those script pubkeys.
+/// and then when you call [`scan`] the index will look at any txouts you pass in and
+/// store and index any txouts matching one of its script pubkeys.
 ///
 /// Each script pubkey is associated with a application defined index script index `I` which must be
 /// [`Ord`]. Usually this is used to store the derivation index of the script pubkey or even a
 /// combination of `(keychain, derivation_index)`.
 ///
-/// Note that `SpkTxOutIndex` is intentionally *monotone* -- you cannot delete or modify txouts that
-/// it has indexed. It doesn't care about confirmation height of the txouts it indexes. To track
-/// that information use a [`SparseChain`].
+/// Note there is no harm in scanning transactions that disappear from the blockchain or were never
+/// in there in the first place. `SpkTxOutIndex` is intentionally *monotone* -- you cannot delete or
+/// modify txouts that have been indexed. To find out which txouts from the index are actually in the
+/// chain or unspent etc you must use other sources of information like a [`SparseChain`].
 ///
 /// [`TxOut`]: bitcoin::TxOut
 /// [`add_spk`]: Self::add_spk
@@ -45,13 +46,16 @@ impl<I> Default for SpkTxOutIndex<I> {
 }
 
 impl<I: Clone + Ord> SpkTxOutIndex<I> {
-    /// Scans an objecting containing many txouts.
+    /// Scans an object containing many txouts.
     ///
     /// Typically this is used in two situations:
     ///
     /// 1. After loading transaction data from disk you may scan over all the txouts to restore all
     /// your txouts.
-    /// 2. When getting new data from the chain it is efficient to scan it first in isolation.
+    /// 2. When getting new data from the chain you usually scan it before incoporating it into your chain state.
+    ///
+    /// Note there is no harm in scanning transactions that disappear from the blockchain or were
+    /// never in there in the first place.
     ///
     /// See [`ForEachTxout`] for the types that support this.
     ///
@@ -76,36 +80,36 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// Iterate over all known txouts that spend to tracked scriptPubKeys.
     pub fn iter_txout(
         &self,
-    ) -> impl DoubleEndedIterator<Item = (I, OutPoint, &TxOut)> + ExactSizeIterator {
+    ) -> impl DoubleEndedIterator<Item = (&I, OutPoint, &TxOut)> + ExactSizeIterator {
         self.txouts
             .iter()
-            .map(|(op, (index, txout))| (index.clone(), *op, txout))
+            .map(|(op, (index, txout))| (index, *op, txout))
     }
 
     /// Finds all txouts on a transaction that has previously been scanned and indexed.
     pub fn txouts_in_tx(
         &self,
         txid: Txid,
-    ) -> impl DoubleEndedIterator<Item = (I, OutPoint, &TxOut)> {
+    ) -> impl DoubleEndedIterator<Item = (&I, OutPoint, &TxOut)> {
         self.txouts
             .range(OutPoint::new(txid, u32::MIN)..=OutPoint::new(txid, u32::MAX))
-            .map(|(op, (index, txout))| (index.clone(), *op, txout))
+            .map(|(op, (index, txout))| (index, *op, txout))
     }
 
     /// Returns the txout and script pubkey index of the `TxOut` at `OutPoint`.
     ///
     /// Returns `None` if the `TxOut` hasn't been scanned or if nothing matching was found there.
-    pub fn txout(&self, outpoint: OutPoint) -> Option<(I, &TxOut)> {
+    pub fn txout(&self, outpoint: OutPoint) -> Option<(&I, &TxOut)> {
         self.txouts
             .get(&outpoint)
-            .map(|(spk_i, txout)| (spk_i.clone(), txout))
+            .map(|(spk_i, txout)| (spk_i, txout))
     }
 
     /// Returns the script that has been inserted at the `index`.
     ///
     /// If that index hasn't been inserted yet it will return `None`.
-    pub fn spk_at_index(&self, index: I) -> Option<&Script> {
-        self.script_pubkeys.get(&index)
+    pub fn spk_at_index(&self, index: &I) -> Option<&Script> {
+        self.script_pubkeys.get(index)
     }
 
     /// The script pubkeys being tracked by the index.
@@ -123,21 +127,20 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     }
 
     /// Iterate over the script pubkeys that have been derived but do not have a transaction spending to them.
-    pub fn iter_unused(&self) -> impl DoubleEndedIterator<Item = (I, &Script)> + ExactSizeIterator {
-        self.unused.iter().map(|index| {
-            (
-                index.clone(),
-                self.spk_at_index(index.clone()).expect("must exist"),
-            )
-        })
+    pub fn iter_unused(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&I, &Script)> + ExactSizeIterator {
+        self.unused
+            .iter()
+            .map(|index| (index, self.spk_at_index(index).expect("must exist")))
     }
 
     /// Returns whether the script pubkey at index `index` has been used or not.
     ///
     /// i.e. has a transaction which spends to it.
-    pub fn is_used(&self, index: I) -> bool {
+    pub fn is_used(&self, index: &I) -> bool {
         self.spk_txouts
-            .get(&index)
+            .get(index)
             .map(|set| !set.is_empty())
             .unwrap_or(false)
     }

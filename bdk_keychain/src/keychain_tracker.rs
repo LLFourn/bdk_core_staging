@@ -9,8 +9,13 @@ use miniscript::plan::{Assets, CanDerive, Plan};
 
 use crate::KeychainTxOutIndex;
 
+/// A combination of a `KeychainTxOutIndex<K>` and a `ChainGraph<I>`.
+///
+/// We keep the internal `chain_graph` field is kept private so that whenever you add new chain data
+/// when can scan it with the `txout_index` before it gets added to the `chain_graph`.
 #[derive(Clone, Debug)]
 pub struct KeychainTracker<K, I> {
+    /// script pubkey index
     pub txout_index: KeychainTxOutIndex<K>,
     chain_graph: ChainGraph<I>,
 }
@@ -40,18 +45,18 @@ where
 
     pub fn apply_changeset(&mut self, changeset: KeychainChangeSet<K, I>) {
         self.txout_index
-            .derive_all_spks(&changeset.derivation_indices);
+            .store_all_up_to(&changeset.derivation_indices);
         self.txout_index.scan(&changeset);
         self.chain_graph.apply_changeset(&changeset.chain_graph);
     }
 
-    pub fn txouts(&self) -> impl Iterator<Item = ((K, u32), FullTxOut<I>)> + '_ {
+    pub fn txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {
         self.txout_index
             .iter_txout()
             .filter_map(|(spk_i, op, _)| Some((spk_i, self.chain_graph.full_txout(op)?)))
     }
 
-    pub fn utxos(&self) -> impl Iterator<Item = ((K, u32), FullTxOut<I>)> + '_ {
+    pub fn utxos(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {
         self.txouts().filter(|(_, txout)| txout.spent_by.is_none())
     }
 
@@ -64,7 +69,7 @@ where
                 Some((
                     self.txout_index
                         .descriptor(&keychain)
-                        .at_derivation_index(derivation_index)
+                        .at_derivation_index(*derivation_index)
                         .plan_satisfaction(assets)?,
                     full_txout,
                 ))

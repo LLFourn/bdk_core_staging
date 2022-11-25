@@ -208,7 +208,7 @@ fn main() -> anyhow::Result<()> {
 
             let spk_iterators = keychain_tracker
                 .txout_index
-                .start_wallet_scan()
+                .iter_all_spks()
                 .into_iter()
                 .map(|(keychain, iter)| {
                     let mut first = true;
@@ -323,7 +323,7 @@ fn main() -> anyhow::Result<()> {
                         if index.0 == target_keychain {
                             let address = Address::from_script(spk, args.network)
                                 .expect("should always be able to derive address");
-                            println!("{} used:{}", address, txout_index.is_used(*index));
+                            println!("{} used:{}", address, txout_index.is_used(index));
                         }
                     }
                 }
@@ -332,7 +332,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Balance => {
             let (confirmed, unconfirmed) = keychain_tracker.utxos().fold(
                 (0, 0),
-                |(confirmed, unconfirmed), ((keychain, _), utxo)| {
+                |(confirmed, unconfirmed), (&(keychain, _), utxo)| {
                     if utxo.chain_index.is_confirmed() || keychain == Keychain::Internal {
                         (confirmed + utxo.txout.value, unconfirmed)
                     } else {

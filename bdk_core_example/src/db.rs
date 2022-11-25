@@ -41,7 +41,7 @@ where
                 Ok(bincode::serde::Compat(changeset @ KeychainChangeSet::<Keychain, I> { .. })) => {
                     tracker
                         .txout_index
-                        .derive_all_spks(&changeset.derivation_indices);
+                        .store_all_up_to(&changeset.derivation_indices);
                     tracker.apply_changeset(changeset);
                 }
                 Err(e) => {

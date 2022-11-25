@@ -67,10 +67,24 @@ impl<K> Deref for KeychainTxOutIndex<K> {
 }
 
 impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
+    /// Scans an object containing many txouts.
+    ///
+    /// Typically this is used in two situations:
+    ///
+    /// 1. After loading transaction data from disk you may scan over all the txouts to restore all
+    /// your txouts.
+    /// 2. When getting new data from the chain you usually scan it before incoporating it into your chain state.
+    ///
+    /// See [`ForEachTxout`] for the types that support this.
+    ///
+    /// [`ForEachTxout`]: crate::ForEachTxout
     pub fn scan(&mut self, txouts: &impl ForEachTxout) {
         self.inner.scan(txouts);
     }
 
+    /// Scan a single `TxOut` for a matching script pubkey.
+    ///
+    /// If it matches the index will store and index it.
     pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) {
         self.inner.scan_txout(op, &txout)
     }
@@ -82,10 +96,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     pub fn keychains(
         &self,
         range: impl core::ops::RangeBounds<K>,
-    ) -> impl DoubleEndedIterator<Item = (K, &Descriptor<DescriptorPublicKey>)> {
-        self.descriptors
-            .range(range)
-            .map(|(keychain, descriptor)| (keychain.clone(), descriptor))
+    ) -> impl DoubleEndedIterator<Item = (&K, &Descriptor<DescriptorPublicKey>)> {
+        self.descriptors.range(range)
     }
 
     pub fn add_keychain(&mut self, keychain: K, descriptor: Descriptor<DescriptorPublicKey>) {
@@ -93,13 +105,24 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         self.descriptors.insert(keychain, descriptor);
     }
 
-    /// Generates a map of keychain to an iterator over all that keychain's
-    pub fn start_wallet_scan(&self) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
-        self.keychains(..)
-            .map(|(keychain, descriptor)| {
-                (keychain, descriptor_into_script_iter(descriptor.clone()))
-            })
+    /// Generates iterators for the script pubkeys of every keychain.
+    ///
+    /// Convienience method for calling [`iter_spks`] on each keychain.
+    ///
+    /// [`iter_spks`]: Self::iter_spks
+    pub fn iter_all_spks(&self) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
+        self.descriptors
+            .keys()
+            .map(|keychain| (keychain.clone(), self.iter_spks(keychain)))
             .collect()
+    }
+
+    /// Iterates over all the script pubkeys of a keychain.
+    ///
+    /// **Note:** This really means **all** the script pubkeys, not just the ones that have been
+    /// derived and stored in the index.
+    pub fn iter_spks(&self, keychain: &K) -> impl Iterator<Item = (u32, Script)> + Clone {
+        descriptor_into_script_iter(self.descriptor(keychain).clone())
     }
 
     pub fn descriptor(&self, keychain: &K) -> &Descriptor<DescriptorPublicKey> {
@@ -129,17 +152,24 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .collect()
     }
 
-    pub fn derive_all_spks(&mut self, keychains: &BTreeMap<K, u32>) -> bool {
+    /// Convenience method to call [`derive_spks_up_to`] on several keychains.
+    ///
+    /// Returns whether any new script pubkeys were derived (or if they had already all been
+    /// stored).
+    ///
+    /// [`derive_spks_up_to`]: Self::derive_spks_up_to
+    pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> bool {
         keychains
             .into_iter()
-            .any(|(keychain, index)| self.derive_spks(keychain, *index))
+            .any(|(keychain, index)| self.store_up_to(keychain, *index))
     }
 
-    /// Derives script pubkeys from the descriptor **up to and including** `end` and stores them
+    /// Derives script pubkeys from the descriptor **up to and including** `up_to` and stores them
     /// unless a script already exists in that index.
     ///
-    /// Returns whether any new were derived (or if they had already all been stored).
-    pub fn derive_spks(&mut self, keychain: &K, index: u32) -> bool {
+    /// Returns whether any new script pubkeys were derived (or if they had already all been
+    /// stored).
+    pub fn store_up_to(&mut self, keychain: &K, up_to: u32) -> bool {
         let descriptor = self
             .descriptors
             .get(&keychain)
@@ -147,7 +177,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         let secp = Secp256k1::verification_only();
         let end = match descriptor.has_wildcard() {
             false => 0,
-            true => index,
+            true => up_to,
         };
         let next_to_derive = self.next_derivation_index(keychain);
         if next_to_derive > end {
@@ -208,7 +238,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             self.inner
                 .iter_unused()
                 .filter(|((kc, _), _)| kc == keychain)
-                .map(|((_, i), script)| (i, script))
+                .map(|((_, i), script)| (*i, script))
                 .next()
                 .unwrap()
         }
