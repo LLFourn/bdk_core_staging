@@ -90,6 +90,13 @@ impl<I: ChainIndex> ChainGraph<I> {
     pub fn full_txout(&self, outpoint: OutPoint) -> Option<FullTxOut<I>> {
         self.chain.full_txout(&self.graph, outpoint)
     }
+
+    /// Finds the transaction in the chain that spends `outpoint` given the input/output
+    /// relationships in `graph`. Note that the transaction including `outpoint` does not need to be
+    /// in the `graph` or the `chain` for this to return `Some(_)`.
+    pub fn spent_by(&self, outpoint: OutPoint) -> Option<(&I, Txid)> {
+        self.chain.spent_by(&self.graph, outpoint)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

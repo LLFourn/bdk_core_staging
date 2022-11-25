@@ -164,5 +164,5 @@ pub struct FullTxOut<I> {
     pub outpoint: OutPoint,
     pub txout: TxOut,
     pub chain_index: I,
-    pub spent_by: Option<Txid>,
+    pub spent_by: Option<(I, Txid)>,
 }

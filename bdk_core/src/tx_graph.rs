@@ -1,5 +1,5 @@
 use crate::{collections::*, ForEachTxout};
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec::Vec};
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -22,13 +22,24 @@ impl Default for TxNode {
 }
 
 impl TxGraph {
-    /// The outputs from the transaction with id `txid` that have been spent.
-    pub fn outspend(&self, outpoint: OutPoint) -> Option<&HashSet<Txid>> {
-        self.spends.get(&outpoint)
+    /// The transactions spending from this output.
+    ///
+    /// `TxGraph` allows conflicting transactions within the graph. Obviously the transactions in
+    /// the returned will never be in the same blockchain.
+    ///
+    /// Note this returns a [`Cow`] because of an implementation detail.
+    ///
+    /// [`Cow`]: std::borrow::Cow
+    // FIXME: this Cow could be gotten rid of if we could do HashSet::new in a const fn
+    pub fn outspends(&self, outpoint: OutPoint) -> Cow<HashSet<Txid>> {
+        self.spends
+            .get(&outpoint)
+            .map(|outspends| Cow::Borrowed(outspends))
+            .unwrap_or(Cow::Owned(HashSet::default()))
     }
 
-    /// Each item contains the output index and the txid that spent that output.
-    pub fn outspends(
+    /// The transactions spending from `txid`.
+    pub fn tx_outspends(
         &self,
         txid: Txid,
     ) -> impl DoubleEndedIterator<Item = (u32, &HashSet<Txid>)> + '_ {

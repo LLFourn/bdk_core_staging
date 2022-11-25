@@ -127,8 +127,8 @@ impl<I: ChainIndex> SparseChain<I> {
     }
 
     /// Return the associated index of a tx of txid (if any).
-    pub fn tx_index(&self, txid: Txid) -> Option<I> {
-        self.txid_to_index.get(&txid).cloned()
+    pub fn tx_index(&self, txid: Txid) -> Option<&I> {
+        self.txid_to_index.get(&txid)
     }
 
     /// Return an iterator over all checkpoints, in descending order.
@@ -436,18 +436,14 @@ impl<I: ChainIndex> SparseChain<I> {
 
         let txout = graph.txout(outpoint).cloned()?;
 
-        let spent_by = graph.outspend(outpoint).and_then(|txid_map| {
-            txid_map
-                .iter()
-                .filter(|&txid| self.txid_to_index.contains_key(txid))
-                .next()
-                .cloned()
-        });
+        let spent_by = self
+            .spent_by(graph, outpoint)
+            .map(|(index, txid)| (index.clone(), txid));
 
         Some(FullTxOut {
             outpoint,
             txout,
-            chain_index,
+            chain_index: chain_index.clone(),
             spent_by,
         })
     }
@@ -471,11 +467,14 @@ impl<I: ChainIndex> SparseChain<I> {
         Some(split)
     }
 
-    /// Determines whether outpoint is spent or not. Returns `None` when outpoint does not exist in
-    /// graph.
-    pub fn is_unspent(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<bool> {
-        let txids = graph.outspend(outpoint)?;
-        Some(txids.iter().all(|&txid| self.tx_index(txid).is_none()))
+    /// Finds the transaction in the chain that spends `outpoint` given the input/output
+    /// relationships in `graph`. Note that the transaction including `outpoint` does not need to be
+    /// in the `graph` or the `chain` for this to return `Some(_)`.
+    pub fn spent_by(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<(&I, Txid)> {
+        graph
+            .outspends(outpoint)
+            .iter()
+            .find_map(|&txid| Some((self.tx_index(txid)?, txid)))
     }
 }
 
