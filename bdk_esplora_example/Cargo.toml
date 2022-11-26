@@ -1,0 +1,15 @@
+[package]
+name = "bdk_esplora_example"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ureq = { version = "2", features = ["json"] }
+bdk_core = { path = "../bdk_core", features = ["serde"] }
+bdk_keychain = { path = "../bdk_keychain" }
+bdk_file_store = { path = "../bdk_file_store"}
+serde = { version = "1", features = ["derive"] }
+bdk_cli = { path = "../bdk_cli_lib"}
+esplora-client = { git = "https://github.com/rajarshimaitra/rust-esplora-client.git", branch = "get_recent_blocks"}
