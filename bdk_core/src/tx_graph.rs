@@ -51,8 +51,8 @@ impl TxGraph {
     }
 
     /// Returns true when graph contains given tx of txid (whether it be partial or full).
-    pub fn contains_txid(&self, txid: Txid) -> bool {
-        self.txs.contains_key(&txid)
+    pub fn contains_txid(&self, txid: &Txid) -> bool {
+        self.txs.contains_key(txid)
     }
 
     /// Obtains a single tx output (if any) at specified outpoint.
