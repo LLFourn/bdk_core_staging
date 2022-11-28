@@ -1,5 +1,5 @@
 use crate::{collections::*, ForEachTxout};
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec::Vec};
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -22,13 +22,24 @@ impl Default for TxNode {
 }
 
 impl TxGraph {
-    /// The outputs from the transaction with id `txid` that have been spent.
-    pub fn outspend(&self, outpoint: OutPoint) -> Option<&HashSet<Txid>> {
-        self.spends.get(&outpoint)
+    /// The transactions spending from this output.
+    ///
+    /// `TxGraph` allows conflicting transactions within the graph. Obviously the transactions in
+    /// the returned will never be in the same blockchain.
+    ///
+    /// Note this returns a [`Cow`] because of an implementation detail.
+    ///
+    /// [`Cow`]: std::borrow::Cow
+    // FIXME: this Cow could be gotten rid of if we could do HashSet::new in a const fn
+    pub fn outspends(&self, outpoint: OutPoint) -> Cow<HashSet<Txid>> {
+        self.spends
+            .get(&outpoint)
+            .map(|outspends| Cow::Borrowed(outspends))
+            .unwrap_or(Cow::Owned(HashSet::default()))
     }
 
-    /// Each item contains the output index and the txid that spent that output.
-    pub fn outspends(
+    /// The transactions spending from `txid`.
+    pub fn tx_outspends(
         &self,
         txid: Txid,
     ) -> impl DoubleEndedIterator<Item = (u32, &HashSet<Txid>)> + '_ {
@@ -80,28 +91,24 @@ impl TxGraph {
     }
 
     /// Add transaction, returns true when [`TxGraph`] is updated.
-    pub fn insert_tx(&mut self, tx: &Transaction) -> bool {
+    pub fn insert_tx(&mut self, tx: Transaction) -> bool {
         let txid = tx.txid();
 
         if let Some(TxNode::Whole(old_tx)) = self.txs.insert(txid, TxNode::Whole(tx.clone())) {
-            debug_assert_eq!(&old_tx, tx);
+            debug_assert_eq!(old_tx, tx);
             return false;
         }
 
         tx.input
-            .iter()
+            .into_iter()
             .map(|txin| txin.previous_output)
+            // coinbase spends are not to be counted
+            .filter(|outpoint| !outpoint.is_null())
             .for_each(|outpoint| {
                 self.spends.entry(outpoint).or_default().insert(txid);
             });
 
-        (0..tx.output.len() as u32)
-            .map(|vout| OutPoint { txid, vout })
-            .for_each(|outpoint| {
-                self.spends.entry(outpoint).or_default();
-            });
-
-        return true;
+        true
     }
 
     /// Inserts an auxiliary txout. Returns true if txout is newly added.
@@ -192,10 +199,9 @@ impl TxGraph {
 
     /// Extends this graph with another so that `self` becomes the union of the two sets of
     /// transactions.
-    pub fn apply_update(&mut self, update: &TxGraph) -> Additions {
-        let additions = self.determine_additions(update);
-        self.apply_additions(&additions);
-        additions
+    pub fn apply_update(&mut self, update: TxGraph) {
+        let additions = self.determine_additions(&update);
+        self.apply_additions(additions);
     }
 
     pub fn determine_additions(&self, update: &TxGraph) -> Additions {
@@ -230,8 +236,8 @@ impl TxGraph {
         additions
     }
 
-    pub fn apply_additions(&mut self, additions: &Additions) {
-        for tx in &additions.tx {
+    pub fn apply_additions(&mut self, additions: Additions) {
+        for tx in additions.tx {
             self.insert_tx(tx);
         }
 

@@ -481,7 +481,7 @@ fn invalidation_but_no_connection() {
 fn checkpoint_limit_is_respected() {
     let mut chain1 = SparseChain::default();
     chain1
-        .apply_update(&chain!(
+        .apply_update(chain!(
             [1, h!("A")],
             [2, h!("B")],
             [3, h!("C")],
@@ -502,10 +502,10 @@ fn checkpoint_limit_is_respected() {
         .unwrap();
     assert_eq!(chain1.checkpoints().len(), 4);
 
-    assert_eq!(
-        chain1.apply_update(&chain!([6, h!("F")], [7, h!("G")])),
-        Ok(changeset!(checkpoints: [(7, Some(h!("G")))]))
-    );
+    let changeset = chain1.determine_changeset(&chain!([6, h!("F")], [7, h!("G")]));
+    assert_eq!(changeset, Ok(changeset!(checkpoints: [(7, Some(h!("G")))])));
+
+    chain1.apply_changeset(changeset.unwrap());
 
     assert_eq!(chain1.checkpoints().len(), 4);
 }
