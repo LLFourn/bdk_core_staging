@@ -63,8 +63,27 @@ impl<I: ChainIndex> ChainGraph<I> {
         &self,
         update: &Self,
     ) -> Result<ChangeSet<I>, sparse_chain::UpdateFailure<I>> {
+        let mut chain_changeset = self.chain.determine_changeset(&update.chain)?;
+
+        let conflicting_original_txids = update
+            .chain
+            .iter_txids()
+            // skip txids that do not have full txs, as we can't check for conflicts for them
+            .filter_map(|&(_, txid)| update.graph.tx(txid))
+            // choose original txs that conflicts with the update
+            .flat_map(|update_tx| {
+                self.graph
+                    .conflicting_txids(update_tx)
+                    .map(|(_, txid)| txid)
+                    .filter(|&txid| self.chain.tx_index(txid).is_some())
+            });
+
+        for txid in conflicting_original_txids {
+            chain_changeset.txids.insert(txid, None);
+        }
+
         Ok(ChangeSet::<I> {
-            chain: self.chain.determine_changeset(&update.chain)?,
+            chain: chain_changeset,
             graph: self.graph.determine_additions(&update.graph),
         })
     }

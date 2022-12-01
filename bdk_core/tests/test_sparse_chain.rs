@@ -424,8 +424,8 @@ fn transitive_invalidation_applies_to_checkpoints_higher_than_invalidation() {
             txids: [
                 (h!("b1"), Some(TxHeight::Confirmed(4))),
                 (h!("b2"), Some(TxHeight::Confirmed(3))),
-                (h!("d"), None),
-                (h!("e"), None)
+                (h!("d"), Some(TxHeight::Unconfirmed)),
+                (h!("e"), Some(TxHeight::Unconfirmed))
             ]
         })
     );
