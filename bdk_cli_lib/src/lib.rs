@@ -1,4 +1,5 @@
-pub use anyhow::{anyhow, Context, Result};
+pub extern crate anyhow;
+use anyhow::{anyhow, Result};
 use bdk_core::{
     bitcoin::{
         secp256k1::Secp256k1,
@@ -10,7 +11,10 @@ use bdk_core::{
 };
 use bdk_file_store::KeychainStore;
 use bdk_keychain::{
-    miniscript::{descriptor::DescriptorSecretKey, DescriptorPublicKey},
+    miniscript::{
+        descriptor::{DescriptorSecretKey, KeyMap},
+        Descriptor, DescriptorPublicKey,
+    },
     DescriptorExt, KeychainChangeSet, KeychainTracker,
 };
 pub use clap::{Parser, Subcommand};
@@ -22,15 +26,14 @@ use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::D
 pub struct Args {
     #[clap(env = "DESCRIPTOR")]
     pub descriptor: String,
-
-    #[clap(env = "BDK_DB_DIR", default_value = ".bdk_example_db")]
-    pub db_dir: PathBuf,
-
     #[clap(env = "CHANGE_DESCRIPTOR")]
     pub change_descriptor: Option<String>,
 
-    #[clap(env = "BITCOIN_NETWORK", default_value = "signet", parse(try_from_str))]
+    #[clap(env = "BITCOIN_NETWORK", long, default_value = "signet")]
     pub network: Network,
+
+    #[clap(env = "BDK_DB_DIR", long, default_value = ".bdk_example_db")]
+    pub db_dir: PathBuf,
 
     #[clap(subcommand)]
     pub command: Commands,
@@ -38,29 +41,42 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    Scan,
+    /// Scans all the script pubkeys in the wallet looking for matching outputs.
+    Scan {
+        /// When a gap this large has been found for a keychain it will stop.
+        #[clap(long, default_value = "5")]
+        stop_gap: usize,
+    },
+    /// Sync particular addresses
     Sync {
+        /// Sync all the unused addresses
         #[clap(long)]
         unused: bool,
+        /// Sync the script addresses that have unspent outputs
         #[clap(long)]
         unspent: bool,
+        /// Sync every address that you have derived
         #[clap(long)]
         all: bool,
     },
+    /// Address generation and inspection
     Address {
         #[clap(subcommand)]
         addr_cmd: AddressCmd,
     },
+    /// Get the wallet balance
     Balance,
-    Txo {
+    /// TxOut related commands
+    #[clap(name = "txout")]
+    TxOut {
         #[clap(subcommand)]
-        utxo_cmd: TxoCmd,
+        txout_cmd: TxOutCmd,
     },
+    /// Send coins to an address
     Send {
         value: u64,
-        #[clap(parse(try_from_str))]
         address: Address,
-        #[clap(parse(try_from_str), short, default_value = "largest-first")]
+        #[clap(short, default_value = "largest-first")]
         coin_select: CoinSelectionAlgo,
     },
 }
@@ -115,8 +131,11 @@ impl core::fmt::Display for CoinSelectionAlgo {
 
 #[derive(Subcommand, Debug)]
 pub enum AddressCmd {
+    /// Get the next unused address
     Next,
+    /// Get a new address regardless if the existing ones haven't been used
     New,
+    /// List all addresses
     List {
         #[clap(long)]
         change: bool,
@@ -125,7 +144,7 @@ pub enum AddressCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum TxoCmd {
+pub enum TxOutCmd {
     List,
 }
 
@@ -155,25 +174,21 @@ pub struct AddrsOutput {
     used: bool,
 }
 
-pub fn print_address_details<K, I>(
-    keychain_tracker: &mut KeychainTracker<K, I>,
-    external_keychain: &K,
-    change_keychain: &K,
-    db: &mut KeychainStore<K, I>,
+pub fn run_address_cmd<I>(
+    keychain_tracker: &mut KeychainTracker<Keychain, I>,
+    db: &mut KeychainStore<Keychain, I>,
     addr_cmd: AddressCmd,
     network: Network,
 ) -> Result<()>
 where
-    K: Ord + Clone + core::fmt::Debug,
     I: sparse_chain::ChainIndex,
-    KeychainChangeSet<K, I>: serde::Serialize + serde::de::DeserializeOwned,
+    KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
     let txout_index = &mut keychain_tracker.txout_index;
 
-    //let ((primary_keychain, _), (secondary_keychain, _)) = (keychains.next().expect("keychain expected"), keychains.last().expect("keychain expected"));
     let new_address = match addr_cmd {
-        AddressCmd::Next => Some(txout_index.derive_next_unused(external_keychain)),
-        AddressCmd::New => Some(txout_index.derive_new(external_keychain)),
+        AddressCmd::Next => Some(txout_index.derive_next_unused(&Keychain::External)),
+        AddressCmd::New => Some(txout_index.derive_new(&Keychain::External)),
         _ => None,
     };
 
@@ -200,16 +215,16 @@ where
         }
         AddressCmd::List { change } => {
             let target_keychain = match change {
-                true => change_keychain,
-                false => external_keychain,
+                true => Keychain::Internal,
+                false => Keychain::External,
             };
-            for (index, spk) in txout_index.iter_spks(target_keychain) {
+            for (index, spk) in txout_index.script_pubkeys_by_keychain(&target_keychain) {
                 let address = Address::from_script(&spk, network)
                     .expect("should always be able to derive address");
                 println!(
                     "{} used:{}",
                     address,
-                    txout_index.is_used(&(target_keychain.clone(), index))
+                    txout_index.is_used(&(target_keychain, index))
                 );
             }
             Ok(())
@@ -217,9 +232,7 @@ where
     }
 }
 
-pub fn print_balance<K: Debug + Clone + Ord, I: ChainIndex>(
-    keychain_tracker: &KeychainTracker<K, I>,
-) {
+pub fn run_balance_cmd<I: ChainIndex>(keychain_tracker: &KeychainTracker<Keychain, I>) {
     let (confirmed, unconfirmed) =
         keychain_tracker
             .utxos()
@@ -235,27 +248,36 @@ pub fn print_balance<K: Debug + Clone + Ord, I: ChainIndex>(
     println!("unconfirmed: {}", unconfirmed);
 }
 
-pub fn print_txout_list<K: Debug + Clone + Ord, I: ChainIndex>(
+pub fn run_txo_cmd<K: Debug + Clone + Ord, I: ChainIndex>(
+    txout_cmd: TxOutCmd,
     keychain_tracker: &KeychainTracker<K, I>,
     network: Network,
 ) {
-    for (spk_index, full_txout) in keychain_tracker.txouts() {
-        let address = Address::from_script(&full_txout.txout.script_pubkey, network).unwrap();
+    match txout_cmd {
+        TxOutCmd::List => {
+            for (spk_index, full_txout) in keychain_tracker.txouts() {
+                let address =
+                    Address::from_script(&full_txout.txout.script_pubkey, network).unwrap();
 
-        println!(
-            "{:?} {} {} {} spent:{:?}",
-            spk_index, full_txout.txout.value, full_txout.outpoint, address, full_txout.spent_by
-        )
+                println!(
+                    "{:?} {} {} {} spent:{:?}",
+                    spk_index,
+                    full_txout.txout.value,
+                    full_txout.outpoint,
+                    address,
+                    full_txout.spent_by
+                )
+            }
+        }
     }
 }
 
-pub fn create_tx<K: Debug + Clone + Ord, I: ChainIndex>(
+pub fn create_tx<I: ChainIndex>(
     value: u64,
     address: Address,
     coin_select: CoinSelectionAlgo,
-    keychain_tracker: &mut KeychainTracker<K, I>,
+    keychain_tracker: &mut KeychainTracker<Keychain, I>,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
-    change_keychain: &K,
 ) -> Result<Transaction> {
     use bdk_keychain::miniscript::plan::*;
     let assets = Assets {
@@ -297,15 +319,28 @@ pub fn create_tx<K: Debug + Clone + Ord, I: ChainIndex>(
         script_pubkey: address.script_pubkey(),
     }];
 
+    let internal_keychain = if keychain_tracker
+        .txout_index
+        .keychains()
+        .get(&Keychain::Internal)
+        .is_some()
+    {
+        Keychain::Internal
+    } else {
+        Keychain::External
+    };
+
     let (change_index, change_script) = {
         let (index, script) = keychain_tracker
             .txout_index
-            .derive_next_unused(&change_keychain);
+            .derive_next_unused(&internal_keychain);
         (index, script.clone())
     };
     let change_plan = keychain_tracker
         .txout_index
-        .descriptor(&change_keychain)
+        .keychains()
+        .get(&internal_keychain)
+        .expect("must exist")
         .at_derivation_index(change_index)
         .plan_satisfaction(&assets)
         .expect("failed to obtain change plan");
@@ -319,7 +354,9 @@ pub fn create_tx<K: Debug + Clone + Ord, I: ChainIndex>(
         target_feerate: 0.5,
         min_drain_value: keychain_tracker
             .txout_index
-            .descriptor(&change_keychain)
+            .keychains()
+            .get(&internal_keychain)
+            .expect("must exist")
             .dust_value(),
         ..CoinSelectorOpt::fund_outputs(
             &outputs,
@@ -434,74 +471,83 @@ pub fn create_tx<K: Debug + Clone + Ord, I: ChainIndex>(
 }
 
 pub trait Broadcast {
-    fn broadcast(&self, tx: &Transaction) -> Result<()>;
+    type Error: std::error::Error + Send + Sync + 'static;
+    fn broadcast(&self, tx: &Transaction) -> Result<(), Self::Error>;
 }
 
-pub fn handle_commands<K, I>(
+pub fn handle_commands<I>(
     command: Commands,
     client: impl Broadcast,
-    tracker: &mut KeychainTracker<K, I>,
-    store: &mut KeychainStore<K, I>,
+    tracker: &mut KeychainTracker<Keychain, I>,
+    store: &mut KeychainStore<Keychain, I>,
     network: Network,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
-    external_keychain: &K,
-    change_keychain: &K,
 ) -> Result<()>
 where
-    K: Ord + Clone + core::fmt::Debug,
     I: ChainIndex,
-    KeychainChangeSet<K, I>: serde::Serialize + serde::de::DeserializeOwned,
+    KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
     match command {
         // TODO: Make these functions return stuffs
         Commands::Address { addr_cmd } => {
-            print_address_details(
-                tracker,
-                external_keychain,
-                change_keychain,
-                store,
-                addr_cmd,
-                network,
-            )?;
-            return Ok(());
+            run_address_cmd(tracker, store, addr_cmd, network)?;
         }
         Commands::Balance => {
-            print_balance(&tracker);
-            return Ok(());
+            run_balance_cmd(&tracker);
         }
-        Commands::Txo { utxo_cmd } => match utxo_cmd {
-            TxoCmd::List => {
-                print_txout_list(&tracker, network);
-                return Ok(());
-            }
-        },
+        Commands::TxOut { txout_cmd } => {
+            run_txo_cmd(txout_cmd, tracker, network);
+        }
         Commands::Send {
             value,
             address,
             coin_select,
         } => {
-            let change_keychain = tracker
-                .txout_index
-                .keychains(..)
-                .last()
-                .expect("keychain expected")
-                .0
-                .clone();
-            let transaction = create_tx(
-                value,
-                address,
-                coin_select,
-                tracker,
-                &keymap,
-                &change_keychain,
-            )?;
+            let transaction = create_tx(value, address, coin_select, tracker, &keymap)?;
             client.broadcast(&transaction)?;
             println!("Broadcasted Tx : {}", transaction.txid());
-            return Ok(());
         }
-        _ => {
-            // Sync and Scan should be handled outside of this function;
-            Ok(())
+        Commands::Sync { .. } | Commands::Scan { .. } => {
+            todo!("example code is meant to handle this!")
         }
     }
+
+    Ok(())
+}
+
+pub fn init<I>() -> anyhow::Result<(
+    Args,
+    KeyMap,
+    KeychainTracker<Keychain, I>,
+    KeychainStore<Keychain, I>,
+)>
+where
+    I: sparse_chain::ChainIndex,
+    KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
+{
+    let args = Args::parse();
+    let secp = Secp256k1::default();
+    let (descriptor, mut keymap) =
+        Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
+
+    let mut keychain_tracker = KeychainTracker::default();
+    keychain_tracker
+        .txout_index
+        .add_keychain(Keychain::External, descriptor);
+
+    let internal = args
+        .change_descriptor
+        .map(|descriptor| Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &descriptor))
+        .transpose()?;
+
+    if let Some((internal_descriptor, internal_keymap)) = internal {
+        keymap.extend(internal_keymap);
+        keychain_tracker
+            .txout_index
+            .add_keychain(Keychain::Internal, internal_descriptor);
+    };
+
+    let db = KeychainStore::<Keychain, I>::load(args.db_dir.as_path(), &mut keychain_tracker)?;
+
+    Ok((Args::parse(), keymap, keychain_tracker, db))
 }

@@ -5,11 +5,8 @@ use bdk_core::{
     sparse_chain::{InsertCheckpointErr, InsertTxErr},
     BlockId, ConfirmationTime,
 };
-use std::collections::BTreeMap;
-
 use esplora_client::{BlockingClient, Builder};
-
-use bdk_cli::Result;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -17,43 +14,72 @@ pub struct Client {
     pub client: BlockingClient,
 }
 
+#[derive(Debug)]
+pub enum UpdateError {
+    Client(esplora_client::Error),
+    Reorg,
+}
+
+impl core::fmt::Display for UpdateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UpdateError::Client(e) => write!(f, "{}", e),
+            UpdateError::Reorg => write!(f, "Reorg occurred while the sync was in progress",),
+        }
+    }
+}
+
+impl From<esplora_client::Error> for UpdateError {
+    fn from(value: esplora_client::Error) -> Self {
+        UpdateError::Client(value)
+    }
+}
+
+impl std::error::Error for UpdateError {}
+
 impl Client {
-    /// TODO
-    pub fn new(base_url: &str, parallel_requests: u8) -> Result<Self> {
+    /// Creates a new client that makes requests to `base_url`
+    pub fn new(base_url: &str, parallel_requests: u8) -> Result<Self, esplora_client::Error> {
         Ok(Self {
             parallel_requests,
             client: Builder::new(base_url).build_blocking()?,
         })
     }
 
+    /// Scans an iterator of script pubkeys for transactions spending to or from them.
+    ///
+    /// Stops after a gap of `stop_gap` script pubkeys with no associated transactions.
     pub fn spk_scan(
         &self,
         spks: impl Iterator<Item = Script>,
-        existing_chain: BTreeMap<u32, BlockHash>,
-    ) -> Result<ChainGraph<ConfirmationTime>> {
+        local_chain: &BTreeMap<u32, BlockHash>,
+        stop_gap: Option<usize>,
+    ) -> Result<ChainGraph<ConfirmationTime>, UpdateError> {
         let mut dummy_keychains = BTreeMap::new();
         dummy_keychains.insert((), spks.enumerate().map(|(i, spk)| (i as u32, spk)));
 
-        let wallet_scan = self.wallet_scan(dummy_keychains, None, existing_chain)?;
+        let wallet_scan = self.wallet_scan(dummy_keychains, local_chain, stop_gap)?;
 
         Ok(wallet_scan.update)
     }
 
-    /// Create a new checkpoint with transactions spending from or to the scriptpubkeys in
-    /// `scripts`.
+    /// Scans several iterators of script pubkeys for transactions spending to or from them.
+    ///
+    /// The scan for each keychain stops after a gap of `stop_gap` script pubkeys with no associated
+    /// transactions.
     pub fn wallet_scan<K: Ord + Clone, I>(
         &self,
         keychains: BTreeMap<K, I>,
+        local_chain: &BTreeMap<u32, BlockHash>,
         stop_gap: Option<usize>,
-        existing_chain: BTreeMap<u32, BlockHash>,
-    ) -> Result<KeychainScan<K, ConfirmationTime>>
+    ) -> Result<KeychainScan<K, ConfirmationTime>, UpdateError>
     where
         I: Iterator<Item = (u32, Script)>,
     {
         let mut wallet_scan = KeychainScan::default();
         let update = &mut wallet_scan.update;
 
-        for (&existing_height, &existing_hash) in existing_chain.iter().rev() {
+        for (&existing_height, &existing_hash) in local_chain.iter().rev() {
             let current_hash = self.client.get_block_hash(existing_height)?;
             update
                 .insert_checkpoint(BlockId {
@@ -165,7 +191,7 @@ impl Client {
         // Depending upon service providers number of recent blocks returned will vary.
         // esplora returns 10.
         // mempool.space returns 15.
-        for end_block in self
+        for block in self
             .client
             .get_recent_blocks(None)?
             .iter()
@@ -174,7 +200,9 @@ impl Client {
                 hash: esplora_block.id,
             })
         {
-            update.insert_checkpoint(end_block)?;
+            if update.insert_checkpoint(block).is_err() {
+                return Err(UpdateError::Reorg);
+            }
         }
 
         Ok(wallet_scan)
@@ -182,7 +210,8 @@ impl Client {
 }
 
 impl bdk_cli::Broadcast for Client {
-    fn broadcast(&self, tx: &Transaction) -> bdk_cli::Result<()> {
+    type Error = esplora_client::Error;
+    fn broadcast(&self, tx: &Transaction) -> Result<(), Self::Error> {
         Ok(self.client.broadcast(tx)?)
     }
 }

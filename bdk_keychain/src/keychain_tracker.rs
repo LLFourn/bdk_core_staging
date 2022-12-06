@@ -70,7 +70,9 @@ where
             .filter_map(|((keychain, derivation_index), full_txout)| {
                 Some((
                     self.txout_index
-                        .descriptor(&keychain)
+                        .keychains()
+                        .get(keychain)
+                        .expect("must exist since we have a utxo for it")
                         .at_derivation_index(*derivation_index)
                         .plan_satisfaction(assets)?,
                     full_txout,

@@ -10,7 +10,7 @@ bdk_core = { path = "../bdk_core", features = ["serde"]}
 bdk_keychain = { path = "../bdk_keychain" }
 bdk_file_store = { path = "../bdk_file_store"}
 # Auxiliaries
-clap = { version = "3.2.5", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1.0.37"
