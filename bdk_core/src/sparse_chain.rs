@@ -162,6 +162,8 @@ impl<I: ChainIndex> SparseChain<I> {
         }
     }
 
+    /// Determine the changeset when `update` is applied to self. Invalidated checkpoints result in
+    /// invalidated transactions becoming "unconfirmed".
     pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
         let agreement_point = update
             .checkpoints
@@ -172,8 +174,8 @@ impl<I: ChainIndex> SparseChain<I> {
 
         let last_update_cp = update.checkpoints.iter().last().map(|(&h, _)| h);
 
-        // checkpoints of this height and after are to be invalidated
-        let invalid_from = if last_update_cp.is_none() || last_update_cp == agreement_point {
+        // the lower bound of the invalidation range
+        let invalid_lb = if last_update_cp.is_none() || last_update_cp == agreement_point {
             // if agreement point is the last update checkpoint, or there is no update checkpoints,
             // no invalidation is required
             u32::MAX
@@ -182,24 +184,20 @@ impl<I: ChainIndex> SparseChain<I> {
         };
 
         // the first checkpoint of the sparsechain to invalidate (if any)
-        let first_invalid = self
-            .checkpoints
-            .range(invalid_from..)
-            .next()
-            .map(|(&h, _)| h);
+        let invalid_from = self.checkpoints.range(invalid_lb..).next().map(|(&h, _)| h);
 
         // the first checkpoint to invalidate (if any) should be represented in the update
-        if let Some(first_invalid) = first_invalid {
+        if let Some(first_invalid) = invalid_from {
             if !update.checkpoints.contains_key(&first_invalid) {
                 return Err(UpdateFailure::NotConnected(first_invalid));
             }
         }
 
         for (&txid, update_index) in &update.txid_to_index {
-            // ensure all currently confirmed txs are still at the same height (unless, if they are
-            // to be invalidated, or originally unconfirmed)
+            // ensure all currently confirmed txs are still at the same height (unless they are
+            // within invalidation range, or to be confirmed)
             if let Some(original_index) = &self.txid_to_index.get(&txid) {
-                if original_index.height() < TxHeight::Confirmed(invalid_from)
+                if original_index.height() < TxHeight::Confirmed(invalid_lb)
                     && original_index != &update_index
                 {
                     return Err(UpdateFailure::InconsistentTx {
@@ -211,59 +209,51 @@ impl<I: ChainIndex> SparseChain<I> {
             }
         }
 
-        // create initial change-set, based on checkpoints and txids that are to be invalidated
-        let mut change_set = ChangeSet::<I> {
-            checkpoints: self
-                .checkpoints
-                .range(invalid_from..)
-                .map(|(height, _)| (*height, None))
-                .collect(),
-            txids: self
-                .ordered_txids
-                // avoid invalidating mempool txids for initial change-set
-                .range(
-                    &(
-                        I::min_ord_of_height(TxHeight::Confirmed(invalid_from)),
-                        Txid::all_zeros(),
-                    )
-                        ..&(
-                            I::min_ord_of_height(TxHeight::Unconfirmed),
-                            Txid::all_zeros(),
-                        ),
-                )
-                .map(|(_, txid)| (*txid, None))
-                .collect(),
-        };
+        // create initial change-set, based on checkpoints and txids that are to be "invalidated"
+        let mut changeset = invalid_from
+            .map(|invalid_from| ChangeSet::<I> {
+                checkpoints: self
+                    .checkpoints
+                    .range(invalid_from..)
+                    .map(|(height, _)| (*height, None))
+                    .collect(),
+                // invalidated transactions become unconfirmed
+                txids: self
+                    .range_txids_by_height(TxHeight::Confirmed(invalid_from)..)
+                    .map(|(_, txid)| (*txid, Some(I::max_ord_of_height(TxHeight::Unconfirmed))))
+                    .collect(),
+            })
+            .unwrap_or_default();
 
         for (&height, &new_hash) in &update.checkpoints {
             let original_hash = self.checkpoints.get(&height).cloned();
 
-            let update_hash = *change_set
+            let update_hash = *changeset
                 .checkpoints
                 .entry(height)
                 .and_modify(|change| *change = Some(new_hash))
                 .or_insert_with(|| Some(new_hash));
 
             if original_hash == update_hash {
-                change_set.checkpoints.remove(&height);
+                changeset.checkpoints.remove(&height);
             }
         }
 
         for (txid, new_index) in &update.txid_to_index {
             let original_index = self.txid_to_index.get(txid).cloned();
 
-            let update_index = change_set
+            let update_index = changeset
                 .txids
                 .entry(*txid)
                 .and_modify(|change| *change = Some(new_index.clone()))
                 .or_insert_with(|| Some(new_index.clone()));
 
             if original_index == *update_index {
-                change_set.txids.remove(txid);
+                changeset.txids.remove(txid);
             }
         }
 
-        Result::Ok(change_set)
+        Ok(changeset)
     }
 
     /// Tries to update `self` with another chain that connects to it.

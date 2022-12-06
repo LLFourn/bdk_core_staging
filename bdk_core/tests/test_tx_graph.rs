@@ -1,7 +1,9 @@
 #[macro_use]
 mod common;
-use bdk_core::collections::*;
-use bdk_core::tx_graph::{Additions, TxGraph};
+use bdk_core::{
+    collections::*,
+    tx_graph::{Additions, TxGraph},
+};
 use bitcoin::{hashes::Hash, OutPoint, PackedLockTime, Script, Transaction, TxIn, TxOut, Txid};
 use core::iter;
 
