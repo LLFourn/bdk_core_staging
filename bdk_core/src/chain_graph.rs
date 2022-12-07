@@ -72,7 +72,7 @@ impl<I: ChainIndex> ChainGraph<I> {
             // skip txids that already exist in the original chain (for efficiency)
             .filter(|&(_, txid)| self.chain.tx_index(*txid).is_none())
             // skip txids that do not have full txs, as we can't check for conflicts for them
-            .filter_map(|&(_, txid)| update.graph.tx(txid))
+            .filter_map(|&(_, txid)| update.graph.tx(txid).or_else(|| self.graph.tx(txid)))
             // choose original txs that conflicts with the update
             .flat_map(|update_tx| {
                 self.graph
