@@ -63,22 +63,33 @@ impl<I: ChainIndex> ChainGraph<I> {
         &self,
         update: &Self,
     ) -> Result<ChangeSet<I>, sparse_chain::UpdateFailure<I>> {
-        let mut chain_changeset = self.chain.determine_changeset(&update.chain)?;
+        let (mut chain_changeset, invalid_from) = self.chain.determine_changeset(&update.chain)?;
+        let invalid_from: TxHeight = invalid_from.into();
 
         let conflicting_original_txids = update
             .chain
             .iter_txids()
+            // skip txids that already exist in the original chain (for efficiency)
+            .filter(|&(_, txid)| self.chain.tx_index(*txid).is_none())
             // skip txids that do not have full txs, as we can't check for conflicts for them
             .filter_map(|&(_, txid)| update.graph.tx(txid))
             // choose original txs that conflicts with the update
             .flat_map(|update_tx| {
                 self.graph
                     .conflicting_txids(update_tx)
-                    .map(|(_, txid)| txid)
-                    .filter(|&txid| self.chain.tx_index(txid).is_some())
+                    .filter_map(|(_, txid)| self.chain.tx_index(txid).map(|i| (txid, i)))
             });
 
-        for txid in conflicting_original_txids {
+        for (txid, original_index) in conflicting_original_txids {
+            // if the evicted txid lies before "invalid_from", we screwed up
+            if original_index.height() < invalid_from {
+                return Err(sparse_chain::UpdateFailure::<I>::InconsistentTx {
+                    inconsistent_txid: txid,
+                    original_index: original_index.clone(),
+                    update_index: None,
+                });
+            }
+
             chain_changeset.txids.insert(txid, None);
         }
 
