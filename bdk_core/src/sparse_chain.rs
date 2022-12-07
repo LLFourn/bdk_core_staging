@@ -219,7 +219,7 @@ impl<I: ChainIndex> SparseChain<I> {
                     .collect(),
                 // invalidated transactions become unconfirmed
                 txids: self
-                    .range_txids_by_height(TxHeight::Confirmed(invalid_from)..)
+                    .range_txids_by_height(TxHeight::Confirmed(invalid_from)..TxHeight::Unconfirmed)
                     .map(|(_, txid)| (*txid, Some(I::max_ord_of_height(TxHeight::Unconfirmed))))
                     .collect(),
             })

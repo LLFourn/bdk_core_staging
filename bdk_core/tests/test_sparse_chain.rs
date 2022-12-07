@@ -719,3 +719,32 @@ fn range_txids() {
         );
     }
 }
+
+#[test]
+fn invalidated_txs_move_to_unconfirmed() {
+    let chain1 = chain! {
+        checkpoints: [[0, h!("A")], [1, h!("B")], [2, h!("C")]],
+        txids: [
+            (h!("a"), TxHeight::Confirmed(0)),
+            (h!("b"), TxHeight::Confirmed(1)),
+            (h!("c"), TxHeight::Confirmed(2)),
+            (h!("d"), TxHeight::Unconfirmed)
+        ]
+    };
+
+    let chain2 = chain!([0, h!("A")], [1, h!("B'")]);
+
+    assert_eq!(
+        chain1.determine_changeset(&chain2),
+        Ok(changeset! {
+            checkpoints: [
+                (1, Some(h!("B'"))),
+                (2, None)
+            ],
+            txids: [
+                (h!("b"), Some(TxHeight::Unconfirmed)),
+                (h!("c"), Some(TxHeight::Unconfirmed))
+            ]
+        })
+    );
+}
