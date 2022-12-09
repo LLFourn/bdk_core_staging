@@ -68,7 +68,7 @@ impl<K, I> From<chain_graph::ChangeSet<I>> for KeychainChangeSet<K, I> {
 
 impl<K, I> AsRef<TxGraph> for KeychainScan<K, I> {
     fn as_ref(&self) -> &TxGraph {
-        &self.update.graph
+        self.update.graph()
     }
 }
 
