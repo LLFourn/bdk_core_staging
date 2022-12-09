@@ -19,8 +19,8 @@ use core::fmt::Debug;
 /// from the graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainGraph<I = TxHeight> {
-    pub chain: SparseChain<I>,
-    pub graph: TxGraph,
+    chain: SparseChain<I>,
+    graph: TxGraph,
 }
 
 impl<I> Default for ChainGraph<I> {
@@ -32,23 +32,40 @@ impl<I> Default for ChainGraph<I> {
     }
 }
 
+impl<I> ChainGraph<I> {
+    pub fn chain(&self) -> &sparse_chain::SparseChain<I> {
+        &self.chain
+    }
+
+    pub fn graph(&self) -> &TxGraph {
+        &self.graph
+    }
+}
+
 impl<I: ChainIndex> ChainGraph<I> {
+    pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
+        self.chain.set_checkpoint_limit(limit)
+    }
+
     pub fn insert_tx(
         &mut self,
         tx: Transaction,
-        index: I,
-    ) -> Result<bool, sparse_chain::InsertTxErr> {
-        let changed = self.chain.insert_tx(tx.txid(), index)?;
-        self.graph.insert_tx(tx);
-        Ok(changed)
+        index: Option<I>,
+    ) -> Result<InsertOk, sparse_chain::InsertTxErr> {
+        let chain_changed = match index {
+            Some(index) => self.chain.insert_tx(tx.txid(), index)?,
+            None => false,
+        };
+        let graph_changed = self.graph.insert_tx(tx);
+
+        Ok(InsertOk {
+            chain: chain_changed,
+            graph: graph_changed,
+        })
     }
 
     pub fn insert_output(&mut self, outpoint: OutPoint, txout: TxOut) -> bool {
         self.graph.insert_txout(outpoint, txout)
-    }
-
-    pub fn insert_txid(&mut self, txid: Txid, index: I) -> Result<bool, sparse_chain::InsertTxErr> {
-        self.chain.insert_tx(txid, index)
     }
 
     pub fn insert_checkpoint(
@@ -165,4 +182,9 @@ impl<I> ForEachTxout for ChangeSet<I> {
     fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
         self.graph.for_each_txout(f)
     }
+}
+
+pub struct InsertOk<R = bool> {
+    pub chain: R,
+    pub graph: R,
 }

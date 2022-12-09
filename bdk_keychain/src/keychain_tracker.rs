@@ -85,15 +85,11 @@ where
     }
 
     pub fn graph(&self) -> &TxGraph {
-        &self.chain_graph().graph
+        &self.chain_graph().graph()
     }
 
     pub fn chain(&self) -> &SparseChain<I> {
-        &self.chain_graph().chain
-    }
-
-    pub fn chain_mut(&mut self) -> &mut SparseChain<I> {
-        &mut self.chain_graph.chain
+        &self.chain_graph().chain()
     }
 }
 
