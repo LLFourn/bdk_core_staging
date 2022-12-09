@@ -163,7 +163,7 @@ impl Client {
                             },
                             false => ConfirmationTime::Unconfirmed,
                         };
-                        if let Err(err) = update.insert_tx(tx.to_tx(), confirmation_time) {
+                        if let Err(err) = update.insert_tx(tx.to_tx(), Some(confirmation_time)) {
                             match err {
                                 InsertTxErr::TxTooHigh => {
                                     /* Don't care about new transactions confirmed while syncing */
