@@ -76,38 +76,52 @@ impl<I: ChainIndex> ChainGraph<I> {
     }
 
     /// Calculates the difference between self and `update` in the form of a [`ChangeSet`].
-    pub fn determine_changeset(
-        &self,
-        update: &Self,
-    ) -> Result<ChangeSet<I>, sparse_chain::UpdateFailure<I>> {
-        let (mut chain_changeset, invalid_from) = self.chain.determine_changeset(&update.chain)?;
-        let invalid_from: TxHeight = invalid_from.into();
+    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
+        let mut chain_changeset = self
+            .chain
+            .determine_changeset(&update.chain)
+            .map_err(UpdateFailure::Chain)?;
 
         let conflicting_original_txids = update
             .chain
             .iter_txids()
             // skip txids that already exist in the original chain (for efficiency)
             .filter(|&(_, txid)| self.chain.tx_index(*txid).is_none())
-            // skip txids that do not have full txs, as we can't check for conflicts for them
-            .filter_map(|&(_, txid)| update.graph.tx(txid).or_else(|| self.graph.tx(txid)))
             // choose original txs that conflicts with the update
-            .flat_map(|update_tx| {
+            .flat_map(|(_, update_txid)| {
+                let update_tx = update.graph.tx(*update_txid).expect("must exist");
                 self.graph
                     .conflicting_txids(update_tx)
-                    .filter_map(|(_, txid)| self.chain.tx_index(txid).map(|i| (txid, i)))
+                    .filter_map(|(_, existing_txid)| {
+                        self.chain
+                            .tx_index(existing_txid)
+                            .map(|existing_index| (*update_txid, (existing_index, existing_txid)))
+                    })
             });
 
-        for (txid, original_index) in conflicting_original_txids {
-            // if the evicted txid lies before "invalid_from", we screwed up
-            if original_index.height() < invalid_from {
-                return Err(sparse_chain::UpdateFailure::<I>::InconsistentTx {
-                    inconsistent_txid: txid,
-                    original_index: original_index.clone(),
-                    update_index: None,
-                });
+        for (update_txid, (existing_index, existing_txid)) in conflicting_original_txids {
+            if chain_changeset.txids.get(&existing_txid) == Some(&None) {
+                // We're already deleting this transaction anyway so can ignore conflicts
+                continue;
             }
 
-            chain_changeset.txids.insert(txid, None);
+            if existing_index.height() == TxHeight::Unconfirmed {
+                // The new tx conflicts with an unconfirmed tx -- let's delete the old one.
+                chain_changeset.txids.insert(existing_txid, None);
+            } else {
+                // It conflicts with a confirmed tx which means the update is bogus
+                return Err(UpdateFailure::<I>::Conflict {
+                    already_confirmed_tx: (existing_index.clone(), existing_txid),
+                    update_tx: (
+                        update
+                            .chain
+                            .tx_index(update_txid)
+                            .expect("must exist")
+                            .clone(),
+                        update_txid,
+                    ),
+                });
+            }
         }
 
         Ok(ChangeSet::<I> {
@@ -127,7 +141,7 @@ impl<I: ChainIndex> ChainGraph<I> {
     ///
     /// [`apply_changeset`]: Self::apply_changeset
     /// [`determine_changeset`]: Self::determine_changeset
-    pub fn apply_update(&mut self, update: Self) -> Result<(), sparse_chain::UpdateFailure<I>> {
+    pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<I>> {
         let changeset = self.determine_changeset(&update)?;
         self.apply_changeset(changeset);
         Ok(())
@@ -188,3 +202,31 @@ pub struct InsertOk<R = bool> {
     pub chain: R,
     pub graph: R,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateFailure<I> {
+    /// The update chain was inconsistent with the existing chain
+    Chain(sparse_chain::UpdateFailure<I>),
+    /// A transaction in the update spent the same input as an already confirmed transaction.
+    Conflict {
+        already_confirmed_tx: (I, Txid),
+        update_tx: (I, Txid),
+    },
+}
+
+impl<I: core::fmt::Debug> core::fmt::Display for UpdateFailure<I> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            UpdateFailure::Chain(chain_failure) => write!(f, "{}", chain_failure),
+            UpdateFailure::Conflict {
+                already_confirmed_tx,
+                update_tx: new_tx,
+            } => {
+                write!(f, "new transaction {} at height {:?} conflicts with already confirmed transaction {} at height {:?}", new_tx.1, new_tx.0, already_confirmed_tx.1, already_confirmed_tx.0)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl<I: core::fmt::Debug> std::error::Error for UpdateFailure<I> {}

@@ -2,7 +2,7 @@
 mod common;
 
 use bdk_core::{
-    chain_graph::{ChainGraph, ChangeSet},
+    chain_graph::{ChainGraph, ChangeSet, UpdateFailure},
     sparse_chain,
     tx_graph::Additions,
     BlockId, TxHeight,
@@ -152,10 +152,9 @@ fn update_evicts_conflicting_tx() {
     };
     assert_eq!(
         cg1.determine_changeset(&cg2),
-        Err(sparse_chain::UpdateFailure::InconsistentTx {
-            inconsistent_txid: tx_b.txid(),
-            original_index: TxHeight::Confirmed(1),
-            update_index: None
+        Err(UpdateFailure::Conflict {
+            already_confirmed_tx: (TxHeight::Confirmed(1), tx_b.txid()),
+            update_tx: (TxHeight::Unconfirmed, tx_b2.txid()),
         }),
         "fail if tx is evicted from valid block"
     );
