@@ -2,7 +2,7 @@
 mod common;
 
 use bdk_core::{
-    chain_graph::{ChainGraph, ChangeSet},
+    chain_graph::{ChainGraph, ChangeSet, UpdateFailure},
     sparse_chain,
     tx_graph::Additions,
     BlockId, TxHeight,
@@ -67,6 +67,10 @@ fn update_evicts_conflicting_tx() {
     let cp_b = BlockId {
         height: 1,
         hash: h!("B"),
+    };
+    let cp_b2 = BlockId {
+        height: 1,
+        hash: h!("B'"),
     };
 
     let tx_a = Transaction {
@@ -152,11 +156,50 @@ fn update_evicts_conflicting_tx() {
     };
     assert_eq!(
         cg1.determine_changeset(&cg2),
-        Err(sparse_chain::UpdateFailure::InconsistentTx {
-            inconsistent_txid: tx_b.txid(),
-            original_index: TxHeight::Confirmed(1),
-            update_index: None
+        Err(UpdateFailure::Conflict {
+            already_confirmed_tx: (TxHeight::Confirmed(1), tx_b.txid()),
+            update_tx: (TxHeight::Unconfirmed, tx_b2.txid()),
         }),
         "fail if tx is evicted from valid block"
+    );
+
+    // Given 2 blocks `{A, B}`, and an update that invalidates block B with
+    // `{A, B'}`, we expect txs that exist in `B` that conflicts with txs
+    // introduced in the update to be successfully evicted.
+    let cg1 = {
+        let mut cg = ChainGraph::default();
+        cg.insert_checkpoint(cp_a).expect("should insert cp");
+        cg.insert_checkpoint(cp_b).expect("should insert cp");
+        cg.insert_tx(tx_a.clone(), Some(TxHeight::Confirmed(0)))
+            .expect("should insert tx");
+        cg.insert_tx(tx_b.clone(), Some(TxHeight::Confirmed(1)))
+            .expect("should insert tx");
+        cg
+    };
+    let cg2 = {
+        let mut cg = ChainGraph::default();
+        cg.insert_checkpoint(cp_a).expect("should insert cp");
+        cg.insert_checkpoint(cp_b2).expect("should insert cp");
+        cg.insert_tx(tx_b2.clone(), Some(TxHeight::Unconfirmed))
+            .expect("should insert tx");
+        cg
+    };
+    assert_eq!(
+        cg1.determine_changeset(&cg2),
+        Ok(ChangeSet::<TxHeight> {
+            chain: sparse_chain::ChangeSet {
+                checkpoints: [(1, Some(h!("B'")))].into(),
+                txids: [
+                    (tx_b.txid(), None),
+                    (tx_b2.txid(), Some(TxHeight::Unconfirmed))
+                ]
+                .into()
+            },
+            graph: Additions {
+                tx: [tx_b2.clone()].into(),
+                txout: [].into(),
+            },
+        }),
+        "tx should be evicted from B",
     );
 }

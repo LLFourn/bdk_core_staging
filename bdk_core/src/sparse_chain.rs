@@ -76,7 +76,7 @@ pub enum UpdateFailure<I = TxHeight> {
     InconsistentTx {
         inconsistent_txid: Txid,
         original_index: I,
-        update_index: Option<I>,
+        update_index: I,
     },
 }
 
@@ -164,10 +164,7 @@ impl<I: ChainIndex> SparseChain<I> {
 
     /// Determine the changeset when `update` is applied to self. Invalidated checkpoints result in
     /// invalidated transactions becoming "unconfirmed".
-    pub fn determine_changeset(
-        &self,
-        update: &Self,
-    ) -> Result<(ChangeSet<I>, Option<u32>), UpdateFailure<I>> {
+    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
         let agreement_point = update
             .checkpoints
             .iter()
@@ -206,7 +203,7 @@ impl<I: ChainIndex> SparseChain<I> {
                     return Err(UpdateFailure::InconsistentTx {
                         inconsistent_txid: txid,
                         original_index: I::clone(original_index),
-                        update_index: Some(update_index.clone()),
+                        update_index: update_index.clone(),
                     });
                 }
             }
@@ -256,12 +253,12 @@ impl<I: ChainIndex> SparseChain<I> {
             }
         }
 
-        Ok((changeset, invalid_from))
+        Ok(changeset)
     }
 
     /// Tries to update `self` with another chain that connects to it.
     pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<I>> {
-        let (changeset, _) = self.determine_changeset(&update)?;
+        let changeset = self.determine_changeset(&update)?;
         self.apply_changeset(changeset);
         Ok(())
     }
