@@ -1,5 +1,5 @@
 use bdk_core::{
-    chain_graph::ChainGraph,
+    chain_graph::{self, ChainGraph},
     keychain::{KeychainChangeSet, KeychainScan},
     sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
@@ -30,7 +30,7 @@ where
     pub fn determine_changeset(
         &self,
         scan: &KeychainScan<K, I>,
-    ) -> Result<KeychainChangeSet<K, I>, sparse_chain::UpdateFailure<I>> {
+    ) -> Result<KeychainChangeSet<K, I>, chain_graph::UpdateFailure<I>> {
         let mut new_derivation_indices = scan.last_active_indexes.clone();
         new_derivation_indices.retain(|keychain, index| {
             match self.txout_index.derivation_index(keychain) {
