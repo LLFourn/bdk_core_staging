@@ -35,6 +35,9 @@ pub struct Args<C: Subcommand> {
     #[clap(env = "BDK_DB_DIR", long, default_value = ".bdk_example_db")]
     pub db_dir: PathBuf,
 
+    #[clap(env = "CREATION_HEIGHT")]
+    pub creation_height: Option<u64>,
+
     #[clap(subcommand)]
     pub command: C,
 }
@@ -43,7 +46,7 @@ pub struct Args<C: Subcommand> {
 pub enum Commands {
     /// Scans all the script pubkeys in the wallet looking for matching outputs.
     Scan {
-        /// When a gap this large has been found for a keychain it will stop.
+        /// When a gap this large has been found for a keychain, it will stop
         #[clap(long, default_value = "5")]
         stop_gap: usize,
     },
