@@ -23,7 +23,7 @@ use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::D
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 #[clap(propagate_version = true)]
-pub struct Args {
+pub struct Args<C: Subcommand> {
     #[clap(env = "DESCRIPTOR")]
     pub descriptor: String,
     #[clap(env = "CHANGE_DESCRIPTOR")]
@@ -36,7 +36,7 @@ pub struct Args {
     pub db_dir: PathBuf,
 
     #[clap(subcommand)]
-    pub command: Commands,
+    pub command: C,
 }
 
 #[derive(Subcommand, Debug)]
@@ -516,7 +516,7 @@ where
 }
 
 pub fn init<I>() -> anyhow::Result<(
-    Args,
+    Args<Commands>,
     KeyMap,
     KeychainTracker<Keychain, I>,
     KeychainStore<Keychain, I>,
@@ -525,7 +525,7 @@ where
     I: sparse_chain::ChainIndex,
     KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
-    let args = Args::parse();
+    let args = Args::<Commands>::parse();
     let secp = Secp256k1::default();
     let (descriptor, mut keymap) =
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
