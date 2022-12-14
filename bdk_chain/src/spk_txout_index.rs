@@ -65,7 +65,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     ///
     /// [`ForEachTxout`]: crate::ForEachTxout
     pub fn scan(&mut self, txouts: &impl ForEachTxout) {
-        txouts.for_each_txout(&mut |(op, txout)| self.scan_txout(op, txout))
+        txouts.for_each_txout(&mut |(op, txout)| self.scan_txout(op, txout));
     }
 
     /// Scan a single `TxOut` for a matching script pubkey
@@ -180,16 +180,25 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// let change_index = 1;
     /// let unused_change_spks = txout_index.unused((change_index, u32::MIN)..(change_index, u32::MAX));
     /// ```
-    pub fn unused<R>(&self, range: R) -> impl DoubleEndedIterator<Item = (&I, &Script)>
-    where
-        R: RangeBounds<I>,
-    {
+    pub fn unused<R: RangeBounds<I>>(
+        &self,
+        range: R,
+    ) -> impl DoubleEndedIterator<Item = (&I, &Script)> {
         self.unused
             .range(range)
             .map(|index| (index, self.spk_at_index(index).expect("must exist")))
     }
 
-    /// Returns whether the script pubkey at `index` has been used or not.
+    pub fn remove_unused(&mut self, index: &I) -> bool {
+        let is_removed = self.unused.remove(index);
+        if is_removed {
+            let spk = self.script_pubkeys.remove(index).expect("should exist");
+            self.spk_indexes.remove(&spk);
+        }
+        is_removed
+    }
+
+    /// Returns whether the script pubkey at index `index` has been used or not.
     ///
     /// Here "unused" means that after the script pubkey was stored in the index, the index has
     /// never scanned a transaction output with it.

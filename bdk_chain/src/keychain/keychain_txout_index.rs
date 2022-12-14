@@ -79,14 +79,14 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// [`ForEachTxout`]: crate::ForEachTxout
     pub fn scan(&mut self, txouts: &impl ForEachTxout) {
-        self.inner.scan(txouts);
+        self.inner.scan(txouts)
     }
 
     /// Scan a single `TxOut` for a matching script pubkey.
     ///
     /// If it matches the index will store and index it.
     pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) {
-        self.inner.scan_txout(op, &txout);
+        self.inner.scan_txout(op, &txout)
     }
 
     pub fn inner(&self) -> &SpkTxOutIndex<(K, u32)> {
@@ -168,7 +168,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         self.inner
             .script_pubkeys()
             .range(&(keychain.clone(), u32::MIN)..=&(keychain.clone(), u32::MAX))
-            .last()
+            .next_back()
             .map(|((_, index), _)| *index)
     }
 
@@ -341,6 +341,41 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                     .map(|index| (keychain.clone(), index))
             })
             .collect()
+    }
+
+    pub fn derive_until_unused_gap(&mut self, gap: u32) -> bool {
+        if gap == 0 {
+            return false;
+        }
+
+        let up_to_per_keychain = self
+            .keychains()
+            .iter()
+            .map(|(keychain, _)| {
+                let up_to = self
+                    .last_active_index(keychain)
+                    .unwrap_or(gap.saturating_sub(1));
+                (keychain.clone(), up_to)
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        self.store_all_up_to(&up_to_per_keychain)
+    }
+
+    pub fn prune_unused(&mut self, mut keychain_bounds: BTreeMap<K, u32>) {
+        for (keychain, _) in &self.keychains {
+            keychain_bounds.entry(keychain.clone()).or_insert(0);
+        }
+        for (keychain, lower_bound) in keychain_bounds {
+            let indexes_to_prune = self
+                .inner
+                .unused((keychain.clone(), lower_bound)..=(keychain.clone(), u32::MAX))
+                .map(|((_, i), _)| *i)
+                .collect::<alloc::vec::Vec<_>>();
+            for index in indexes_to_prune {
+                self.inner.remove_unused(&(keychain.clone(), index));
+            }
+        }
     }
 }
 
