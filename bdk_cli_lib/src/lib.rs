@@ -17,13 +17,14 @@ use bdk_keychain::{
     },
     DescriptorExt, KeychainChangeSet, KeychainTracker,
 };
-pub use clap::{Parser, Subcommand};
+pub use clap;
+use clap::{Parser, Subcommand};
 use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::Duration};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 #[clap(propagate_version = true)]
-pub struct Args {
+pub struct Args<C: clap::Subcommand> {
     #[clap(env = "DESCRIPTOR")]
     pub descriptor: String,
     #[clap(env = "CHANGE_DESCRIPTOR")]
@@ -36,29 +37,13 @@ pub struct Args {
     pub db_dir: PathBuf,
 
     #[clap(subcommand)]
-    pub command: Commands,
+    pub command: Commands<C>,
 }
 
-#[derive(Subcommand, Debug)]
-pub enum Commands {
-    /// Scans all the script pubkeys in the wallet looking for matching outputs.
-    Scan {
-        /// When a gap this large has been found for a keychain it will stop.
-        #[clap(long, default_value = "5")]
-        stop_gap: usize,
-    },
-    /// Sync particular addresses
-    Sync {
-        /// Sync all the unused addresses
-        #[clap(long)]
-        unused: bool,
-        /// Sync the script addresses that have unspent outputs
-        #[clap(long)]
-        unspent: bool,
-        /// Sync every address that you have derived
-        #[clap(long)]
-        all: bool,
-    },
+#[derive(Subcommand, Debug, Clone)]
+pub enum Commands<C: clap::Subcommand> {
+    #[clap(flatten)]
+    ChainSpecific(C),
     /// Address generation and inspection
     Address {
         #[clap(subcommand)]
@@ -129,7 +114,7 @@ impl core::fmt::Display for CoinSelectionAlgo {
     }
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum AddressCmd {
     /// Get the next unused address
     Next,
@@ -143,7 +128,7 @@ pub enum AddressCmd {
     Index,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum TxOutCmd {
     List,
 }
@@ -475,8 +460,8 @@ pub trait Broadcast {
     fn broadcast(&self, tx: &Transaction) -> Result<(), Self::Error>;
 }
 
-pub fn handle_commands<I>(
-    command: Commands,
+pub fn handle_commands<C: clap::Subcommand, I>(
+    command: Commands<C>,
     client: impl Broadcast,
     tracker: &mut KeychainTracker<Keychain, I>,
     store: &mut KeychainStore<Keychain, I>,
@@ -507,7 +492,7 @@ where
             client.broadcast(&transaction)?;
             println!("Broadcasted Tx : {}", transaction.txid());
         }
-        Commands::Sync { .. } | Commands::Scan { .. } => {
+        Commands::ChainSpecific(_) => {
             todo!("example code is meant to handle this!")
         }
     }
@@ -515,8 +500,8 @@ where
     Ok(())
 }
 
-pub fn init<I>() -> anyhow::Result<(
-    Args,
+pub fn init<C: clap::Subcommand, I>() -> anyhow::Result<(
+    Args<C>,
     KeyMap,
     KeychainTracker<Keychain, I>,
     KeychainStore<Keychain, I>,
@@ -525,7 +510,7 @@ where
     I: sparse_chain::ChainIndex,
     KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
-    let args = Args::parse();
+    let args = Args::<C>::parse();
     let secp = Secp256k1::default();
     let (descriptor, mut keymap) =
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;

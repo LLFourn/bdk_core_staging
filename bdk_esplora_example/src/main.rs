@@ -5,10 +5,35 @@ use bdk_core::bitcoin::Network;
 use std::io::{self, Write};
 
 const DEFAULT_PARALLEL_REQUESTS: u8 = 5;
-use bdk_cli::anyhow::{self, Context};
+use bdk_cli::{
+    anyhow::{self, Context},
+    clap::{self, Subcommand},
+};
+
+#[derive(Subcommand, Debug, Clone)]
+enum EsploraCommands {
+    /// Scans the addresses in the wallet using esplora API.
+    Scan {
+        /// When a gap this large has been found for a keychain it will stop.
+        #[clap(long, default_value = "5")]
+        stop_gap: usize,
+    },
+    /// Scans particular addresses using esplora API
+    Sync {
+        /// Scan all the unused addresses
+        #[clap(long)]
+        unused: bool,
+        /// Scan the script addresses that have unspent outputs
+        #[clap(long)]
+        unspent: bool,
+        /// Scan every address that you have derived
+        #[clap(long)]
+        all: bool,
+    },
+}
 
 fn main() -> anyhow::Result<()> {
-    let (args, keymap, mut keychain_tracker, mut db) = bdk_cli::init()?;
+    let (args, keymap, mut keychain_tracker, mut db) = bdk_cli::init::<EsploraCommands, _>()?;
     let esplora_url = match args.network {
         Network::Bitcoin => "https://mempool.space/api",
         Network::Testnet => "https://mempool.space/testnet/api",
@@ -18,8 +43,22 @@ fn main() -> anyhow::Result<()> {
 
     let client = Client::new(esplora_url, DEFAULT_PARALLEL_REQUESTS)?;
 
-    match args.command {
-        bdk_cli::Commands::Scan { stop_gap } => {
+    let esplora_cmd = match args.command {
+        bdk_cli::Commands::ChainSpecific(esplora_cmd) => esplora_cmd,
+        general_command => {
+            return bdk_cli::handle_commands(
+                general_command,
+                client,
+                &mut keychain_tracker,
+                &mut db,
+                args.network,
+                &keymap,
+            )
+        }
+    };
+
+    match esplora_cmd {
+        EsploraCommands::Scan { stop_gap } => {
             let spk_iterators = keychain_tracker
                 .txout_index
                 .iter_all_script_pubkeys_by_keychain()
@@ -52,7 +91,7 @@ fn main() -> anyhow::Result<()> {
             db.append_changeset(&changeset)?;
             keychain_tracker.apply_changeset(changeset);
         }
-        bdk_cli::Commands::Sync {
+        EsploraCommands::Sync {
             mut unused,
             mut unspent,
             all,
@@ -102,16 +141,8 @@ fn main() -> anyhow::Result<()> {
                 .into();
             db.append_changeset(&changeset)?;
             keychain_tracker.apply_changeset(changeset);
-        }
-        // For everything else run handler
-        _ => bdk_cli::handle_commands(
-            args.command,
-            client,
-            &mut keychain_tracker,
-            &mut db,
-            args.network,
-            &keymap,
-        )?,
+        } // For everything else run handler
     }
+
     Ok(())
 }
