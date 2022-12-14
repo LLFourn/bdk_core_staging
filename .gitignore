@@ -4,4 +4,5 @@ Cargo.lock
 out.perf-folded
 perf.data
 rust-perf.svg
+
 .bdk_example_db

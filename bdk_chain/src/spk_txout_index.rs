@@ -65,7 +65,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     ///
     /// [`ForEachTxout`]: crate::ForEachTxout
     pub fn scan(&mut self, txouts: &impl ForEachTxout) {
-        txouts.for_each_txout(&mut |(op, txout)| self.scan_txout(op, txout))
+        txouts.for_each_txout(&mut |(op, txout)| self.scan_txout(op, txout));
     }
 
     /// Scan a single `TxOut` for a matching script pubkey
