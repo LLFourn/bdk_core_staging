@@ -1,0 +1,203 @@
+use std::{
+    collections::BTreeMap,
+    sync::mpsc::{SendError, SyncSender},
+};
+
+use bdk_core::bitcoin::{Block, BlockHash, Transaction};
+use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
+
+/// Minimum number of mempool transactions to batch together for each mempool emission.
+const MEMPOOL_EMIT_THRESHOLD: usize = 420;
+
+/// Minimum number of blocks to batch together for each blocks emission.
+const BLOCK_EMIT_THRESHOLD: usize = 42;
+
+pub enum RpcData {
+    Start {
+        local_tip: u32,
+        target_tip: u32,
+    },
+    Blocks {
+        last_cp: Option<(u32, BlockHash)>,
+        blocks: BTreeMap<u32, Block>,
+    },
+    Mempool(Vec<Transaction>),
+    Stop(bool),
+}
+
+#[derive(Debug)]
+pub enum RpcError {
+    Rpc(bitcoincore_rpc::Error),
+    Send(SendError<RpcData>),
+    Reorg(u32),
+}
+
+impl From<bitcoincore_rpc::Error> for RpcError {
+    fn from(err: bitcoincore_rpc::Error) -> Self {
+        Self::Rpc(err)
+    }
+}
+
+impl From<SendError<RpcData>> for RpcError {
+    fn from(err: SendError<RpcData>) -> Self {
+        Self::Send(err)
+    }
+}
+
+impl core::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for RpcError {}
+
+pub struct Client {
+    client: RpcClient,
+    block_emit_threshold: usize,
+    mempool_emit_threshold: usize,
+}
+
+impl Client {
+    pub fn new(url: &str, auth: Auth) -> Result<Self, RpcError> {
+        let client = RpcClient::new(url, auth)?;
+        Ok(Client {
+            client,
+            block_emit_threshold: BLOCK_EMIT_THRESHOLD,
+            mempool_emit_threshold: MEMPOOL_EMIT_THRESHOLD,
+        })
+    }
+
+    pub fn emit_blocks(
+        &self,
+        chan: &SyncSender<RpcData>,
+        local_cps: &BTreeMap<u32, BlockHash>,
+        fallback_height: u32,
+    ) -> Result<(), RpcError> {
+        let tip = self.client.get_block_count()? as u32;
+
+        let local_tip = local_cps
+            .iter()
+            .last()
+            .map(|(&height, _)| height as u32)
+            .unwrap_or(fallback_height);
+
+        chan.send(RpcData::Start {
+            target_tip: tip as _,
+            local_tip: local_tip as _,
+        })?;
+
+        // nothing to do if local tip is higher than node
+        if local_tip > tip {
+            return Ok(());
+        }
+
+        let mut last_agreement = None;
+        let mut must_include = None;
+
+        for (height, hash) in local_cps.iter().rev() {
+            match self.client.get_block_info(hash) {
+                Ok(res) => {
+                    if res.confirmations < 0 {
+                        must_include = Some(res.height as u32); // NOT in main chain
+                    } else {
+                        last_agreement = Some(res);
+                        break;
+                    }
+                }
+                Err(err) => {
+                    use bitcoincore_rpc::jsonrpc;
+                    match err {
+                        bitcoincore_rpc::Error::JsonRpc(jsonrpc::Error::Rpc(rpc_err))
+                            if rpc_err.code == -5 =>
+                        {
+                            must_include = Some(*height); // NOT in main chain
+                        }
+                        err => return Err(err.into()),
+                    }
+                }
+            };
+        }
+
+        println!(
+            "point of agreement: height={}",
+            last_agreement
+                .as_ref()
+                .map(|r| r.height)
+                .unwrap_or(fallback_height as _)
+        );
+
+        // batch of blocks to emit
+        let mut to_emit = BTreeMap::<u32, Block>::new();
+
+        // determine first block and last checkpoint that should be included (if any)
+        let (mut block, mut last_cp) = match last_agreement {
+            Some(res) => match res.nextblockhash {
+                Some(block_hash) => (
+                    self.client.get_block_info(&block_hash)?,
+                    Some((res.height as u32, res.hash)),
+                ),
+                // no next block after agreement point, checkout mempool
+                None => return self.emit_mempool(chan),
+            },
+            None => {
+                let block_hash = self.client.get_block_hash(fallback_height as _)?;
+                (self.client.get_block_info(&block_hash)?, None)
+            }
+        };
+
+        let mut has_next = true;
+
+        while has_next {
+            if block.confirmations < 0 {
+                return Err(RpcError::Reorg(block.height as _));
+            }
+
+            let _displaced = to_emit.insert(block.height as _, self.client.get_block(&block.hash)?);
+            debug_assert_eq!(_displaced, None);
+
+            match block.nextblockhash {
+                Some(next_hash) => block = self.client.get_block_info(&next_hash)?,
+                None => has_next = false,
+            };
+
+            if !has_next
+                || must_include.as_ref() <= to_emit.keys().next_back()
+                    && to_emit.len() >= self.block_emit_threshold
+            {
+                let blocks = to_emit.split_off(&0);
+                let next_last_cp = blocks.iter().last().map(|(h, b)| (*h, b.block_hash()));
+                chan.send(RpcData::Blocks { last_cp, blocks })?;
+                last_cp = next_last_cp;
+            }
+        }
+
+        self.emit_mempool(chan)
+    }
+
+    pub fn emit_mempool(&self, chan: &SyncSender<RpcData>) -> Result<(), RpcError> {
+        // TODO: I'm not sure if things are returned in order
+        // TODO: Include mempool sequence!
+        for txids in self
+            .client
+            .get_raw_mempool()?
+            .chunks(self.mempool_emit_threshold)
+        {
+            let txs = txids
+                .iter()
+                .map(|txid| self.client.get_raw_transaction(txid, None))
+                .collect::<Result<Vec<_>, _>>()?;
+            chan.send(RpcData::Mempool(txs))?;
+        }
+
+        Ok(())
+    }
+}
+
+impl bdk_cli::Broadcast for Client {
+    type Error = RpcError;
+    fn broadcast(&self, tx: &Transaction) -> bdk_cli::anyhow::Result<(), Self::Error> {
+        let _txid = self.client.send_raw_transaction(tx)?;
+        Ok(())
+    }
+}
