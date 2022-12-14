@@ -2,12 +2,15 @@ mod electrum;
 use bdk_chain::{bitcoin::Network, keychain::KeychainScan};
 use bdk_cli::{
     anyhow::{self, Context},
-    clap::{self, Parser, Subcommand},
+    clap::{self, Args, Parser, Subcommand},
 };
 use electrum::ElectrumClient;
 use std::{collections::BTreeMap, fmt::Debug, io, io::Write};
 
 use electrum_client::{Client, ConfigBuilder, ElectrumApi};
+
+#[derive(Args, Debug, Clone)]
+struct ElectrumArgs {}
 
 #[derive(Subcommand, Debug, Clone)]
 enum ElectrumCommands {
@@ -43,7 +46,7 @@ pub struct ScanOption {
 }
 
 fn main() -> anyhow::Result<()> {
-    let (args, keymap, mut tracker, mut db) = bdk_cli::init::<ElectrumCommands, _>()?;
+    let (args, keymap, mut tracker, mut db) = bdk_cli::init::<ElectrumArgs, ElectrumCommands, _>()?;
 
     let electrum_url = match args.network {
         Network::Bitcoin => "ssl://electrum.blockstream.info:50002",

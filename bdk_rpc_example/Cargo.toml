@@ -1,0 +1,17 @@
+[package]
+name = "bdk_rpc_example"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# BDK Core
+bdk_chain = { path = "../bdk_chain", features = ["serde"] }
+bdk_cli = { path = "../bdk_cli_lib"}
+
+# Rpc
+bitcoincore-rpc = "0.16.0"
+
+# Helpers
+ctrlc = "3.2.4"
