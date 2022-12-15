@@ -117,7 +117,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             if unused {
-                spks = Box::new(spks.chain(txout_index.iter_unused().map(|(index, script)| {
+                spks = Box::new(spks.chain(txout_index.unused(..).map(|(index, script)| {
                     eprintln!("Checking if address at {:?} has been used", index);
                     script.clone()
                 })));

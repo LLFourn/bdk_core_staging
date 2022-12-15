@@ -239,23 +239,21 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// Panics if `keychain` has never been added to the index
     pub fn derive_next_unused(&mut self, keychain: &K) -> (u32, &Script) {
-        let need_new = self
-            .inner
-            .iter_unused()
-            .filter(|((kc, _), _)| kc == keychain)
-            .next()
-            .is_none();
+        let need_new = self.keychain_unused(keychain).next().is_none();
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
             self.derive_new(keychain)
         } else {
-            self.inner
-                .iter_unused()
-                .filter(|((kc, _), _)| kc == keychain)
-                .map(|((_, i), script)| (*i, script))
-                .next()
-                .unwrap()
+            self.keychain_unused(keychain).next().unwrap()
         }
+    }
+
+    /// Iterates over all unused script pubkeys for a `keychain` that have been stored in the index.
+    pub fn keychain_unused(&self, keychain: &K) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
+        let range = (keychain.clone(), u32::MIN)..(keychain.clone(), u32::MAX);
+        self.inner
+            .unused(range)
+            .map(|((_, i), script)| (*i, script))
     }
 }
 

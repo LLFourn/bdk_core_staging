@@ -1,3 +1,5 @@
+use core::ops::RangeBounds;
+
 use crate::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ForEachTxout,
@@ -128,23 +130,37 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         self.unused.insert(index);
     }
 
-    /// Iterate over the script pubkeys that have been derived but do not have a transaction spending to them.
-    pub fn iter_unused(
-        &self,
-    ) -> impl DoubleEndedIterator<Item = (&I, &Script)> + ExactSizeIterator {
+    /// Iterates over a unused script pubkeys in a index range.
+    ///
+    /// Here "unused" means that after the script pubkey was stored in the index, the index has
+    /// never scanned a transaction output with it.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use bdk_core::SpkTxOutIndex;
+    ///
+    /// // imagine our spks are indexed like (keychain, derivation_index).
+    /// let txout_index = SpkTxOutIndex::<(u32,u32)>::default();
+    /// let all_unused_spks = txout_index.unused(..);
+    /// let change_index = 1;
+    /// let unused_change_spks = txout_index.unused((change_index, u32::MIN)..(change_index, u32::MAX));
+    /// ```
+    pub fn unused<R>(&self, range: R) -> impl DoubleEndedIterator<Item = (&I, &Script)>
+    where
+        R: RangeBounds<I>,
+    {
         self.unused
-            .iter()
+            .range(range)
             .map(|index| (index, self.spk_at_index(index).expect("must exist")))
     }
 
-    /// Returns whether the script pubkey at index `index` has been used or not.
+    /// Returns whether the script pubkey at `index` has been used or not.
     ///
-    /// i.e. has a transaction which spends to it.
+    /// Here "unused" means that after the script pubkey was stored in the index, the index has
+    /// never scanned a transaction output with it.
     pub fn is_used(&self, index: &I) -> bool {
-        self.spk_txouts
-            .get(index)
-            .map(|set| !set.is_empty())
-            .unwrap_or(false)
+        self.unused.get(index).is_none()
     }
 
     /// Returns the index associated with the script pubkey.
