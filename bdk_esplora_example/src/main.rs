@@ -124,10 +124,12 @@ fn main() -> anyhow::Result<()> {
             }
 
             if unspent {
-                spks = Box::new(spks.chain(keychain_tracker.utxos().map(|(_index, ftxout)| {
-                    eprintln!("checking if {} has been spent", ftxout.outpoint);
-                    ftxout.txout.script_pubkey
-                })));
+                spks = Box::new(spks.chain(keychain_tracker.full_utxos().map(
+                    |(_index, ftxout)| {
+                        eprintln!("checking if {} has been spent", ftxout.outpoint);
+                        ftxout.txout.script_pubkey
+                    },
+                )));
             }
 
             let local_chain = keychain_tracker.chain().checkpoints().clone();

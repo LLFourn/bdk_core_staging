@@ -220,7 +220,7 @@ where
 pub fn run_balance_cmd<I: ChainIndex>(keychain_tracker: &KeychainTracker<Keychain, I>) {
     let (confirmed, unconfirmed) =
         keychain_tracker
-            .utxos()
+            .full_utxos()
             .fold((0, 0), |(confirmed, unconfirmed), (_, utxo)| {
                 if utxo.chain_index.height().is_confirmed() {
                     (confirmed + utxo.txout.value, unconfirmed)
@@ -240,7 +240,7 @@ pub fn run_txo_cmd<K: Debug + Clone + Ord, I: ChainIndex>(
 ) {
     match txout_cmd {
         TxOutCmd::List => {
-            for (spk_index, full_txout) in keychain_tracker.txouts() {
+            for (spk_index, full_txout) in keychain_tracker.full_txouts() {
                 let address =
                     Address::from_script(&full_txout.txout.script_pubkey, network).unwrap();
 

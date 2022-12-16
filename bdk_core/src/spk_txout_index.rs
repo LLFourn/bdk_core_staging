@@ -1,7 +1,7 @@
 use core::ops::RangeBounds;
 
 use crate::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ForEachTxout,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
@@ -37,7 +37,7 @@ pub struct SpkTxOutIndex<I> {
     /// Lookup index and txout by outpoint.
     txouts: BTreeMap<OutPoint, (I, TxOut)>,
     /// Lookup from spk index to outpoints that had that spk
-    spk_txouts: BTreeMap<I, HashSet<OutPoint>>,
+    spk_txouts: BTreeSet<(I, OutPoint)>,
 }
 
 impl<I> Default for SpkTxOutIndex<I> {
@@ -73,16 +73,13 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         if let Some(spk_i) = self.index_of_spk(&txout.script_pubkey) {
             self.txouts
                 .insert(op.clone(), (spk_i.clone(), txout.clone()));
-            self.spk_txouts
-                .entry(spk_i.clone())
-                .or_default()
-                .insert(op.clone());
+            self.spk_txouts.insert((spk_i.clone(), op));
             self.unused.remove(&spk_i);
         }
     }
 
     /// Iterate over all known txouts that spend to tracked script pubkeys.
-    pub fn iter_txout(
+    pub fn txouts(
         &self,
     ) -> impl DoubleEndedIterator<Item = (&I, OutPoint, &TxOut)> + ExactSizeIterator {
         self.txouts
@@ -98,6 +95,37 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         self.txouts
             .range(OutPoint::new(txid, u32::MIN)..=OutPoint::new(txid, u32::MAX))
             .map(|(op, (index, txout))| (index, *op, txout))
+    }
+
+    /// Iterates over all outputs with script pubkeys in an index range.
+    pub fn outputs_in_range(
+        &self,
+        range: impl RangeBounds<I>,
+    ) -> impl DoubleEndedIterator<Item = (&I, OutPoint)> {
+        use bitcoin::hashes::Hash;
+        use core::ops::Bound::*;
+        let min_op = OutPoint {
+            txid: Txid::from_inner([0x00; 32]),
+            vout: u32::MIN,
+        };
+        let max_op = OutPoint {
+            txid: Txid::from_inner([0xff; 32]),
+            vout: u32::MAX,
+        };
+
+        let start = match range.start_bound() {
+            Included(index) => Included((index.clone(), min_op)),
+            Excluded(index) => Excluded((index.clone(), max_op)),
+            Unbounded => Unbounded,
+        };
+
+        let end = match range.end_bound() {
+            Included(index) => Included((index.clone(), max_op)),
+            Excluded(index) => Excluded((index.clone(), min_op)),
+            Unbounded => Unbounded,
+        };
+
+        self.spk_txouts.range((start, end)).map(|(i, op)| (i, *op))
     }
 
     /// Returns the txout and script pubkey index of the `TxOut` at `OutPoint`.

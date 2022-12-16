@@ -255,6 +255,32 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .unused(range)
             .map(|((_, i), script)| (*i, script))
     }
+
+    /// Iterates over all the [`OutPoint`] that have a `TxOut` with a script pubkey derived from `keychain`
+    pub fn keychain_txouts(
+        &self,
+        keychain: &K,
+    ) -> impl DoubleEndedIterator<Item = (u32, OutPoint)> + '_ {
+        self.inner
+            .outputs_in_range((keychain.clone(), u32::MIN)..(keychain.clone(), u32::MAX))
+            .map(|((_, i), op)| (*i, op))
+    }
+
+    /// The highest derivation index of `keychain` that the index has found a `TxOut` with its script pubkey.
+    pub fn last_active_index(&self, keychain: &K) -> Option<u32> {
+        self.keychain_txouts(keychain).last().map(|(i, _)| i)
+    }
+
+    /// The highest derivation index of each keychain that the index has found a `TxOut` with its script pubkey.
+    pub fn last_active_indicies(&self) -> BTreeMap<K, u32> {
+        self.keychains
+            .iter()
+            .filter_map(|(keychain, _)| {
+                self.last_active_index(keychain)
+                    .map(|index| (keychain.clone(), index))
+            })
+            .collect()
+    }
 }
 
 fn descriptor_into_script_iter(
