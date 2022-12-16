@@ -2,7 +2,11 @@ mod electrum;
 
 use std::fmt::Debug;
 
-use bdk_core::{bitcoin::Transaction, sparse_chain::SparseChain, BlockId, TxHeight};
+use bdk_core::{
+    bitcoin::{Network, Transaction},
+    sparse_chain::SparseChain,
+    BlockId, TxHeight,
+};
 use bdk_keychain::{KeychainScan, KeychainTracker};
 use electrum::ElectrumClient;
 
@@ -81,7 +85,15 @@ fn fetch_transactions<K: Debug + Ord + Clone>(
 fn main() -> anyhow::Result<()> {
     let (args, keymap, mut tracker, mut db) = bdk_cli::init::<ElectrumCommands, _>()?;
 
-    let client = ElectrumClient::new("ssl://electrum.blockstream.info:60002")?;
+    let electrum_url = match args.network {
+        Network::Bitcoin => "ssl://electrum.blockstream.info:50002",
+        Network::Testnet => "ssl://electrum.blockstream.info:60002",
+        Network::Regtest => "ssl://localhost:60401",
+        // TODO: Find a electrum signet endpoint
+        Network::Signet => return Err(anyhow::anyhow!("Signet nor supported for Electrum")),
+    };
+
+    let client = ElectrumClient::new(electrum_url)?;
 
     let electrum_cmd = match args.command {
         bdk_cli::Commands::ChainSpecific(electrum_cmd) => electrum_cmd,
