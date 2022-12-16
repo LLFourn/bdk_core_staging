@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, ops::Deref};
 use bdk_cli::Broadcast;
 use bdk_core::{
     bitcoin::{BlockHash, Script, Txid},
-    sparse_chain::{InsertCheckpointErr, InsertTxErr, SparseChain, UpdateFailure},
+    sparse_chain::{InsertTxErr, SparseChain},
     BlockId, TxHeight,
 };
 use electrum_client::{Client, Config, ElectrumApi};
@@ -11,18 +11,14 @@ use electrum_client::{Client, Config, ElectrumApi};
 #[derive(Debug)]
 pub enum ElectrumError {
     Client(electrum_client::Error),
-    InsertTx(InsertTxErr),
-    Update(UpdateFailure),
-    InsertCheckpoint(InsertCheckpointErr),
+    Reorg(u32),
 }
 
 impl core::fmt::Display for ElectrumError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ElectrumError::Client(e) => write!(f, "{}", e),
-            ElectrumError::InsertTx(e) => write!(f, "{}", e),
-            ElectrumError::Update(e) => write!(f, "{}", e),
-            ElectrumError::InsertCheckpoint(e) => write!(f, "{}", e),
+            ElectrumError::Reorg(height) => write!(f, "Reorg detected at height : {}", height),
         }
     }
 }
@@ -32,24 +28,6 @@ impl std::error::Error for ElectrumError {}
 impl From<electrum_client::Error> for ElectrumError {
     fn from(e: electrum_client::Error) -> Self {
         Self::Client(e)
-    }
-}
-
-impl From<InsertTxErr> for ElectrumError {
-    fn from(e: InsertTxErr) -> Self {
-        Self::InsertTx(e)
-    }
-}
-
-impl From<UpdateFailure> for ElectrumError {
-    fn from(e: UpdateFailure) -> Self {
-        Self::Update(e)
-    }
-}
-
-impl From<InsertCheckpointErr> for ElectrumError {
-    fn from(e: InsertCheckpointErr) -> Self {
-        Self::InsertCheckpoint(e)
     }
 }
 
@@ -137,79 +115,73 @@ impl ElectrumClient {
 
         // Insert the new tip
         let (tip_height, tip_hash) = self.get_tip()?;
-        sparse_chain
+        if sparse_chain
             .insert_checkpoint(BlockId {
                 height: tip_height,
                 hash: tip_hash,
-            })
-            .expect("This never errors because we are working with a fresh chain");
+            }).is_err() {
+                // This means our existing chain tip has been reorged out.
+                return Err(ElectrumError::Reorg(tip_height));
+            }
+
 
         let mut keychain_index_update = BTreeMap::new();
 
-        let mut reorgred_tx = Vec::new();
-
         // Fetch Keychain's last_active_index and all related txids.
         // Add them into the KeyChainScan
-        for (keychain, mut scripts) in scripts.into_iter() {
+        for (keychain, mut scripts) in scripts {
             let mut last_active_index = 0;
             let mut unused_script_count = 0usize;
-            let mut script_history_txid = Vec::<(Txid, TxHeight)>::new();
 
-            loop {
-                if let Some((index, script)) = scripts.next() {
-                    let history = self
-                        .script_get_history(&script)?
-                        .iter()
-                        .map(|history_result| {
-                            if history_result.height > 0
-                                && (history_result.height as u32) < tip_height
-                            {
-                                return (
-                                    history_result.tx_hash,
-                                    TxHeight::Confirmed(history_result.height as u32),
-                                );
-                            } else {
-                                return (history_result.tx_hash, TxHeight::Unconfirmed);
-                            };
-                        })
-                        .collect::<Vec<(Txid, TxHeight)>>();
+            while let Some((index, script)) = scripts.next() {
+                let history = self
+                    .script_get_history(&script)?
+                    .iter()
+                    .map(|history_result| {
+                        if history_result.height > 0 && (history_result.height as u32) <= tip_height
+                        {
+                            return (
+                                history_result.tx_hash,
+                                TxHeight::Confirmed(history_result.height as u32),
+                            );
+                        } else {
+                            return (history_result.tx_hash, TxHeight::Unconfirmed);
+                        };
+                    })
+                    .collect::<Vec<(Txid, TxHeight)>>();
 
-                    if history.is_empty() {
-                        unused_script_count += 1;
-                    } else {
-                        last_active_index = index;
-                        script_history_txid.extend(history.iter());
-                        unused_script_count = 0;
-                    }
-
-                    if unused_script_count >= stop_gap.unwrap_or(usize::MAX) {
-                        break;
-                    }
+                if history.is_empty() {
+                    unused_script_count += 1;
                 } else {
-                    break;
-                }
-            }
+                    last_active_index = index;
+                    unused_script_count = 0;
 
-            for (txid, index) in script_history_txid {
-                if let Err(err) = sparse_chain.insert_tx(txid, index) {
-                    match err {
-                        InsertTxErr::TxTooHigh => {
-                            /* Don't care about new transactions confirmed while syncing */
-                        }
-                        InsertTxErr::TxMoved => {
-                            /* This means there is a reorg, we will handle this situation below */
-                            reorgred_tx.push((txid, index));
+                    for (txid, index) in history {
+                        if let Err(err) = sparse_chain.insert_tx(txid, index) {
+                            match err {
+                                InsertTxErr::TxTooHigh => {
+                                    /* We should not encounter this error as we ensured TxHeight <= tip_height */
+                                    unreachable!();
+                                }
+                                InsertTxErr::TxMoved => {
+                                    /* This means there is a reorg, we will handle this situation below */
+                                }
+                            }
                         }
                     }
+                }
+
+                if unused_script_count >= stop_gap.unwrap_or(usize::MAX) {
+                    break;
                 }
             }
 
             keychain_index_update.insert(keychain, last_active_index);
         }
 
-        // To handle reorgs during syncing we re-apply last known
+        // To detect reorgs during syncing we re-apply last known
         // 20 blocks again into sparsechain
-        let mut reorged_sparse_chain = SparseChain::default();
+        // TODO: Handle reorg case here, so user don't need to handle it manually.
         let (tip_height, _) = self.get_tip()?;
         let reorged_headers = self
             .block_headers((tip_height - 20) as usize, 21)?
@@ -220,16 +192,13 @@ impl ElectrumClient {
 
         // Insert the new checkpoints
         for (hash, height) in reorged_headers {
-            reorged_sparse_chain.insert_checkpoint(BlockId { height, hash })?;
+            if sparse_chain
+                .insert_checkpoint(BlockId { height, hash })
+                .is_err()
+            {
+                return Err(ElectrumError::Reorg(height));
+            };
         }
-
-        // Insert reorged txs
-        for (txid, index) in reorgred_tx {
-            reorged_sparse_chain.insert_tx(txid, index)?;
-        }
-
-        // Sync the original sparse_chain with new reorged_sparse_chain
-        sparse_chain.apply_update(reorged_sparse_chain)?;
 
         Ok((sparse_chain, keychain_index_update))
     }
