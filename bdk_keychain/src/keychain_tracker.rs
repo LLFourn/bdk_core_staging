@@ -27,6 +27,14 @@ where
     I: sparse_chain::ChainIndex,
     K: Ord + Clone + core::fmt::Debug,
 {
+    pub fn checkpoint_limit(&self) -> Option<usize> {
+        self.chain_graph.checkpoint_limit()
+    }
+
+    pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
+        self.chain_graph.set_checkpoint_limit(limit)
+    }
+
     pub fn determine_changeset(
         &self,
         scan: &KeychainScan<K, I>,

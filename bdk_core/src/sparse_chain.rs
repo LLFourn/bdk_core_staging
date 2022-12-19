@@ -438,6 +438,10 @@ impl<I: ChainIndex> SparseChain<I> {
         })
     }
 
+    pub fn checkpoint_limit(&self) -> Option<usize> {
+        self.checkpoint_limit
+    }
+
     pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
         self.checkpoint_limit = limit;
         self.prune_checkpoints();

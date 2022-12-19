@@ -43,6 +43,10 @@ impl<I> ChainGraph<I> {
 }
 
 impl<I: ChainIndex> ChainGraph<I> {
+    pub fn checkpoint_limit(&self) -> Option<usize> {
+        self.chain.checkpoint_limit()
+    }
+
     pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
         self.chain.set_checkpoint_limit(limit)
     }
