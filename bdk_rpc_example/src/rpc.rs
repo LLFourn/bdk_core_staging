@@ -163,8 +163,15 @@ impl Client {
                 let last_cp = local_cps.iter().next_back().map(|(h, b)| (*h, *b));
                 let blocks = to_emit.split_off(&0);
 
+                // update local checkpoints
                 for (height, block) in &blocks {
                     local_cps.insert(*height, block.block_hash());
+                }
+
+                // prune local checkpoints
+                if let Some(&last_height) = local_cps.keys().nth_back(100) {
+                    let mut split = local_cps.split_off(&(last_height + 1));
+                    core::mem::swap(local_cps, &mut split);
                 }
 
                 chan.send(RpcData::Blocks { last_cp, blocks })?;
