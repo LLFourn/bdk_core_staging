@@ -60,7 +60,7 @@ enum RpcCommands {
         fallback_height: u32,
         /// The unused-scripts lookahead will be kept at this size
         #[clap(long, default_value = "10")]
-        look_ahead: u32,
+        lookahead: u32,
         /// Whether to be live!
         #[clap(long, default_value = "false")]
         live: bool,
@@ -98,7 +98,7 @@ fn main() -> anyhow::Result<()> {
     match rpc_cmd {
         RpcCommands::Scan {
             fallback_height,
-            look_ahead: stop_gap,
+            lookahead: stop_gap,
             live,
         } => {
             let (chan, recv) = sync_channel::<RpcData>(CHANNEL_BOUND);
