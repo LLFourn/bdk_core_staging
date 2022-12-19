@@ -117,17 +117,19 @@ fn main() -> anyhow::Result<()> {
             }
 
             if unused {
-                spks = Box::new(spks.chain(txout_index.iter_unused().map(|(index, script)| {
+                spks = Box::new(spks.chain(txout_index.unused(..).map(|(index, script)| {
                     eprintln!("Checking if address at {:?} has been used", index);
                     script.clone()
                 })));
             }
 
             if unspent {
-                spks = Box::new(spks.chain(keychain_tracker.utxos().map(|(_index, ftxout)| {
-                    eprintln!("checking if {} has been spent", ftxout.outpoint);
-                    ftxout.txout.script_pubkey
-                })));
+                spks = Box::new(spks.chain(keychain_tracker.full_utxos().map(
+                    |(_index, ftxout)| {
+                        eprintln!("checking if {} has been spent", ftxout.outpoint);
+                        ftxout.txout.script_pubkey
+                    },
+                )));
             }
 
             let local_chain = keychain_tracker.chain().checkpoints().clone();

@@ -52,21 +52,22 @@ where
         self.chain_graph.apply_changeset(changeset.chain_graph);
     }
 
-    pub fn txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {
+    pub fn full_txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {
         self.txout_index
-            .iter_txout()
+            .txouts()
             .filter_map(|(spk_i, op, _)| Some((spk_i, self.chain_graph.full_txout(op)?)))
     }
 
-    pub fn utxos(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {
-        self.txouts().filter(|(_, txout)| txout.spent_by.is_none())
+    pub fn full_utxos(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {
+        self.full_txouts()
+            .filter(|(_, txout)| txout.spent_by.is_none())
     }
 
     pub fn planned_utxos<'a, AK: CanDerive + Clone>(
         &'a self,
         assets: &'a Assets<AK>,
     ) -> impl Iterator<Item = (Plan<AK>, FullTxOut<I>)> + 'a {
-        self.utxos()
+        self.full_utxos()
             .filter_map(|((keychain, derivation_index), full_txout)| {
                 Some((
                     self.txout_index

@@ -239,23 +239,47 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// Panics if `keychain` has never been added to the index
     pub fn derive_next_unused(&mut self, keychain: &K) -> (u32, &Script) {
-        let need_new = self
-            .inner
-            .iter_unused()
-            .filter(|((kc, _), _)| kc == keychain)
-            .next()
-            .is_none();
+        let need_new = self.keychain_unused(keychain).next().is_none();
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
             self.derive_new(keychain)
         } else {
-            self.inner
-                .iter_unused()
-                .filter(|((kc, _), _)| kc == keychain)
-                .map(|((_, i), script)| (*i, script))
-                .next()
-                .unwrap()
+            self.keychain_unused(keychain).next().unwrap()
         }
+    }
+
+    /// Iterates over all unused script pubkeys for a `keychain` that have been stored in the index.
+    pub fn keychain_unused(&self, keychain: &K) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
+        let range = (keychain.clone(), u32::MIN)..(keychain.clone(), u32::MAX);
+        self.inner
+            .unused(range)
+            .map(|((_, i), script)| (*i, script))
+    }
+
+    /// Iterates over all the [`OutPoint`] that have a `TxOut` with a script pubkey derived from `keychain`
+    pub fn keychain_txouts(
+        &self,
+        keychain: &K,
+    ) -> impl DoubleEndedIterator<Item = (u32, OutPoint)> + '_ {
+        self.inner
+            .outputs_in_range((keychain.clone(), u32::MIN)..(keychain.clone(), u32::MAX))
+            .map(|((_, i), op)| (*i, op))
+    }
+
+    /// The highest derivation index of `keychain` that the index has found a `TxOut` with its script pubkey.
+    pub fn last_active_index(&self, keychain: &K) -> Option<u32> {
+        self.keychain_txouts(keychain).last().map(|(i, _)| i)
+    }
+
+    /// The highest derivation index of each keychain that the index has found a `TxOut` with its script pubkey.
+    pub fn last_active_indicies(&self) -> BTreeMap<K, u32> {
+        self.keychains
+            .iter()
+            .filter_map(|(keychain, _)| {
+                self.last_active_index(keychain)
+                    .map(|index| (keychain.clone(), index))
+            })
+            .collect()
     }
 }
 
