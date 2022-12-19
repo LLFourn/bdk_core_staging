@@ -20,7 +20,7 @@ use bdk_chain::keychain::KeychainScan;
 use bitcoincore_rpc::Auth;
 use rpc::{Client, RpcData, RpcError};
 
-const CHANNEL_BOUND: usize = 1000;
+const CHANNEL_BOUND: usize = 10;
 const LIVE_POLL_DUR_SECS: u64 = 15;
 
 #[derive(Args, Debug, Clone)]
@@ -59,9 +59,9 @@ enum RpcCommands {
         /// Starting block height to fallback to if no point of agreement if found
         #[clap(long, default_value = "0")]
         fallback_height: u32,
-        /// The unused-script gap will be kept at this value
+        /// The unused-scripts lookahead will be kept at this size
         #[clap(long, default_value = "10")]
-        stop_gap: u32,
+        look_ahead: u32,
         /// Whether to be live!
         #[clap(long, default_value = "false")]
         live: bool,
@@ -97,7 +97,7 @@ fn main() -> anyhow::Result<()> {
     match rpc_cmd {
         RpcCommands::Scan {
             fallback_height,
-            stop_gap,
+            look_ahead: stop_gap,
             live,
         } => {
             let (chan, recv) = sync_channel::<RpcData>(CHANNEL_BOUND);
