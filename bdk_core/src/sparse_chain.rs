@@ -443,6 +443,22 @@ impl<I: ChainIndex> SparseChain<I> {
         self.prune_checkpoints();
     }
 
+    /// Returns all the transaction ids that would be added to the sparse chain if this changeset
+    /// was applied.
+    pub fn changeset_additions<'a>(
+        &'a self,
+        changeset: &'a ChangeSet<I>,
+    ) -> impl Iterator<Item = Txid> + 'a {
+        changeset
+            .txids
+            .iter()
+            .filter(|(&txid, index)| {
+                index.is_some() /*it was not a deletion*/ &&
+                self.tx_index(txid).is_none() /*we don't have the txid already*/
+            })
+            .map(|(&txid, _)| txid)
+    }
+
     fn prune_checkpoints(&mut self) -> Option<BTreeMap<u32, BlockHash>> {
         let limit = self.checkpoint_limit?;
 
@@ -512,12 +528,6 @@ impl<I: ChainIndex> ChangeSet<I> {
 }
 
 impl<I> ChangeSet<I> {
-    pub fn tx_additions(&self) -> impl Iterator<Item = Txid> + '_ {
-        self.txids
-            .iter()
-            .filter_map(|(txid, new_value)| new_value.as_ref().map(|_| *txid))
-    }
-
     pub fn is_empty(&self) -> bool {
         self.checkpoints.is_empty() && self.txids.is_empty()
     }

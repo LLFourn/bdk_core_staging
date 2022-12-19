@@ -34,7 +34,7 @@ macro_rules! changeset {
         use bdk_core::collections::BTreeMap;
 
         #[allow(unused_mut)]
-        ChangeSet::<$ind> {
+        bdk_core::sparse_chain::ChangeSet::<$ind> {
             checkpoints: {
                 let mut changes = BTreeMap::default();
                 $(changes.insert($height, $cp_to);)*
