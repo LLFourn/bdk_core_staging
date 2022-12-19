@@ -6,11 +6,8 @@ use std::{
 use bdk_core::bitcoin::{Block, BlockHash, Transaction};
 use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
 
-/// Minimum number of mempool transactions to batch together for each mempool emission.
-const MEMPOOL_EMIT_THRESHOLD: usize = 420;
-
-/// Minimum number of blocks to batch together for each blocks emission.
-const BLOCK_EMIT_THRESHOLD: usize = 42;
+/// Minimum number of transactions to batch together for each emission.
+const TX_EMIT_THRESHOLD: usize = 100_000;
 
 pub enum RpcData {
     Start {
@@ -54,8 +51,7 @@ impl std::error::Error for RpcError {}
 
 pub struct Client {
     client: RpcClient,
-    block_emit_threshold: usize,
-    mempool_emit_threshold: usize,
+    tx_emit_threshold: usize,
 }
 
 impl Client {
@@ -63,22 +59,21 @@ impl Client {
         let client = RpcClient::new(url, auth)?;
         Ok(Client {
             client,
-            block_emit_threshold: BLOCK_EMIT_THRESHOLD,
-            mempool_emit_threshold: MEMPOOL_EMIT_THRESHOLD,
+            tx_emit_threshold: TX_EMIT_THRESHOLD,
         })
     }
 
     pub fn emit_blocks(
         &self,
         chan: &SyncSender<RpcData>,
-        local_cps: &BTreeMap<u32, BlockHash>,
+        local_cps: &mut BTreeMap<u32, BlockHash>,
         fallback_height: u32,
     ) -> Result<(), RpcError> {
         let tip = self.client.get_block_count()? as u32;
 
         let local_tip = local_cps
             .iter()
-            .last()
+            .next_back()
             .map(|(&height, _)| height as u32)
             .unwrap_or(fallback_height);
 
@@ -126,23 +121,29 @@ impl Client {
                 .map(|r| r.height)
                 .unwrap_or(fallback_height as _)
         );
+        match &last_agreement {
+            Some(res) => {
+                println!("point of agreement, height={}", res.height);
+                local_cps.split_off(&((res.height + 1) as _));
+            }
+            None => {
+                println!("no agreement, fallback_height={}", fallback_height);
+            }
+        };
 
         // batch of blocks to emit
         let mut to_emit = BTreeMap::<u32, Block>::new();
 
         // determine first block and last checkpoint that should be included (if any)
-        let (mut block, mut last_cp) = match last_agreement {
+        let mut block = match last_agreement {
             Some(res) => match res.nextblockhash {
-                Some(block_hash) => (
-                    self.client.get_block_info(&block_hash)?,
-                    Some((res.height as u32, res.hash)),
-                ),
+                Some(block_hash) => self.client.get_block_info(&block_hash)?,
                 // no next block after agreement point, checkout mempool
                 None => return self.emit_mempool(chan),
             },
             None => {
                 let block_hash = self.client.get_block_hash(fallback_height as _)?;
-                (self.client.get_block_info(&block_hash)?, None)
+                self.client.get_block_info(&block_hash)?
             }
         };
 
@@ -163,12 +164,17 @@ impl Client {
 
             if !has_next
                 || must_include.as_ref() <= to_emit.keys().next_back()
-                    && to_emit.len() >= self.block_emit_threshold
+                    && to_emit.iter().map(|(_, b)| b.txdata.len()).sum::<usize>()
+                        >= self.tx_emit_threshold
             {
+                let last_cp = local_cps.iter().next_back().map(|(h, b)| (*h, *b));
                 let blocks = to_emit.split_off(&0);
-                let next_last_cp = blocks.iter().last().map(|(h, b)| (*h, b.block_hash()));
+
+                for (height, block) in &blocks {
+                    local_cps.insert(*height, block.block_hash());
+                }
+
                 chan.send(RpcData::Blocks { last_cp, blocks })?;
-                last_cp = next_last_cp;
             }
         }
 
@@ -181,7 +187,7 @@ impl Client {
         for txids in self
             .client
             .get_raw_mempool()?
-            .chunks(self.mempool_emit_threshold)
+            .chunks(self.tx_emit_threshold)
         {
             let txs = txids
                 .iter()

@@ -16,11 +16,12 @@ use bdk_cli::{
     log,
 };
 use bdk_core::{chain_graph::ChainGraph, BlockId, TxHeight};
-use bdk_keychain::KeychainScan;
+use bdk_keychain::KeychainChangeSet;
 use bitcoincore_rpc::Auth;
 use rpc::{Client, RpcData, RpcError};
 
 const CHANNEL_BOUND: usize = 1000;
+const LIVE_POLL_DUR_SECS: u64 = 15;
 
 #[derive(Args, Debug, Clone)]
 struct RpcArgs {
@@ -101,12 +102,12 @@ fn main() -> anyhow::Result<()> {
         } => {
             let (chan, recv) = sync_channel::<RpcData>(CHANNEL_BOUND);
             let sigterm_flag = start_ctrlc_handler(chan.clone());
-            let local_cps = keychain_tracker.chain().checkpoints().clone();
+            let mut local_cps = keychain_tracker.chain().checkpoints().clone();
 
             // emit blocks thread
             let join_handle = std::thread::spawn(move || loop {
-                client.emit_blocks(&chan, &local_cps, fallback_height)?;
-                if live && !await_flag(&sigterm_flag, Duration::from_secs(10)) {
+                client.emit_blocks(&chan, &mut local_cps, fallback_height)?;
+                if live && !await_flag(&sigterm_flag, Duration::from_secs(LIVE_POLL_DUR_SECS)) {
                     continue;
                 }
                 return chan.send(RpcData::Stop(true)).map_err(RpcError::Send);
@@ -176,47 +177,48 @@ fn main() -> anyhow::Result<()> {
                 keychain_tracker
                     .txout_index
                     .prune_unused(old_indexes.clone());
+
                 let new_indexes = keychain_tracker.txout_index.last_active_indicies();
 
-                let wallet_scan = KeychainScan {
-                    update,
-                    last_active_indexes: new_indexes.clone(),
-                };
+                let changeset = KeychainChangeSet {
+                    derivation_indices: keychain_tracker
+                        .txout_index
+                        .keychains()
+                        .keys()
+                        .filter_map(|keychain| {
+                            let old_index = old_indexes.get(keychain);
+                            let new_index = new_indexes.get(keychain);
 
-                let mut changeset = keychain_tracker.determine_changeset(&wallet_scan)?;
-                changeset.derivation_indices = keychain_tracker
-                    .txout_index
-                    .keychains()
-                    .keys()
-                    .filter_map(|keychain| {
-                        match (old_indexes.get(keychain), new_indexes.get(keychain)) {
-                            (Some(old_index), Some(new_index)) if new_index > old_index => {
-                                Some((keychain.clone(), *new_index))
+                            match new_index {
+                                Some(new_ind) if new_index > old_index => {
+                                    Some((keychain.clone(), *new_ind))
+                                }
+                                _ => None,
                             }
-                            (None, Some(new_index)) => Some((keychain.clone(), *new_index)),
-                            _ => None,
-                        }
-                    })
-                    .collect();
-
-                db.append_changeset(&changeset)?;
+                        })
+                        .collect(),
+                    chain_graph: keychain_tracker
+                        .chain_graph()
+                        .determine_changeset(&update)?,
+                };
 
                 println!("* index_changes: {:?}", changeset.derivation_indices);
                 println!(
-                    "* tx_changes  : {}",
+                    "*  txid_changes: {}",
                     changeset.chain_graph.chain.txids.len()
                 );
                 println!(
-                    "* scanned: {} / {} tip",
+                    "* scanned_to: {} / {} tip",
                     match changeset.chain_graph.chain.checkpoints.iter().next_back() {
                         Some((height, _)) => height.to_string(),
                         None => "mempool".to_string(),
                     },
                     tip,
                 );
-                keychain_tracker.apply_changeset(changeset);
-
                 println!("...");
+
+                db.append_changeset(&changeset)?;
+                keychain_tracker.apply_changeset(changeset);
 
                 if is_synced {
                     let balance = keychain_tracker
@@ -224,7 +226,6 @@ fn main() -> anyhow::Result<()> {
                         .map(|(_, utxo)| utxo.txout.value)
                         .sum::<u64>();
                     println!("sync complete: balance={}", balance);
-                    // TODO: Print more stuff
                 }
             }
 
