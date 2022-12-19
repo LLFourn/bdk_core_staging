@@ -119,11 +119,12 @@ impl ElectrumClient {
             .insert_checkpoint(BlockId {
                 height: tip_height,
                 hash: tip_hash,
-            }).is_err() {
-                // This means our existing chain tip has been reorged out.
-                return Err(ElectrumError::Reorg(tip_height));
-            }
-
+            })
+            .is_err()
+        {
+            // This means our existing chain tip has been reorged out.
+            return Err(ElectrumError::Reorg(tip_height));
+        }
 
         let mut keychain_index_update = BTreeMap::new();
 
