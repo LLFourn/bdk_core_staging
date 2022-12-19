@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{sync_channel, SyncSender},
+        mpsc::sync_channel,
         Arc,
     },
     time::{Duration, SystemTime},
@@ -13,7 +13,6 @@ use std::{
 use bdk_cli::{
     anyhow,
     clap::{self, Args, Subcommand},
-    log,
 };
 use bdk_core::{chain_graph::ChainGraph, BlockId, TxHeight};
 use bdk_keychain::KeychainChangeSet;
@@ -69,6 +68,8 @@ enum RpcCommands {
 }
 
 fn main() -> anyhow::Result<()> {
+    let sigterm_flag = start_ctrlc_handler();
+
     println!("Loading wallet from db...");
     let (args, keymap, mut keychain_tracker, mut db) =
         bdk_cli::init::<RpcArgs, RpcCommands, TxHeight>()?;
@@ -101,23 +102,28 @@ fn main() -> anyhow::Result<()> {
             live,
         } => {
             let (chan, recv) = sync_channel::<RpcData>(CHANNEL_BOUND);
-            let sigterm_flag = start_ctrlc_handler(chan.clone());
             let mut local_cps = keychain_tracker.chain().checkpoints().clone();
 
             // emit blocks thread
+            let thread_flag = sigterm_flag.clone();
             let join_handle = std::thread::spawn(move || loop {
                 client.emit_blocks(&chan, &mut local_cps, fallback_height)?;
-                if live && !await_flag(&sigterm_flag, Duration::from_secs(LIVE_POLL_DUR_SECS)) {
+                if live && !await_flag(&thread_flag, Duration::from_secs(LIVE_POLL_DUR_SECS)) {
                     continue;
                 }
-                return chan.send(RpcData::Stop(true)).map_err(RpcError::Send);
+                return Ok::<_, RpcError>(());
             });
 
             let mut tip = 0;
+            let start_time = SystemTime::now();
 
             for data in recv.iter() {
+                if sigterm_flag.load(Ordering::Relaxed) {
+                    println!("terminating...");
+                    return Ok(());
+                }
+
                 let mut update = ChainGraph::<TxHeight>::default();
-                let is_synced = matches!(&data, &RpcData::Mempool(_));
 
                 let txs = match data {
                     RpcData::Start {
@@ -131,10 +137,17 @@ fn main() -> anyhow::Result<()> {
                         );
                         continue;
                     }
-                    RpcData::Stop(finished) => {
-                        println!("terminating... sync_finished={}", finished);
-                        drop(recv);
-                        break;
+                    RpcData::Synced => {
+                        let balance = keychain_tracker
+                            .full_utxos()
+                            .map(|(_, utxo)| utxo.txout.value)
+                            .sum::<u64>();
+                        let duration = SystemTime::now().duration_since(start_time)?.as_secs();
+                        println!(
+                            "sync finished: duration={}s, tip={}, balance={}sats",
+                            duration, tip, balance
+                        );
+                        continue;
                     }
                     RpcData::Blocks { last_cp, blocks } => {
                         let checkpoints = blocks
@@ -219,14 +232,6 @@ fn main() -> anyhow::Result<()> {
 
                 db.append_changeset(&changeset)?;
                 keychain_tracker.apply_changeset(changeset);
-
-                if is_synced {
-                    let balance = keychain_tracker
-                        .full_utxos()
-                        .map(|(_, utxo)| utxo.txout.value)
-                        .sum::<u64>();
-                    println!("sync complete: balance={}", balance);
-                }
             }
 
             join_handle
@@ -238,18 +243,12 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_ctrlc_handler(chan: SyncSender<RpcData>) -> Arc<AtomicBool> {
+fn start_ctrlc_handler() -> Arc<AtomicBool> {
     let flag = Arc::new(AtomicBool::new(false));
     let cloned_flag = flag.clone();
 
-    ctrlc::set_handler(move || {
-        cloned_flag.store(true, Ordering::SeqCst);
-        match chan.send(RpcData::Stop(false)) {
-            Ok(_) => log::info!("caught SIGTERM"),
-            Err(err) => log::warn!("failed to send SIGTERM: {}", err),
-        }
-    })
-    .expect("failed to set Ctrl+C handler");
+    ctrlc::set_handler(move || cloned_flag.store(true, Ordering::SeqCst))
+        .expect("failed to set Ctrl+C handler");
 
     flag
 }

@@ -19,7 +19,7 @@ pub enum RpcData {
         blocks: BTreeMap<u32, Block>,
     },
     Mempool(Vec<Transaction>),
-    Stop(bool),
+    Synced,
 }
 
 #[derive(Debug)]
@@ -114,16 +114,9 @@ impl Client {
             };
         }
 
-        println!(
-            "point of agreement: height={}",
-            last_agreement
-                .as_ref()
-                .map(|r| r.height)
-                .unwrap_or(fallback_height as _)
-        );
         match &last_agreement {
             Some(res) => {
-                println!("point of agreement, height={}", res.height);
+                println!("agreement @ height={}", res.height);
                 local_cps.split_off(&((res.height + 1) as _));
             }
             None => {
@@ -196,6 +189,7 @@ impl Client {
             chan.send(RpcData::Mempool(txs))?;
         }
 
+        chan.send(RpcData::Synced)?;
         Ok(())
     }
 }
