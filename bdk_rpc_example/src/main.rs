@@ -21,6 +21,7 @@ use rpc::{Client, RpcData, RpcError};
 
 const CHANNEL_BOUND: usize = 10;
 const LIVE_POLL_DUR_SECS: u64 = 15;
+const FALLBACK_CP_LIMIT: usize = 100;
 
 #[derive(Args, Debug, Clone)]
 struct RpcArgs {
@@ -98,7 +99,7 @@ fn main() -> anyhow::Result<()> {
     match rpc_cmd {
         RpcCommands::Scan {
             fallback_height,
-            lookahead: stop_gap,
+            lookahead,
             live,
         } => {
             let (chan, recv) = sync_channel::<RpcData>(CHANNEL_BOUND);
@@ -106,8 +107,11 @@ fn main() -> anyhow::Result<()> {
 
             // emit blocks thread
             let thread_flag = sigterm_flag.clone();
+            let cp_limit = keychain_tracker
+                .checkpoint_limit()
+                .unwrap_or(FALLBACK_CP_LIMIT);
             let join_handle = std::thread::spawn(move || loop {
-                client.emit_blocks(&chan, &mut local_cps, fallback_height)?;
+                client.emit_blocks(&chan, &mut local_cps, cp_limit, fallback_height)?;
                 if live && !await_flag(&thread_flag, Duration::from_secs(LIVE_POLL_DUR_SECS)) {
                     continue;
                 }
@@ -179,7 +183,7 @@ fn main() -> anyhow::Result<()> {
                 for (height, tx) in txs {
                     keychain_tracker
                         .txout_index
-                        .derive_until_unused_gap(stop_gap);
+                        .derive_until_unused_gap(lookahead);
                     if keychain_tracker.txout_index.is_relevant(&tx) {
                         println!("* adding tx to update: {} @ {}", tx.txid(), height);
                         update.insert_tx(tx.clone(), height)?;

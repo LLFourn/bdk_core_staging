@@ -7,7 +7,7 @@ use bdk_chain::bitcoin::{Block, BlockHash, Transaction};
 use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
 
 /// Minimum number of transactions to batch together for each emission.
-const TX_EMIT_THRESHOLD: usize = 100_000;
+const TX_EMIT_THRESHOLD: usize = 75_000;
 
 pub enum RpcData {
     Start {
@@ -67,6 +67,7 @@ impl Client {
         &self,
         chan: &SyncSender<RpcData>,
         local_cps: &mut BTreeMap<u32, BlockHash>,
+        cp_limit: usize,
         fallback_height: u32,
     ) -> Result<(), RpcError> {
         let tip = self.client.get_block_count()? as u32;
@@ -169,7 +170,7 @@ impl Client {
                 }
 
                 // prune local checkpoints
-                if let Some(&last_height) = local_cps.keys().nth_back(100) {
+                if let Some(&last_height) = local_cps.keys().nth_back(cp_limit) {
                     let mut split = local_cps.split_off(&(last_height + 1));
                     core::mem::swap(local_cps, &mut split);
                 }
