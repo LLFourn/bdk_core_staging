@@ -187,7 +187,8 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         let is_removed = self.unused.remove(index);
         if is_removed {
             let spk = self.script_pubkeys.remove(index).expect("should exist");
-            self.spk_indexes.remove(&spk);
+            let _removed_index = self.spk_indexes.remove(&spk);
+            debug_assert!(_removed_index == Some(index.clone()));
         }
         is_removed
     }

@@ -166,7 +166,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> bool {
         keychains
             .into_iter()
-            .any(|(keychain, index)| self.store_up_to(keychain, *index))
+            .map(|(keychain, index)| self.store_up_to(keychain, *index))
+            .fold(false, |acc, r| acc || r)
     }
 
     /// Derives script pubkeys from the descriptor **up to and including** `up_to` and stores them
@@ -284,7 +285,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     }
 
     pub fn derive_until_unused_gap(&mut self, gap: u32) -> bool {
-        if gap == 0 {
+        if gap < 1 {
             return false;
         }
 
@@ -294,6 +295,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .map(|(keychain, _)| {
                 let up_to = self
                     .last_active_index(keychain)
+                    .map(|i| i + gap)
                     .unwrap_or(gap.saturating_sub(1));
                 (keychain.clone(), up_to)
             })
