@@ -1,9 +1,9 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     sync::mpsc::{SendError, SyncSender},
 };
 
-use bdk_chain::bitcoin::{Block, BlockHash, Transaction};
+use bdk_chain::bitcoin::{Block, BlockHash, Transaction, Txid};
 use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
 
 /// Minimum number of transactions to batch together for each emission.
@@ -183,18 +183,33 @@ impl Client {
     }
 
     pub fn emit_mempool(&self, chan: &SyncSender<RpcData>) -> Result<(), RpcError> {
-        // TODO: I'm not sure if things are returned in order
-        // TODO: Include mempool sequence!
-        for txids in self
+        let ordered_txids = self
             .client
             .get_raw_mempool()?
-            .chunks(self.tx_emit_threshold)
-        {
-            let txs = txids
-                .iter()
-                .map(|txid| self.client.get_raw_transaction(txid, None))
-                .collect::<Result<Vec<_>, _>>()?;
-            chan.send(RpcData::Mempool(txs))?;
+            .into_iter()
+            .map(|txid| {
+                self.client
+                    .get_mempool_entry(&txid)
+                    .map(|entry| ((entry.depends.len(), txid), entry.depends))
+            })
+            .collect::<Result<BTreeMap<(usize, Txid), Vec<Txid>>, _>>()?;
+
+        let mut done = HashSet::<Txid>::with_capacity(ordered_txids.len());
+
+        while done.len() < ordered_txids.len() {
+            let mut batch = Vec::new();
+
+            for ((_, txid), depends) in &ordered_txids {
+                if done.contains(txid) || depends.iter().any(|txid| !done.contains(txid)) {
+                    continue;
+                }
+
+                let tx = self.client.get_raw_transaction(txid, None)?;
+                batch.push(tx);
+                done.insert(*txid);
+            }
+
+            chan.send(RpcData::Mempool(batch))?;
         }
 
         chan.send(RpcData::Synced)?;
