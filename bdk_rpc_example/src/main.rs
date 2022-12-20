@@ -219,11 +219,6 @@ fn main() -> anyhow::Result<()> {
                         .determine_changeset(&update)?,
                 };
 
-                println!("* index_changes: {:?}", changeset.derivation_indices);
-                println!(
-                    "*  txid_changes: {}",
-                    changeset.chain_graph.chain.txids.len()
-                );
                 println!(
                     "* scanned_to: {} / {} tip",
                     match changeset.chain_graph.chain.checkpoints.iter().next_back() {
@@ -232,7 +227,6 @@ fn main() -> anyhow::Result<()> {
                     },
                     tip,
                 );
-                println!("...");
 
                 db.append_changeset(&changeset)?;
                 keychain_tracker.apply_changeset(changeset);

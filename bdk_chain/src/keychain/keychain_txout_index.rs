@@ -344,7 +344,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     }
 
     pub fn derive_until_unused_gap(&mut self, gap: u32) -> bool {
-        if gap == 0 {
+        if gap < 1 {
             return false;
         }
 
@@ -354,6 +354,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .map(|(keychain, _)| {
                 let up_to = self
                     .last_active_index(keychain)
+                    .map(|i| i + gap)
                     .unwrap_or(gap.saturating_sub(1));
                 (keychain.clone(), up_to)
             })
