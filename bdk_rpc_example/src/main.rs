@@ -21,7 +21,6 @@ use rpc::{Client, RpcData, RpcError};
 
 const CHANNEL_BOUND: usize = 10;
 const LIVE_POLL_DUR_SECS: u64 = 15;
-const FALLBACK_CP_LIMIT: usize = 100;
 
 #[derive(Args, Debug, Clone)]
 struct RpcArgs {
@@ -107,11 +106,9 @@ fn main() -> anyhow::Result<()> {
 
             // emit blocks thread
             let thread_flag = sigterm_flag.clone();
-            let cp_limit = keychain_tracker
-                .checkpoint_limit()
-                .unwrap_or(FALLBACK_CP_LIMIT);
             let join_handle = std::thread::spawn(move || loop {
-                client.emit_blocks(&chan, &mut local_cps, cp_limit, fallback_height)?;
+                client.emit_blocks(chan.clone(), &mut local_cps, fallback_height, 50)?;
+                client.emit_mempool(chan.clone(), 1000)?;
                 if live && !await_flag(&thread_flag, Duration::from_secs(LIVE_POLL_DUR_SECS)) {
                     continue;
                 }
@@ -131,40 +128,45 @@ fn main() -> anyhow::Result<()> {
 
                 let txs = match data {
                     RpcData::Start {
-                        local_tip,
+                        starting_tip,
                         target_tip,
                     } => {
                         tip = target_tip;
                         println!(
                             "sync start: current_tip={}, target_tip={}",
-                            local_tip, target_tip
+                            starting_tip, target_tip
                         );
                         continue;
                     }
-                    RpcData::Synced => {
+                    RpcData::BlocksSynced => {
+                        continue;
+                    }
+                    RpcData::MempoolSynced => {
                         let balance = keychain_tracker
                             .full_utxos()
                             .map(|(_, utxo)| utxo.txout.value)
                             .sum::<u64>();
                         let duration = SystemTime::now().duration_since(start_time)?.as_secs();
                         println!(
-                            "sync finished: duration={}s, tip={}, balance={}sats",
+                            "block sync finished: duration={}s, tip={}, balance={}sats",
                             duration, tip, balance
                         );
                         continue;
                     }
-                    RpcData::Blocks { last_cp, blocks } => {
-                        let checkpoints = blocks
-                            .iter()
-                            .map(|(h, b)| (*h, b.block_hash()))
-                            .chain(last_cp);
-                        for (height, hash) in checkpoints {
-                            update.insert_checkpoint(BlockId { height, hash })?;
-                        }
-
+                    RpcData::Blocks {
+                        first_height,
+                        blocks,
+                    } => {
                         blocks
                             .into_iter()
-                            .flat_map(|(height, block)| {
+                            .enumerate()
+                            .flat_map(|(i, block)| {
+                                let height = first_height + i as u32;
+                                if height != 0 {
+                                    update.insert_checkpoint(BlockId { height: height - 1, hash: block.header.prev_blockhash }).expect("rpc emitted a block whose prev_blockhash wasn't the previous one it emitted");
+                                }
+                                update.insert_checkpoint(BlockId {  height, hash: block.block_hash() }).expect("unreachable since height is increasing");
+
                                 block
                                     .txdata
                                     .into_iter()
@@ -180,15 +182,18 @@ fn main() -> anyhow::Result<()> {
 
                 let old_indexes = keychain_tracker.txout_index.derivation_indices();
 
-                for (height, tx) in txs {
+                for (_, tx) in &txs {
                     keychain_tracker
                         .txout_index
                         .derive_until_unused_gap(lookahead);
+                    keychain_tracker.txout_index.scan(tx);
+                }
+
+                for (height, tx) in txs {
                     if keychain_tracker.txout_index.is_relevant(&tx) {
                         println!("* adding tx to update: {} @ {}", tx.txid(), height);
                         update.insert_tx(tx.clone(), Some(height))?;
                     }
-                    keychain_tracker.txout_index.scan(&tx);
                 }
 
                 keychain_tracker
