@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use bdk_core::{
     bitcoin::{secp256k1::Secp256k1, OutPoint, Script, TxOut},
     collections::*,
@@ -246,6 +247,61 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         } else {
             self.keychain_unused(keychain).next().unwrap()
         }
+    }
+
+    /// Convenience method to call [`store_until_unused_count`] for all keychains.
+    ///
+    /// [`store_until_unused_count`]: Self::store_until_unused_count
+    pub fn store_all_until_unused_count(&mut self, unused_count: u32) -> bool {
+        let keychains = self.keychains.keys().cloned().collect::<Vec<_>>();
+        keychains
+            .into_iter()
+            .map(|keychain| self.store_until_unused_count(&keychain, unused_count))
+            .fold(false, |acc, v| acc || v)
+    }
+
+    /// Derives script pubkeys from the descriptor until the unused script count reaches
+    /// `unused_count`.
+    ///
+    /// Returns whether any new script pubkeys were derived.
+    pub fn store_until_unused_count(&mut self, keychain: &K, unused_count: u32) -> bool {
+        if unused_count < 1 {
+            return false;
+        }
+        let up_to = self
+            .last_active_index(keychain)
+            .map(|i| i.saturating_add(unused_count))
+            .unwrap_or(unused_count.saturating_sub(1));
+        self.store_up_to(keychain, up_to)
+    }
+
+    /// Convenience method to call [`prune_unused`] for all keychains.
+    ///
+    /// `prune_from` contains the lowest allowed index to prune from per keychain (default is 0).
+    ///
+    /// [`prune_unused`]: Self::prune_unused
+    pub fn prune_all_unused(&mut self, prune_from: BTreeMap<K, u32>) -> bool {
+        let keychains = self.keychains.keys().cloned().collect::<Vec<_>>();
+        keychains
+            .into_iter()
+            .map(|keychain| self.prune_unused(&keychain, *prune_from.get(&keychain).unwrap_or(&0)))
+            .fold(false, |acc, v| acc || v)
+    }
+
+    /// Prunes unused script pubkeys of a given keychain, starting from index `prune_from`.
+    ///
+    /// Returns whether anything was removed.
+    pub fn prune_unused(&mut self, keychain: &K, prune_from: u32) -> bool {
+        let to_prune = self
+            .inner
+            .unused((keychain.clone(), prune_from)..=(keychain.clone(), u32::MAX))
+            .map(|(index, _)| index.clone())
+            .collect::<Vec<_>>();
+
+        to_prune
+            .into_iter()
+            .map(|index| self.inner.remove_unused(&index))
+            .fold(false, |acc, v| acc || v)
     }
 
     /// Iterates over all unused script pubkeys for a `keychain` that have been stored in the index.

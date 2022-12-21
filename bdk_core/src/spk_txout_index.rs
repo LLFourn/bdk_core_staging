@@ -191,6 +191,16 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         self.unused.get(index).is_none()
     }
 
+    /// Removes an unused index.
+    pub fn remove_unused(&mut self, index: &I) -> bool {
+        let is_removed = self.unused.remove(index);
+        if is_removed {
+            let spk = self.script_pubkeys.remove(index).expect("should exist");
+            self.spk_indexes.remove(&spk);
+        }
+        is_removed
+    }
+
     /// Returns the index associated with the script pubkey.
     pub fn index_of_spk(&self, script: &Script) -> Option<I> {
         self.spk_indexes.get(script).cloned()
