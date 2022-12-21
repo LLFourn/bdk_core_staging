@@ -1,0 +1,50 @@
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+name: continuous_builds
+
+env:
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - --no-default-features
+          - "" # default features
+          - --no-default-features --features=hashbrown
+          - --all-features
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2.0.0
+      - name: run cargo build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: ${{ matrix.features }} --release
+
+
+  doc-build:
+     name: doc-build
+     runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@v2
+       - uses: actions-rs/toolchain@v1
+         with:
+           profile: minimal
+           toolchain: nightly
+           override: true
+       - name: build-doc
+         # convoluted way to make it fail on warnings
+         run: "cargo doc --no-deps --workspace 2>&1 | tee /dev/fd/2 | grep -iEq '^(warning|error)' && exit 1 || exit 0"

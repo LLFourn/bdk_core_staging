@@ -36,27 +36,32 @@ where
         loop {
             let pos = db_file.stream_position()?;
 
-            match bincode::decode_from_std_read(&mut db_file, bincode::config::standard()) {
-                Ok(bincode::serde::Compat(changeset @ KeychainChangeSet::<K, I> { .. })) => {
-                    tracker
-                        .txout_index
-                        .store_all_up_to(&changeset.derivation_indices);
-                    tracker.apply_changeset(changeset);
-                }
-                Err(e) => {
-                    if let bincode::error::DecodeError::Io { inner, .. } = &e {
-                        // The only kind of error that we actually want to return are read failures
-                        // caused by device failure etc. UnexpectedEof just menas that whatever was
-                        // left after the last entry wasn't enough to be decoded (usually its 0
-                        // bytes) -- If it's not empty we can just ignore it and write over the
-                        // corrupted entry.
-                        if inner.kind() != std::io::ErrorKind::UnexpectedEof {
-                            return Err(e).context("IO error while reading next entry");
-                        }
+            let failed =
+                match bincode::decode_from_std_read(&mut db_file, bincode::config::standard()) {
+                    Ok(bincode::serde::Compat(changeset @ KeychainChangeSet::<K, I> { .. })) => {
+                        tracker
+                            .txout_index
+                            .store_all_up_to(&changeset.derivation_indices);
+                        tracker.apply_changeset(changeset).is_err()
                     }
-                    db_file.seek(std::io::SeekFrom::Start(pos))?;
-                    break;
-                }
+                    Err(e) => {
+                        if let bincode::error::DecodeError::Io { inner, .. } = &e {
+                            // The only kind of error that we actually want to return are read failures
+                            // caused by device failure etc. UnexpectedEof just menas that whatever was
+                            // left after the last entry wasn't enough to be decoded (usually its 0
+                            // bytes) -- If it's not empty we can just ignore it and write over the
+                            // corrupted entry.
+                            if inner.kind() != std::io::ErrorKind::UnexpectedEof {
+                                return Err(e).context("IO error while reading next entry");
+                            }
+                        }
+                        true
+                    }
+                };
+
+            if failed {
+                db_file.seek(std::io::SeekFrom::Start(pos))?;
+                break;
             }
         }
 

@@ -198,8 +198,8 @@ impl From<core::time::Duration> for BnbLimit {
 ///   RBF), and `max_extra_target` (which can be used to increase the possible solution set, given
 ///   that the sender is okay with sending extra to the receiver).
 ///
-/// Murch's Master Thesis: https://murch.one/wp-content/uploads/2016/11/erhardt2016coinselection.pdf
-/// Bitcoin Core Implementation: https://github.com/bitcoin/bitcoin/blob/23.x/src/wallet/coinselection.cpp#L65
+/// Murch's Master Thesis: <https://murch.one/wp-content/uploads/2016/11/erhardt2016coinselection.pdf>
+/// Bitcoin Core Implementation: <https://github.com/bitcoin/bitcoin/blob/23.x/src/wallet/coinselection.cpp#L65>
 ///
 /// TODO: Another optimization we could do is figure out candidate with smallest waste, and
 /// if we find a result with waste equal to this, we can just break.

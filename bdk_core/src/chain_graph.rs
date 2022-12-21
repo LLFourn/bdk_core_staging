@@ -168,7 +168,7 @@ impl<I: ChainIndex> ChainGraph<I> {
         }
     }
 
-    /// Convets a [`sparse_chain::ChangeSet`] to a valid [`chain_graph::ChangeSet`] by providing
+    /// Convets a [`sparse_chain::ChangeSet`] to a valid [`ChangeSet`] by providing
     /// full transactions for each addition.
     ///
     pub fn inflate_changeset(

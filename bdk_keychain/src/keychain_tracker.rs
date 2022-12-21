@@ -1,5 +1,7 @@
 use bdk_core::{
+    bitcoin::Txid,
     chain_graph::{self, ChainGraph},
+    collections::HashSet,
     keychain::{KeychainChangeSet, KeychainScan},
     sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
@@ -53,11 +55,25 @@ where
         })
     }
 
-    pub fn apply_changeset(&mut self, changeset: KeychainChangeSet<K, I>) {
+    pub fn apply_changeset(
+        &mut self,
+        changeset: KeychainChangeSet<K, I>,
+    ) -> Result<(), (KeychainChangeSet<K, I>, HashSet<Txid>)> {
         self.txout_index
             .store_all_up_to(&changeset.derivation_indices);
         self.txout_index.scan(&changeset);
-        self.chain_graph.apply_changeset(changeset.chain_graph);
+        let derivation_indices = changeset.derivation_indices;
+        self.chain_graph
+            .apply_changeset(changeset.chain_graph)
+            .map_err(|(cg_changeset, missing)| {
+                (
+                    KeychainChangeSet {
+                        derivation_indices,
+                        chain_graph: cg_changeset,
+                    },
+                    missing,
+                )
+            })
     }
 
     pub fn full_txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {

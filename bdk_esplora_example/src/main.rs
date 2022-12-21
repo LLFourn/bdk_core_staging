@@ -89,7 +89,9 @@ fn main() -> anyhow::Result<()> {
 
             let changeset = keychain_tracker.determine_changeset(&wallet_scan)?;
             db.append_changeset(&changeset)?;
-            keychain_tracker.apply_changeset(changeset);
+            keychain_tracker
+                .apply_changeset(changeset)
+                .expect("it was just generated");
         }
         EsploraCommands::Sync {
             mut unused,
@@ -142,7 +144,9 @@ fn main() -> anyhow::Result<()> {
                 .determine_changeset(&scan)?
                 .into();
             db.append_changeset(&changeset)?;
-            keychain_tracker.apply_changeset(changeset);
+            keychain_tracker
+                .apply_changeset(changeset)
+                .expect("it was just generated");
         } // For everything else run handler
     }
 
