@@ -1,4 +1,5 @@
 use crate::{
+    collections::HashSet,
     sparse_chain::{self, ChainIndex, SparseChain},
     tx_graph::{self, TxGraph},
     BlockId, ForEachTxout, FullTxOut, TxHeight,
@@ -146,9 +147,61 @@ impl<I: ChainIndex> ChainGraph<I> {
     }
 
     /// Applies a [`ChangeSet`] to the chain graph
-    pub fn apply_changeset(&mut self, changeset: ChangeSet<I>) {
-        self.chain.apply_changeset(changeset.chain);
-        self.graph.apply_additions(changeset.graph);
+    pub fn apply_changeset(
+        &mut self,
+        changeset: ChangeSet<I>,
+    ) -> Result<(), (ChangeSet<I>, HashSet<Txid>)> {
+        let mut missing: HashSet<Txid> = self.chain.changeset_additions(&changeset.chain).collect();
+
+        for tx in &changeset.graph.tx {
+            missing.remove(&tx.txid());
+        }
+
+        missing.retain(|txid| !self.graph.contains_txid(*txid));
+
+        if missing.is_empty() {
+            self.chain.apply_changeset(changeset.chain);
+            self.graph.apply_additions(changeset.graph);
+            Ok(())
+        } else {
+            Err((changeset, missing))
+        }
+    }
+
+    /// Convets a [`sparse_chain::ChangeSet`] to a valid [`chain_graph::ChangeSet`] by providing
+    /// full transactions for each addition.
+    ///
+    pub fn inflate_changeset(
+        &self,
+        changeset: sparse_chain::ChangeSet<I>,
+        full_txs: impl IntoIterator<Item = Transaction>,
+    ) -> Result<ChangeSet<I>, (sparse_chain::ChangeSet<I>, HashSet<Txid>)> {
+        let mut missing = self
+            .chain
+            .changeset_additions(&changeset)
+            .collect::<HashSet<_>>();
+        missing.retain(|txid| !self.graph.contains_txid(*txid));
+        // need to wrap in a refcell because it's closed over twice below
+        let missing = core::cell::RefCell::new(missing);
+        let full_txs = full_txs
+            .into_iter()
+            .take_while(|_| !missing.borrow().is_empty())
+            .filter(|tx| missing.borrow_mut().remove(&tx.txid()))
+            .collect();
+
+        let missing = missing.into_inner();
+
+        if missing.is_empty() {
+            Ok(ChangeSet {
+                chain: changeset,
+                graph: tx_graph::Additions {
+                    tx: full_txs,
+                    ..Default::default()
+                },
+            })
+        } else {
+            Err((changeset, missing))
+        }
     }
 
     /// Applies the `update` chain graph. Note this is shorthand for calling [`determine_changeset`]
@@ -158,7 +211,8 @@ impl<I: ChainIndex> ChainGraph<I> {
     /// [`determine_changeset`]: Self::determine_changeset
     pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<I>> {
         let changeset = self.determine_changeset(&update)?;
-        self.apply_changeset(changeset);
+        self.apply_changeset(changeset)
+            .expect("we correctly constructed this");
         Ok(())
     }
 
