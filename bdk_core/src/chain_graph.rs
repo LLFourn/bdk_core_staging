@@ -52,21 +52,23 @@ impl<I: ChainIndex> ChainGraph<I> {
         self.chain.set_checkpoint_limit(limit)
     }
 
+    /// Inserts a transaction into the inner [`ChainGraph`] and optionally into the chain at
+    /// `position`.
+    ///
+    /// **Warning**: This function modifies the internal state of the chain graph. You are
+    /// responsible for persisting these changes to disk if you need to restore them.
     pub fn insert_tx(
         &mut self,
         tx: Transaction,
-        index: Option<I>,
-    ) -> Result<InsertOk, sparse_chain::InsertTxErr> {
-        let chain_changed = match index {
+        position: Option<I>,
+    ) -> Result<bool, sparse_chain::InsertTxErr> {
+        let chain_changed = match position {
             Some(index) => self.chain.insert_tx(tx.txid(), index)?,
             None => false,
         };
         let graph_changed = self.graph.insert_tx(tx);
 
-        Ok(InsertOk {
-            chain: chain_changed,
-            graph: graph_changed,
-        })
+        Ok(graph_changed || chain_changed)
     }
 
     pub fn insert_output(&mut self, outpoint: OutPoint, txout: TxOut) -> bool {
@@ -271,11 +273,6 @@ impl<I> ForEachTxout for ChangeSet<I> {
     fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
         self.graph.for_each_txout(f)
     }
-}
-
-pub struct InsertOk<R = bool> {
-    pub chain: R,
-    pub graph: R,
 }
 
 #[derive(Clone, Debug, PartialEq)]

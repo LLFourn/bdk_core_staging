@@ -1,9 +1,9 @@
 use bdk_core::{
-    bitcoin::Txid,
+    bitcoin::{Transaction, Txid},
     chain_graph::{self, ChainGraph},
     collections::HashSet,
     keychain::{KeychainChangeSet, KeychainScan},
-    sparse_chain::{self, InsertCheckpointErr, SparseChain},
+    sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
     BlockId, FullTxOut,
 };
@@ -124,8 +124,24 @@ where
     ///
     /// **Warning**: This function modifies the internal state of the tracker. You are responsible
     /// for persisting these changes to disk if you need to restore them.
-    pub fn insert_checkpoint(&mut self, block_id: BlockId) -> Result<bool, InsertCheckpointErr> {
+    pub fn insert_checkpoint(
+        &mut self,
+        block_id: BlockId,
+    ) -> Result<bool, sparse_chain::InsertCheckpointErr> {
         self.chain_graph.insert_checkpoint(block_id)
+    }
+
+    /// Inserts a transaction into the inner [`ChainGraph`] and optionally into the inner chain at
+    /// `position`.
+    ///
+    /// **Warning**: This function modifies the internal state of the chain graph. You are
+    /// responsible for persisting these changes to disk if you need to restore them.
+    pub fn insert_tx(
+        &mut self,
+        tx: Transaction,
+        position: Option<I>,
+    ) -> Result<bool, sparse_chain::InsertTxErr> {
+        self.chain_graph.insert_tx(tx, position)
     }
 }
 
