@@ -3,9 +3,9 @@ use bdk_core::{
     chain_graph::{self, ChainGraph},
     collections::HashSet,
     keychain::{KeychainChangeSet, KeychainScan},
-    sparse_chain::{self, SparseChain},
+    sparse_chain::{self, InsertCheckpointErr, SparseChain},
     tx_graph::TxGraph,
-    FullTxOut,
+    BlockId, FullTxOut,
 };
 use miniscript::plan::{Assets, CanDerive, Plan};
 
@@ -19,7 +19,7 @@ use crate::KeychainTxOutIndex;
 /// [`KeychainTxOutIndex<K>`]: crate::KeychainTxOutIndex
 #[derive(Clone, Debug)]
 pub struct KeychainTracker<K, I> {
-    /// script pubkey index
+    /// Index between script pubkeys to transaction outputs
     pub txout_index: KeychainTxOutIndex<K>,
     chain_graph: ChainGraph<I>,
 }
@@ -115,6 +115,17 @@ where
 
     pub fn chain(&self) -> &SparseChain<I> {
         &self.chain_graph().chain()
+    }
+
+    /// Insert a `block_id` (a height and block hash) into the chain. The caller is responsible for
+    /// guaranteeing that a block exists at that height. If a checkpoint already exists at that
+    /// height with a different hash this will return an error. Otherwise it will return `Ok(true)`
+    /// if the checkpoint didn't already exist or `Ok(false)` if it did.
+    ///
+    /// **Warning**: This function modifies the internal state of the tracker. You are responsible
+    /// for persisting these changes to disk if you need to restore them.
+    pub fn insert_checkpoint(&mut self, block_id: BlockId) -> Result<bool, InsertCheckpointErr> {
+        self.chain_graph.insert_checkpoint(block_id)
     }
 }
 

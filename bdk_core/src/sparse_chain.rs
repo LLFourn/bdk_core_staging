@@ -341,6 +341,13 @@ impl<I: ChainIndex> SparseChain<I> {
         Ok(true)
     }
 
+    /// Insert a `block_id` (a height and block hash) into the chain. The caller is responsible for
+    /// guaranteeing that a block exists at that height. If a checkpoint already exists at that
+    /// height with a different hash this will return an error. Otherwise it will return `Ok(true)`
+    /// if the checkpoint didn't already exist or `Ok(false)` if it did.
+    ///
+    /// **Warning**: This function modifies the internal state of the chain. You are responsible
+    /// for persisting these changes to disk if you need to restore them.
     pub fn insert_checkpoint(&mut self, block_id: BlockId) -> Result<bool, InsertCheckpointErr> {
         if let Some(&old_hash) = self.checkpoints.get(&block_id.height) {
             if old_hash != block_id.hash {
