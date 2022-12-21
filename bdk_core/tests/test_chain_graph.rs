@@ -339,3 +339,24 @@ fn chain_graph_inflate_changeset() {
 
     assert_eq!(cg.apply_changeset(changeset.unwrap()), Ok(()))
 }
+
+#[test]
+fn test_get_tx_in_chain() {
+    let mut cg = ChainGraph::default();
+    let tx = Transaction {
+        version: 0x01,
+        lock_time: PackedLockTime(0),
+        input: vec![],
+        output: vec![TxOut::default()],
+    };
+
+    cg.insert_tx(tx.clone(), None).unwrap();
+    assert_eq!(cg.get_tx_in_chain(tx.txid()), None);
+
+    cg.insert_tx(tx.clone(), Some(TxHeight::Unconfirmed))
+        .unwrap();
+    assert_eq!(
+        cg.get_tx_in_chain(tx.txid()),
+        Some((&TxHeight::Unconfirmed, &tx))
+    );
+}

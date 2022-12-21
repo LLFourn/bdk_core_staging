@@ -71,6 +71,17 @@ impl<I: ChainIndex> ChainGraph<I> {
         Ok(graph_changed || chain_changed)
     }
 
+    /// Get a transaction that is currently in the underlying [`SparseChain`]. This doesn't
+    /// necessarily mean that it is *confirmed* in the blockchain, it might just be in the
+    /// unconfirmed transaction list within the `SparseChain`.
+    ///
+    /// [`SparseChain`]: crate::sparse_chain::SparseChain
+    pub fn get_tx_in_chain(&self, txid: Txid) -> Option<(&I, &Transaction)> {
+        let position = self.chain.tx_index(txid)?;
+        let full_tx = self.graph.tx(txid).expect("must exist");
+        Some((position, full_tx))
+    }
+
     pub fn insert_output(&mut self, outpoint: OutPoint, txout: TxOut) -> bool {
         self.graph.insert_txout(outpoint, txout)
     }
