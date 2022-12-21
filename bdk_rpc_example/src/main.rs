@@ -119,7 +119,7 @@ fn main() -> anyhow::Result<()> {
             });
 
             let mut tip = 0;
-            let start_time = SystemTime::now();
+            let mut start_time = None;
 
             for data in recv.iter() {
                 if sigterm_flag.load(Ordering::Relaxed) {
@@ -134,11 +134,15 @@ fn main() -> anyhow::Result<()> {
                         local_tip,
                         target_tip,
                     } => {
-                        tip = target_tip;
+                        let now = SystemTime::now();
+
                         println!(
-                            "sync start: current_tip={}, target_tip={}",
-                            local_tip, target_tip
+                            "sync start: time={:?}, current_tip={}, target_tip={}",
+                            now, local_tip, target_tip
                         );
+
+                        tip = target_tip;
+                        start_time = Some(SystemTime::now());
                         continue;
                     }
                     RpcData::Synced => {
@@ -146,7 +150,9 @@ fn main() -> anyhow::Result<()> {
                             .full_utxos()
                             .map(|(_, utxo)| utxo.txout.value)
                             .sum::<u64>();
-                        let duration = SystemTime::now().duration_since(start_time)?.as_secs();
+                        let duration = start_time
+                            .map(|t| t.elapsed().expect("should succeed").as_secs())
+                            .unwrap_or(0);
                         println!(
                             "sync finished: duration={}s, tip={}, balance={}sats",
                             duration, tip, balance
