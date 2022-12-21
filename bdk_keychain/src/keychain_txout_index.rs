@@ -145,8 +145,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         self.inner
             .script_pubkeys()
             .range(&(keychain.clone(), u32::MIN)..=&(keychain.clone(), u32::MAX))
+            .next_back()
             .map(|((_, index), _)| *index)
-            .last()
     }
 
     /// Gets the current derivation index for each keychain in the index.
@@ -166,7 +166,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> bool {
         keychains
             .into_iter()
-            .any(|(keychain, index)| self.store_up_to(keychain, *index))
+            .map(|(keychain, index)| self.store_up_to(keychain, *index))
+            .fold(false, |acc, v| acc || v)
     }
 
     /// Derives script pubkeys from the descriptor **up to and including** `up_to` and stores them
