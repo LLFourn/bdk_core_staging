@@ -7,10 +7,16 @@ use std::io::{self, Write};
 const DEFAULT_PARALLEL_REQUESTS: u8 = 5;
 use bdk_cli::{
     anyhow::{self, Context},
-    clap::{self, Subcommand},
+    clap,
 };
 
-#[derive(Subcommand, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone)]
+struct EsploraArgs {
+    #[clap(env = "EXPLORA_URL", long)]
+    url: Option<String>,
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
 enum EsploraCommands {
     /// Scans the addresses in the wallet using esplora API.
     Scan {
@@ -33,12 +39,17 @@ enum EsploraCommands {
 }
 
 fn main() -> anyhow::Result<()> {
-    let (args, keymap, mut keychain_tracker, mut db) = bdk_cli::init::<EsploraCommands, _>()?;
-    let esplora_url = match args.network {
-        Network::Bitcoin => "https://mempool.space/api",
-        Network::Testnet => "https://mempool.space/testnet/api",
-        Network::Regtest => "http://localhost:3000",
-        Network::Signet => "https://mempool.space/signet/api",
+    let (args, keymap, mut keychain_tracker, mut db) =
+        bdk_cli::init::<EsploraArgs, EsploraCommands, _>()?;
+
+    let esplora_url = match &args.chain_args.url {
+        Some(url) => url.as_str(),
+        None => match args.network {
+            Network::Bitcoin => "https://mempool.space/api",
+            Network::Testnet => "https://mempool.space/testnet/api",
+            Network::Regtest => "http://localhost:3000",
+            Network::Signet => "https://mempool.space/signet/api",
+        },
     };
 
     let client = Client::new(esplora_url, DEFAULT_PARALLEL_REQUESTS)?;

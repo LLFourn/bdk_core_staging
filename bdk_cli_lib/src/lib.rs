@@ -24,7 +24,7 @@ use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::D
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 #[clap(propagate_version = true)]
-pub struct Args<C: clap::Subcommand> {
+pub struct Args<A: clap::Args, C: clap::Subcommand> {
     #[clap(env = "DESCRIPTOR")]
     pub descriptor: String,
     #[clap(env = "CHANGE_DESCRIPTOR")]
@@ -35,6 +35,12 @@ pub struct Args<C: clap::Subcommand> {
 
     #[clap(env = "BDK_DB_DIR", long, default_value = ".bdk_example_db")]
     pub db_dir: PathBuf,
+
+    #[clap(env = "BDK_CP_LIMIT", long, default_value = "20")]
+    pub cp_limit: usize,
+
+    #[clap(flatten)]
+    pub chain_args: A,
 
     #[clap(subcommand)]
     pub command: Commands<C>,
@@ -500,8 +506,8 @@ where
     Ok(())
 }
 
-pub fn init<C: clap::Subcommand, I>() -> anyhow::Result<(
-    Args<C>,
+pub fn init<A: clap::Args, C: clap::Subcommand, I>() -> anyhow::Result<(
+    Args<A, C>,
     KeyMap,
     KeychainTracker<Keychain, I>,
     KeychainStore<Keychain, I>,
@@ -510,7 +516,7 @@ where
     I: sparse_chain::ChainIndex,
     KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
-    let args = Args::<C>::parse();
+    let args = Args::<A, C>::parse();
     let secp = Secp256k1::default();
     let (descriptor, mut keymap) =
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
