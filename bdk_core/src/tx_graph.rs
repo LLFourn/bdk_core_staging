@@ -8,6 +8,16 @@ pub struct TxGraph {
     spends: BTreeMap<OutPoint, HashSet<Txid>>,
 }
 
+impl<I: IntoIterator<Item = Transaction>> From<I> for TxGraph {
+    fn from(txs: I) -> Self {
+        let mut graph = Self::default();
+        for tx in txs {
+            graph.insert_tx(tx);
+        }
+        graph
+    }
+}
+
 /// Node of a [`TxGraph`]
 #[derive(Clone, Debug, PartialEq)]
 enum TxNode {

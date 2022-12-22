@@ -1,5 +1,5 @@
 mod electrum;
-use bdk_core::bitcoin::Network;
+use bdk_core::{bitcoin::Network, tx_graph::TxGraph};
 use bdk_keychain::KeychainChangeSet;
 use electrum::ElectrumClient;
 use std::fmt::Debug;
@@ -133,26 +133,37 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Changeset of txids, both new and old.
-    let sparse_chain_changeset = tracker.chain().determine_changeset(&update_chain)?;
+    match tracker.chain_graph().determine_changeset(&update_chain) {
+        Ok(inner_changeset) => {
+            // We have all full transactions, can just apply.
+            changeset.chain_graph = inner_changeset;
+            db.append_changeset(&changeset)?;
+            tracker.apply_changeset(changeset).expect("should succeed");
+        }
+        Err(bdk_core::chain_graph::UpdateFailure::Missing(missing)) => {
+            // Obtain missing full transactions and populate graph.
+            let graph_update: TxGraph = client.batch_transaction_get(&missing)?.into();
 
-    // Only filter for txids that are new to us.
-    let new_txids: Vec<_> = sparse_chain_changeset
-        .txids
-        .iter()
-        // filter the transactions being removed
-        .filter_map(|(txid, index)| Some((txid, (*index)?)))
-        // filter the transactions that have moved but we already have stored
-        .filter(|(txid, index)| Some(index) != tracker.chain().tx_index(**txid))
-        .collect();
+            // Populate tracker with missing full transactions.
+            let graph_inner_changeset = tracker.chain_graph().determine_changeset(&graph_update)?;
+            changeset.chain_graph = graph_inner_changeset.clone();
+            tracker
+                .apply_changeset(changeset.clone())
+                .expect("should succeed");
 
-    let new_txs = client.batch_transaction_get(new_txids.iter().map(|(txid, _)| *txid))?;
-    changeset.chain_graph.chain = sparse_chain_changeset;
-    changeset.chain_graph.graph.tx.extend(new_txs);
+            // Apply chain update.
+            let chain_inner_changeset = tracker.chain_graph().determine_changeset(&update_chain)?;
+            changeset.chain_graph = chain_inner_changeset.clone();
+            tracker
+                .apply_changeset(changeset.clone())
+                .expect("should succeed");
 
-    // Apply the full scan update
-    db.append_changeset(&changeset)?;
-    tracker.apply_changeset(changeset).expect("should succeed");
+            // Persist changes.
+            changeset.chain_graph = graph_inner_changeset.merge(chain_inner_changeset);
+            db.append_changeset(&changeset)?;
+        }
+        Err(other_err) => Err(other_err)?,
+    }
 
     Ok(())
 }
