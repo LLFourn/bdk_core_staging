@@ -265,6 +265,20 @@ impl<I> ChangeSet<I> {
     }
 }
 
+impl<I: ChainIndex> ChangeSet<I> {
+    pub fn merge(self, new_set: Self) -> Self {
+        let Self { chain, graph } = self;
+        let Self {
+            chain: new_chain,
+            graph: new_graph,
+        } = new_set;
+        Self {
+            chain: chain.merge(new_chain),
+            graph: graph.merge(new_graph),
+        }
+    }
+}
+
 impl<I> Default for ChangeSet<I> {
     fn default() -> Self {
         Self {
@@ -313,3 +327,12 @@ impl<I: core::fmt::Debug> core::fmt::Display for UpdateFailure<I> {
 
 #[cfg(feature = "std")]
 impl<I: core::fmt::Debug> std::error::Error for UpdateFailure<I> {}
+
+impl<I> From<TxGraph> for ChainGraph<I> {
+    fn from(graph: TxGraph) -> Self {
+        Self {
+            graph,
+            ..Default::default()
+        }
+    }
+}

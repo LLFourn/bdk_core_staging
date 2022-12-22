@@ -285,6 +285,12 @@ impl Additions {
             })
             .chain(self.txout.iter().map(|(op, txout)| (*op, txout)))
     }
+
+    pub fn merge(mut self, mut new_additions: Self) -> Self {
+        self.tx.append(&mut new_additions.tx);
+        self.txout.append(&mut new_additions.txout);
+        self
+    }
 }
 
 impl<T: AsRef<TxGraph>> ForEachTxout for T {
