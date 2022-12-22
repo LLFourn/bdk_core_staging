@@ -240,6 +240,14 @@ impl<I: ChainIndex> ChainGraph<I> {
         self.chain.full_txout(&self.graph, outpoint)
     }
 
+    /// Iterate over the full transactions and their position in the chain ordered by their position
+    /// in ascending order.
+    pub fn transactions_in_chain(&self) -> impl DoubleEndedIterator<Item = (&I, &Transaction)> {
+        self.chain
+            .iter_txids()
+            .map(|(pos, txid)| (pos, self.graph.tx(*txid).expect("must exist")))
+    }
+
     /// Finds the transaction in the chain that spends `outpoint` given the input/output
     /// relationships in `graph`. Note that the transaction including `outpoint` does not need to be
     /// in the `graph` or the `chain` for this to return `Some(_)`.
