@@ -1,13 +1,16 @@
 use bdk_core::{
     bitcoin::{Transaction, Txid},
     chain_graph::{self, ChainGraph},
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     keychain::{KeychainChangeSet, KeychainScan},
     sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
     BlockId, FullTxOut,
 };
-use miniscript::plan::{Assets, CanDerive, Plan};
+use miniscript::{
+    plan::{Assets, CanDerive, Plan},
+    Descriptor, DescriptorPublicKey,
+};
 
 use crate::KeychainTxOutIndex;
 
@@ -29,6 +32,22 @@ where
     I: sparse_chain::ChainIndex,
     K: Ord + Clone + core::fmt::Debug,
 {
+    /// Add a keychain to the tracker's `txout_index` with a descriptor to derive addresses for it.
+    /// This is just shorthand for calling [`KeychainTxOutIndex::add_keychain`] on the internal
+    /// `txout_index`.
+    ///
+    /// Adding a keychain means you will be able to derive new script pubkeys under that keychain
+    /// and the tracker will discover transaction outputs with those script pubkeys.
+    pub fn add_keychain(&mut self, keychain: K, descriptor: Descriptor<DescriptorPublicKey>) {
+        self.txout_index.add_keychain(keychain, descriptor)
+    }
+
+    /// Get the internal map of keychains to their descriptors. This is just shorthand for calling
+    /// [`KeychainTxOutIndex::keychains`] on the internal `txout_index`.
+    pub fn keychains(&mut self) -> &BTreeMap<K, Descriptor<DescriptorPublicKey>> {
+        self.txout_index.keychains()
+    }
+
     pub fn checkpoint_limit(&self) -> Option<usize> {
         self.chain_graph.checkpoint_limit()
     }
@@ -141,7 +160,9 @@ where
         tx: Transaction,
         position: Option<I>,
     ) -> Result<bool, sparse_chain::InsertTxErr> {
-        self.chain_graph.insert_tx(tx, position)
+        let changed = self.chain_graph.insert_tx(tx.clone(), position)?;
+        self.txout_index.scan(&tx);
+        Ok(changed)
     }
 }
 
