@@ -100,20 +100,58 @@ impl<I: ChainIndex> ChainGraph<I> {
     }
 
     /// Calculates the difference between self and `update` in the form of a [`ChangeSet`].
-    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
-        let mut chain_changeset = self
-            .chain
-            .determine_changeset(&update.chain)
-            .map_err(UpdateFailure::Chain)?;
+    pub fn determine_changeset<'a, U>(&self, update: U) -> Result<ChangeSet<I>, UpdateFailure<I>>
+    where
+        U: Into<Update<'a, I>>,
+        I: 'a,
+    {
+        let update = update.into();
+        let (mut chain_changeset, update_chain, graph) = match update {
+            Update::ChainGraph(cg_update) => {
+                let changeset = self
+                    .chain
+                    .determine_changeset(&cg_update.chain)
+                    .map_err(UpdateFailure::Chain)?;
 
-        let chain_conflicts = update
-            .chain
+                (changeset, &cg_update.chain, &cg_update.graph)
+            }
+            Update::Chain(chain_update) => {
+                let changeset = self
+                    .chain
+                    .determine_changeset(chain_update)
+                    .map_err(UpdateFailure::Chain)?;
+
+                // find missing full txs
+                let missing = changeset
+                    .txids
+                    .iter()
+                    .filter(|(&txid, new_index)| {
+                        new_index.is_none() || self.graph.tx(txid).is_some()
+                    })
+                    .map(|(txid, _)| *txid)
+                    .collect::<HashSet<Txid>>();
+
+                if !missing.is_empty() {
+                    return Err(UpdateFailure::Missing(missing));
+                }
+
+                (changeset, chain_update, &self.graph)
+            }
+            Update::Graph(graph_update) => {
+                return Ok(ChangeSet {
+                    graph: self.graph.determine_additions(graph_update),
+                    ..Default::default()
+                })
+            }
+        };
+
+        let chain_conflicts = update_chain
             .iter_txids()
             // skip txids that already exist in the original chain (for efficiency)
             .filter(|&(_, txid)| self.chain.tx_index(*txid).is_none())
             // choose original txs that conflicts with the update
             .flat_map(|(update_ind, update_txid)| {
-                let update_tx = update.graph.tx(*update_txid).expect("must exist");
+                let update_tx = graph.tx(*update_txid).expect("must exist");
                 self.graph
                     .conflicting_txids(update_tx)
                     .filter_map(move |(_, conflicting_txid)| {
@@ -161,7 +199,10 @@ impl<I: ChainIndex> ChainGraph<I> {
 
         Ok(ChangeSet::<I> {
             chain: chain_changeset,
-            graph: self.graph.determine_additions(&update.graph),
+            graph: match update.graph() {
+                Some(update) => self.graph.determine_additions(update),
+                None => Default::default(),
+            },
         })
     }
 
@@ -228,8 +269,12 @@ impl<I: ChainIndex> ChainGraph<I> {
     ///
     /// [`apply_changeset`]: Self::apply_changeset
     /// [`determine_changeset`]: Self::determine_changeset
-    pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<I>> {
-        let changeset = self.determine_changeset(&update)?;
+    pub fn apply_update<'a, U>(&mut self, update: U) -> Result<(), UpdateFailure<I>>
+    where
+        U: Into<Update<'a, I>>,
+        I: 'a,
+    {
+        let changeset = self.determine_changeset(update)?;
         self.apply_changeset(changeset)
             .expect("we correctly constructed this");
         Ok(())
@@ -309,6 +354,8 @@ pub enum UpdateFailure<I> {
         already_confirmed_tx: (I, Txid),
         update_tx: (I, Txid),
     },
+    /// Missing full transactions.
+    Missing(HashSet<Txid>),
 }
 
 impl<I: core::fmt::Debug> core::fmt::Display for UpdateFailure<I> {
@@ -321,6 +368,9 @@ impl<I: core::fmt::Debug> core::fmt::Display for UpdateFailure<I> {
             } => {
                 write!(f, "new transaction {} at height {:?} conflicts with already confirmed transaction {} at height {:?}", new_tx.1, new_tx.0, already_confirmed_tx.1, already_confirmed_tx.0)
             }
+            UpdateFailure::Missing(missing) => {
+                write!(f, "missing {} full transactions", missing.len())
+            }
         }
     }
 }
@@ -328,11 +378,37 @@ impl<I: core::fmt::Debug> core::fmt::Display for UpdateFailure<I> {
 #[cfg(feature = "std")]
 impl<I: core::fmt::Debug> std::error::Error for UpdateFailure<I> {}
 
-impl<I> From<TxGraph> for ChainGraph<I> {
-    fn from(graph: TxGraph) -> Self {
-        Self {
-            graph,
-            ..Default::default()
+#[derive(Clone, Copy)]
+pub enum Update<'a, I> {
+    ChainGraph(&'a ChainGraph<I>),
+    Chain(&'a SparseChain<I>),
+    Graph(&'a TxGraph),
+}
+
+impl<'a, I> From<&'a ChainGraph<I>> for Update<'a, I> {
+    fn from(chain_graph: &'a ChainGraph<I>) -> Self {
+        Self::ChainGraph(chain_graph)
+    }
+}
+
+impl<'a, I> From<&'a SparseChain<I>> for Update<'a, I> {
+    fn from(chain: &'a SparseChain<I>) -> Self {
+        Self::Chain(chain)
+    }
+}
+
+impl<'a, I> From<&'a TxGraph> for Update<'a, I> {
+    fn from(graph: &'a TxGraph) -> Self {
+        Self::Graph(graph)
+    }
+}
+
+impl<'a, I> Update<'a, I> {
+    pub fn graph(&self) -> Option<&TxGraph> {
+        match self {
+            Update::Chain(_) => None,
+            Update::Graph(graph) => Some(graph),
+            Update::ChainGraph(cg) => Some(cg.graph()),
         }
     }
 }
