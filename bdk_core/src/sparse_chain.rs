@@ -146,24 +146,9 @@ impl<I: ChainIndex> SparseChain<I> {
             .map(|(&height, &hash)| BlockId { height, hash })
     }
 
-    /// Derives a [`ChangeSet`] that could be applied to an empty index.
-    pub fn initial_change_set(&self) -> ChangeSet<I> {
-        ChangeSet {
-            checkpoints: self
-                .checkpoints
-                .iter()
-                .map(|(height, hash)| (*height, Some(*hash)))
-                .collect(),
-            txids: self
-                .ordered_txids
-                .iter()
-                .map(|(index, txid)| (*txid, Some(index.clone())))
-                .collect(),
-        }
-    }
-
-    /// Determine the changeset when `update` is applied to self. Invalidated checkpoints result in
-    /// invalidated transactions becoming "unconfirmed".
+    /// Determines the [`ChangeSet`] when `update` is applied to self.
+    ///
+    /// Invalidated checkpoints result in invalidated transactions becoming "unconfirmed".
     pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
         let agreement_point = update
             .checkpoints
@@ -211,18 +196,7 @@ impl<I: ChainIndex> SparseChain<I> {
 
         // create initial change-set, based on checkpoints and txids that are to be "invalidated"
         let mut changeset = invalid_from
-            .map(|invalid_from| ChangeSet::<I> {
-                checkpoints: self
-                    .checkpoints
-                    .range(invalid_from..)
-                    .map(|(height, _)| (*height, None))
-                    .collect(),
-                // invalidated transactions become unconfirmed
-                txids: self
-                    .range_txids_by_height(TxHeight::Confirmed(invalid_from)..TxHeight::Unconfirmed)
-                    .map(|(_, txid)| (*txid, Some(I::max_ord_of_height(TxHeight::Unconfirmed))))
-                    .collect(),
-            })
+            .map(|from_height| self.invalidate_checkpoints_changeset(from_height))
             .unwrap_or_default();
 
         for (&height, &new_hash) in &update.checkpoints {
@@ -256,13 +230,6 @@ impl<I: ChainIndex> SparseChain<I> {
         Ok(changeset)
     }
 
-    /// Tries to update `self` with another chain that connects to it.
-    pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<I>> {
-        let changeset = self.determine_changeset(&update)?;
-        self.apply_changeset(changeset);
-        Ok(())
-    }
-
     pub fn apply_changeset(&mut self, changeset: ChangeSet<I>) {
         for (height, update_hash) in &changeset.checkpoints {
             let _original_hash = match update_hash {
@@ -287,15 +254,60 @@ impl<I: ChainIndex> SparseChain<I> {
         self.prune_checkpoints();
     }
 
+    /// Tries to update `self` with another chain that connects to it.
+    pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<I>> {
+        let changeset = self.determine_changeset(&update)?;
+        self.apply_changeset(changeset);
+        Ok(())
+    }
+
+    /// Derives a [`ChangeSet`] that assumes that there are no preceding changesets.
+    ///
+    /// The changeset returned will record additions of all [`Txid`]s and checkpoints included in
+    /// this [`SparseChain`].
+    pub fn initial_changeset(&self) -> ChangeSet<I> {
+        ChangeSet {
+            checkpoints: self
+                .checkpoints
+                .iter()
+                .map(|(height, hash)| (*height, Some(*hash)))
+                .collect(),
+            txids: self
+                .ordered_txids
+                .iter()
+                .map(|(index, txid)| (*txid, Some(index.clone())))
+                .collect(),
+        }
+    }
+
+    /// Determines the [`ChangeSet`] when checkpoints `from_height` (inclusive) and above are
+    /// invalidated. Displaced transactions are moved to `TxHeight::Unconfirmed`.
+    pub fn invalidate_checkpoints_changeset(&self, from_height: u32) -> ChangeSet<I> {
+        ChangeSet::<I> {
+            checkpoints: self
+                .checkpoints
+                .range(from_height..)
+                .map(|(height, _)| (*height, None))
+                .collect(),
+            // invalidated transactions become unconfirmed
+            txids: self
+                .range_txids_by_height(TxHeight::Confirmed(from_height)..TxHeight::Unconfirmed)
+                .map(|(_, txid)| (*txid, Some(I::max_ord_of_height(TxHeight::Unconfirmed))))
+                .collect(),
+        }
+    }
+
+    /// Determines the [`ChangeSet`] when all transactions of height `TxHeight::Unconfirmed` are
+    /// removed completely.
     pub fn clear_mempool_changeset(&self) -> ChangeSet<I> {
+        let mempool_range = &(
+            I::min_ord_of_height(TxHeight::Unconfirmed),
+            Txid::all_zeros(),
+        )..;
+
         let txids = self
             .ordered_txids
-            .range(
-                &(
-                    I::min_ord_of_height(TxHeight::Unconfirmed),
-                    Txid::all_zeros(),
-                )..,
-            )
+            .range(mempool_range)
             .map(|(_, txid)| (*txid, None))
             .collect();
 
@@ -303,12 +315,6 @@ impl<I: ChainIndex> SparseChain<I> {
             txids,
             ..Default::default()
         }
-    }
-
-    /// Clear the mempool list. Use with caution.
-    pub fn clear_mempool(&mut self) {
-        let changeset = self.clear_mempool_changeset();
-        self.apply_changeset(changeset);
     }
 
     /// Insert an arbitrary txid. This assumes that we have at least one checkpoint and the tx does
