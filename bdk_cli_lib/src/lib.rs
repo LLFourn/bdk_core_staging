@@ -36,6 +36,9 @@ pub struct Args<C: clap::Subcommand> {
     #[clap(env = "BDK_DB_DIR", long, default_value = ".bdk_example_db")]
     pub db_dir: PathBuf,
 
+    #[clap(env = "BDK_CP_LIMIT", long, default_value = "20")]
+    pub cp_limit: usize,
+
     #[clap(subcommand)]
     pub command: Commands<C>,
 }
@@ -516,6 +519,8 @@ where
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
 
     let mut keychain_tracker = KeychainTracker::default();
+    keychain_tracker.set_checkpoint_limit(Some(args.cp_limit));
+
     keychain_tracker
         .txout_index
         .add_keychain(Keychain::External, descriptor);
@@ -524,7 +529,6 @@ where
         .change_descriptor
         .map(|descriptor| Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &descriptor))
         .transpose()?;
-
     if let Some((internal_descriptor, internal_keymap)) = internal {
         keymap.extend(internal_keymap);
         keychain_tracker
