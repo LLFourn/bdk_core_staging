@@ -13,7 +13,7 @@ use bdk_chain::{
         descriptor::{DescriptorSecretKey, KeyMap},
         Descriptor, DescriptorPublicKey,
     },
-    sparse_chain::{self, ChainIndex},
+    sparse_chain::{self, ChainPosition},
     FullTxOut,
 };
 use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
@@ -170,7 +170,7 @@ pub fn run_address_cmd<I>(
     network: Network,
 ) -> Result<()>
 where
-    I: sparse_chain::ChainIndex,
+    I: sparse_chain::ChainPosition,
     KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
     let txout_index = &mut keychain_tracker.txout_index;
@@ -221,12 +221,12 @@ where
     }
 }
 
-pub fn run_balance_cmd<I: ChainIndex>(keychain_tracker: &KeychainTracker<Keychain, I>) {
+pub fn run_balance_cmd<I: ChainPosition>(keychain_tracker: &KeychainTracker<Keychain, I>) {
     let (confirmed, unconfirmed) =
         keychain_tracker
             .full_utxos()
             .fold((0, 0), |(confirmed, unconfirmed), (_, utxo)| {
-                if utxo.chain_index.height().is_confirmed() {
+                if utxo.chain_position.height().is_confirmed() {
                     (confirmed + utxo.txout.value, unconfirmed)
                 } else {
                     (confirmed, unconfirmed + utxo.txout.value)
@@ -237,7 +237,7 @@ pub fn run_balance_cmd<I: ChainIndex>(keychain_tracker: &KeychainTracker<Keychai
     println!("unconfirmed: {}", unconfirmed);
 }
 
-pub fn run_txo_cmd<K: Debug + Clone + Ord, I: ChainIndex>(
+pub fn run_txo_cmd<K: Debug + Clone + Ord, I: ChainPosition>(
     txout_cmd: TxOutCmd,
     keychain_tracker: &KeychainTracker<K, I>,
     network: Network,
@@ -261,7 +261,7 @@ pub fn run_txo_cmd<K: Debug + Clone + Ord, I: ChainIndex>(
     }
 }
 
-pub fn create_tx<I: ChainIndex>(
+pub fn create_tx<I: ChainPosition>(
     value: u64,
     address: Address,
     coin_select: CoinSelectionAlgo,
@@ -283,10 +283,10 @@ pub fn create_tx<I: ChainIndex>(
         }
         CoinSelectionAlgo::SmallestFirst => candidates.sort_by_key(|(_, utxo)| utxo.txout.value),
         CoinSelectionAlgo::OldestFirst => {
-            candidates.sort_by_key(|(_, utxo)| utxo.chain_index.clone())
+            candidates.sort_by_key(|(_, utxo)| utxo.chain_position.clone())
         }
         CoinSelectionAlgo::NewestFirst => {
-            candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_index.clone()))
+            candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_position.clone()))
         }
         CoinSelectionAlgo::BranchAndBound => {}
     }
@@ -475,7 +475,7 @@ pub fn handle_commands<C: clap::Subcommand, I>(
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
 ) -> Result<()>
 where
-    I: ChainIndex,
+    I: ChainPosition,
     KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
     match command {
@@ -513,7 +513,7 @@ pub fn init<C: clap::Subcommand, I>() -> anyhow::Result<(
     KeychainStore<Keychain, I>,
 )>
 where
-    I: sparse_chain::ChainIndex,
+    I: sparse_chain::ChainPosition,
     KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
     let args = Args::<C>::parse();
@@ -544,7 +544,7 @@ where
     Ok((Args::parse(), keymap, keychain_tracker, db))
 }
 
-pub fn planned_utxos<'a, AK: bdk_tmp_plan::CanDerive + Clone, P: ChainIndex>(
+pub fn planned_utxos<'a, AK: bdk_tmp_plan::CanDerive + Clone, P: ChainPosition>(
     tracker: &'a KeychainTracker<Keychain, P>,
     assets: &'a bdk_tmp_plan::Assets<AK>,
 ) -> impl Iterator<Item = (bdk_tmp_plan::Plan<AK>, FullTxOut<P>)> + 'a {

@@ -47,7 +47,7 @@ impl From<TxHeight> for Option<u32> {
     }
 }
 
-impl crate::sparse_chain::ChainIndex for TxHeight {
+impl crate::sparse_chain::ChainPosition for TxHeight {
     fn height(&self) -> TxHeight {
         *self
     }
@@ -79,7 +79,7 @@ pub enum ConfirmationTime {
     Unconfirmed,
 }
 
-impl sparse_chain::ChainIndex for ConfirmationTime {
+impl sparse_chain::ChainPosition for ConfirmationTime {
     fn height(&self) -> TxHeight {
         match self {
             ConfirmationTime::Confirmed { height, .. } => TxHeight::Confirmed(*height),
@@ -163,6 +163,6 @@ impl From<(&u32, &BlockHash)> for BlockId {
 pub struct FullTxOut<I> {
     pub outpoint: OutPoint,
     pub txout: TxOut,
-    pub chain_index: I,
+    pub chain_position: I,
     pub spent_by: Option<(I, Txid)>,
 }

@@ -19,7 +19,7 @@ pub struct KeychainStore<K, I> {
 impl<K, I> KeychainStore<K, I>
 where
     K: Ord + Clone + core::fmt::Debug,
-    I: sparse_chain::ChainIndex,
+    I: sparse_chain::ChainPosition,
     KeychainChangeSet<K, I>: serde::Serialize + serde::de::DeserializeOwned,
 {
     pub fn load(db_path: &Path, tracker: &mut KeychainTracker<K, I>) -> anyhow::Result<Self> {

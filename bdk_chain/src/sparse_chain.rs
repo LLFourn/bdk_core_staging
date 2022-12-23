@@ -6,30 +6,30 @@ use core::{
 use crate::{collections::*, tx_graph::TxGraph, BlockId, FullTxOut, TxHeight};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, Txid};
 
-/// This is a non-monotone structure that tracks relevant [`Txid`]s that are ordered by index `I`.
+/// This is a non-monotone structure that tracks relevant [`Txid`]s that are ordered by position `P`.
 ///
 /// To "merge" two [`SparseChain`]s, one can calculate the [`ChangeSet`] by calling
 /// [`Self::determine_changeset(update)`], and applying the [`ChangeSet`] via
 /// [`Self::apply_changeset(changeset)`]. For convenience, one can do the above two steps as one via
 /// [`Self::apply_update(update)`].
 #[derive(Clone, Debug, PartialEq)]
-pub struct SparseChain<I = TxHeight> {
+pub struct SparseChain<P = TxHeight> {
     /// Block height to checkpoint data.
     checkpoints: BTreeMap<u32, BlockHash>,
-    /// Txids ordered by the index `I`.
-    ordered_txids: BTreeSet<(I, Txid)>,
+    /// Txids ordered by the pos `P`.
+    ordered_txids: BTreeSet<(P, Txid)>,
     /// Confirmation heights of txids.
-    txid_to_index: HashMap<Txid, I>,
+    txid_to_pos: HashMap<Txid, P>,
     /// Limit number of checkpoints.
     checkpoint_limit: Option<usize>,
 }
 
-impl<I> Default for SparseChain<I> {
+impl<P> Default for SparseChain<P> {
     fn default() -> Self {
         Self {
             checkpoints: Default::default(),
             ordered_txids: Default::default(),
-            txid_to_index: Default::default(),
+            txid_to_pos: Default::default(),
             checkpoint_limit: Default::default(),
         }
     }
@@ -66,7 +66,7 @@ impl std::error::Error for InsertCheckpointErr {}
 
 /// Represents an update failure of [`SparseChain`].
 #[derive(Clone, Debug, PartialEq)]
-pub enum UpdateFailure<I = TxHeight> {
+pub enum UpdateFailure<P = TxHeight> {
     /// The update cannot be applied to the chain because the chain suffix it represents did not
     /// connect to the existing chain. This error case contains the checkpoint height to include so
     /// that the chains can connect.
@@ -75,30 +75,30 @@ pub enum UpdateFailure<I = TxHeight> {
     /// This error is usually the inconsistency found.
     InconsistentTx {
         inconsistent_txid: Txid,
-        original_index: I,
-        update_index: I,
+        original_pos: P,
+        update_pos: P,
     },
 }
 
-impl<I: core::fmt::Debug> core::fmt::Display for UpdateFailure<I> {
+impl<P: core::fmt::Debug> core::fmt::Display for UpdateFailure<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NotConnected(h) =>
                 write!(f, "the checkpoints in the update could not be connected to the checkpoints in the chain, try include checkpoint of height {} to connect",
                     h),
-            Self::InconsistentTx { inconsistent_txid, original_index, update_index } =>
-                write!(f, "inconsistent update: first inconsistent tx is ({}) which had index ({:?}), but is ({:?}) in the update", 
-                    inconsistent_txid, original_index, update_index),
+            Self::InconsistentTx { inconsistent_txid, original_pos, update_pos } =>
+                write!(f, "inconsistent update: first inconsistent tx is ({}) which had position ({:?}), but is ({:?}) in the update", 
+                    inconsistent_txid, original_pos, update_pos),
         }
     }
 }
 
 #[cfg(feature = "std")]
-impl<I: core::fmt::Debug> std::error::Error for UpdateFailure<I> {}
+impl<P: core::fmt::Debug> std::error::Error for UpdateFailure<P> {}
 
-impl<I: ChainIndex> SparseChain<I> {
-    /// Creates a new chain from a list of block hashes and heights. The caller must guarantee they are in the same
-    /// chain.
+impl<P: ChainPosition> SparseChain<P> {
+    /// Creates a new chain from a list of block hashes and heights. The caller must guarantee they
+    /// are in the same chain.
     pub fn from_checkpoints<C>(checkpoints: C) -> Self
     where
         C: IntoIterator<Item = BlockId>,
@@ -126,9 +126,9 @@ impl<I: ChainIndex> SparseChain<I> {
             .map(|&hash| BlockId { height, hash })
     }
 
-    /// Return the associated index of a tx of txid (if any).
-    pub fn tx_index(&self, txid: Txid) -> Option<&I> {
-        self.txid_to_index.get(&txid)
+    /// Return the associated position of a tx of txid (if any).
+    pub fn tx_position(&self, txid: Txid) -> Option<&P> {
+        self.txid_to_pos.get(&txid)
     }
 
     /// Return an iterator over all checkpoints, in descending order.
@@ -149,7 +149,7 @@ impl<I: ChainIndex> SparseChain<I> {
     /// Determines the [`ChangeSet`] when `update` is applied to self.
     ///
     /// Invalidated checkpoints result in invalidated transactions becoming "unconfirmed".
-    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<I>, UpdateFailure<I>> {
+    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<P>, UpdateFailure<P>> {
         let agreement_point = update
             .checkpoints
             .iter()
@@ -178,17 +178,17 @@ impl<I: ChainIndex> SparseChain<I> {
             }
         }
 
-        for (&txid, update_index) in &update.txid_to_index {
+        for (&txid, update_pos) in &update.txid_to_pos {
             // ensure all currently confirmed txs are still at the same height (unless they are
             // within invalidation range, or to be confirmed)
-            if let Some(original_index) = &self.txid_to_index.get(&txid) {
-                if original_index.height() < TxHeight::Confirmed(invalid_lb)
-                    && original_index != &update_index
+            if let Some(original_pos) = &self.txid_to_pos.get(&txid) {
+                if original_pos.height() < TxHeight::Confirmed(invalid_lb)
+                    && original_pos != &update_pos
                 {
                     return Err(UpdateFailure::InconsistentTx {
                         inconsistent_txid: txid,
-                        original_index: I::clone(original_index),
-                        update_index: update_index.clone(),
+                        original_pos: P::clone(original_pos),
+                        update_pos: update_pos.clone(),
                     });
                 }
             }
@@ -213,16 +213,16 @@ impl<I: ChainIndex> SparseChain<I> {
             }
         }
 
-        for (txid, new_index) in &update.txid_to_index {
-            let original_index = self.txid_to_index.get(txid).cloned();
+        for (txid, new_pos) in &update.txid_to_pos {
+            let original_pos = self.txid_to_pos.get(txid).cloned();
 
-            let update_index = changeset
+            let update_pos = changeset
                 .txids
                 .entry(*txid)
-                .and_modify(|change| *change = Some(new_index.clone()))
-                .or_insert_with(|| Some(new_index.clone()));
+                .and_modify(|change| *change = Some(new_pos.clone()))
+                .or_insert_with(|| Some(new_pos.clone()));
 
-            if original_index == *update_index {
+            if original_pos == *update_pos {
                 changeset.txids.remove(txid);
             }
         }
@@ -230,7 +230,7 @@ impl<I: ChainIndex> SparseChain<I> {
         Ok(changeset)
     }
 
-    pub fn apply_changeset(&mut self, changeset: ChangeSet<I>) {
+    pub fn apply_changeset(&mut self, changeset: ChangeSet<P>) {
         for (height, update_hash) in &changeset.checkpoints {
             let _original_hash = match update_hash {
                 Some(update_hash) => self.checkpoints.insert(*height, *update_hash),
@@ -238,16 +238,16 @@ impl<I: ChainIndex> SparseChain<I> {
             };
         }
 
-        for (txid, update_index) in &changeset.txids {
-            let original_index = self.txid_to_index.remove(txid);
+        for (txid, update_pos) in &changeset.txids {
+            let original_pos = self.txid_to_pos.remove(txid);
 
-            if let Some(index) = original_index {
-                self.ordered_txids.remove(&(index, *txid));
+            if let Some(pos) = original_pos {
+                self.ordered_txids.remove(&(pos, *txid));
             }
 
-            if let Some(index) = update_index {
-                self.txid_to_index.insert(*txid, index.clone());
-                self.ordered_txids.insert((index.clone(), *txid));
+            if let Some(pos) = update_pos {
+                self.txid_to_pos.insert(*txid, pos.clone());
+                self.ordered_txids.insert((pos.clone(), *txid));
             }
         }
 
@@ -255,7 +255,7 @@ impl<I: ChainIndex> SparseChain<I> {
     }
 
     /// Tries to update `self` with another chain that connects to it.
-    pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<I>> {
+    pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<P>> {
         let changeset = self.determine_changeset(&update)?;
         self.apply_changeset(changeset);
         Ok(())
@@ -265,7 +265,7 @@ impl<I: ChainIndex> SparseChain<I> {
     ///
     /// The changeset returned will record additions of all [`Txid`]s and checkpoints included in
     /// this [`SparseChain`].
-    pub fn initial_changeset(&self) -> ChangeSet<I> {
+    pub fn initial_changeset(&self) -> ChangeSet<P> {
         ChangeSet {
             checkpoints: self
                 .checkpoints
@@ -275,15 +275,15 @@ impl<I: ChainIndex> SparseChain<I> {
             txids: self
                 .ordered_txids
                 .iter()
-                .map(|(index, txid)| (*txid, Some(index.clone())))
+                .map(|(pos, txid)| (*txid, Some(pos.clone())))
                 .collect(),
         }
     }
 
     /// Determines the [`ChangeSet`] when checkpoints `from_height` (inclusive) and above are
     /// invalidated. Displaced transactions are moved to `TxHeight::Unconfirmed`.
-    pub fn invalidate_checkpoints_changeset(&self, from_height: u32) -> ChangeSet<I> {
-        ChangeSet::<I> {
+    pub fn invalidate_checkpoints_changeset(&self, from_height: u32) -> ChangeSet<P> {
+        ChangeSet::<P> {
             checkpoints: self
                 .checkpoints
                 .range(from_height..)
@@ -292,16 +292,16 @@ impl<I: ChainIndex> SparseChain<I> {
             // invalidated transactions become unconfirmed
             txids: self
                 .range_txids_by_height(TxHeight::Confirmed(from_height)..TxHeight::Unconfirmed)
-                .map(|(_, txid)| (*txid, Some(I::max_ord_of_height(TxHeight::Unconfirmed))))
+                .map(|(_, txid)| (*txid, Some(P::max_ord_of_height(TxHeight::Unconfirmed))))
                 .collect(),
         }
     }
 
     /// Determines the [`ChangeSet`] when all transactions of height `TxHeight::Unconfirmed` are
     /// removed completely.
-    pub fn clear_mempool_changeset(&self) -> ChangeSet<I> {
+    pub fn clear_mempool_changeset(&self) -> ChangeSet<P> {
         let mempool_range = &(
-            I::min_ord_of_height(TxHeight::Unconfirmed),
+            P::min_ord_of_height(TxHeight::Unconfirmed),
             Txid::all_zeros(),
         )..;
 
@@ -311,7 +311,7 @@ impl<I: ChainIndex> SparseChain<I> {
             .map(|(_, txid)| (*txid, None))
             .collect();
 
-        ChangeSet::<I> {
+        ChangeSet::<P> {
             txids,
             ..Default::default()
         }
@@ -319,8 +319,8 @@ impl<I: ChainIndex> SparseChain<I> {
 
     /// Insert an arbitrary txid. This assumes that we have at least one checkpoint and the tx does
     /// not already exist in [`SparseChain`]. Returns a [`ChangeSet`] on success.
-    pub fn insert_tx(&mut self, txid: Txid, index: I) -> Result<bool, InsertTxErr> {
-        let new_height = index.height();
+    pub fn insert_tx(&mut self, txid: Txid, pos: P) -> Result<bool, InsertTxErr> {
+        let new_height = pos.height();
 
         let latest = self
             .checkpoints
@@ -333,16 +333,16 @@ impl<I: ChainIndex> SparseChain<I> {
             return Err(InsertTxErr::TxTooHigh);
         }
 
-        if let Some(original_index) = self.txid_to_index.get(&txid) {
-            if original_index.height().is_confirmed() && *original_index != index {
+        if let Some(original_pos) = self.txid_to_pos.get(&txid) {
+            if original_pos.height().is_confirmed() && *original_pos != pos {
                 return Err(InsertTxErr::TxMoved);
             }
 
             return Ok(false);
         }
 
-        self.txid_to_index.insert(txid, index.clone());
-        self.ordered_txids.insert((index, txid));
+        self.txid_to_pos.insert(txid, pos.clone());
+        self.ordered_txids.insert((pos, txid));
 
         Ok(true)
     }
@@ -370,17 +370,17 @@ impl<I: ChainIndex> SparseChain<I> {
 
     pub fn iter_txids(
         &self,
-    ) -> impl DoubleEndedIterator<Item = &(I, Txid)> + ExactSizeIterator + '_ {
+    ) -> impl DoubleEndedIterator<Item = &(P, Txid)> + ExactSizeIterator + '_ {
         self.ordered_txids.iter()
     }
 
-    pub fn range_txids<R>(&self, range: R) -> impl DoubleEndedIterator<Item = &(I, Txid)> + '_
+    pub fn range_txids<R>(&self, range: R) -> impl DoubleEndedIterator<Item = &(P, Txid)> + '_
     where
-        R: RangeBounds<(I, Txid)>,
+        R: RangeBounds<(P, Txid)>,
     {
-        let map_bound = |b: Bound<&(I, Txid)>| match b {
-            Bound::Included((index, txid)) => Bound::Included((index.clone(), *txid)),
-            Bound::Excluded((index, txid)) => Bound::Excluded((index.clone(), *txid)),
+        let map_bound = |b: Bound<&(P, Txid)>| match b {
+            Bound::Included((pos, txid)) => Bound::Included((pos.clone(), *txid)),
+            Bound::Excluded((pos, txid)) => Bound::Excluded((pos.clone(), *txid)),
             Bound::Unbounded => Bound::Unbounded,
         };
 
@@ -388,16 +388,16 @@ impl<I: ChainIndex> SparseChain<I> {
             .range((map_bound(range.start_bound()), map_bound(range.end_bound())))
     }
 
-    pub fn range_txids_by_index<R>(
+    pub fn range_txids_by_position<R>(
         &self,
         range: R,
-    ) -> impl DoubleEndedIterator<Item = &(I, Txid)> + '_
+    ) -> impl DoubleEndedIterator<Item = &(P, Txid)> + '_
     where
-        R: RangeBounds<I>,
+        R: RangeBounds<P>,
     {
-        let map_bound = |b: Bound<&I>, inc: Txid, exc: Txid| match b {
-            Bound::Included(index) => Bound::Included((index.clone(), inc)),
-            Bound::Excluded(index) => Bound::Excluded((index.clone(), exc)),
+        let map_bound = |b: Bound<&P>, inc: Txid, exc: Txid| match b {
+            Bound::Included(pos) => Bound::Included((pos.clone(), inc)),
+            Bound::Excluded(pos) => Bound::Excluded((pos.clone(), exc)),
             Bound::Unbounded => Bound::Unbounded,
         };
 
@@ -410,13 +410,13 @@ impl<I: ChainIndex> SparseChain<I> {
     pub fn range_txids_by_height<R>(
         &self,
         range: R,
-    ) -> impl DoubleEndedIterator<Item = &(I, Txid)> + '_
+    ) -> impl DoubleEndedIterator<Item = &(P, Txid)> + '_
     where
         R: RangeBounds<TxHeight>,
     {
         let ord_it = |height, is_max| match is_max {
-            true => I::max_ord_of_height(height),
-            false => I::min_ord_of_height(height),
+            true => P::max_ord_of_height(height),
+            false => P::min_ord_of_height(height),
         };
 
         let map_bound = |b: Bound<&TxHeight>, inc: (bool, Txid), exc: (bool, Txid)| match b {
@@ -434,19 +434,19 @@ impl<I: ChainIndex> SparseChain<I> {
     /// Given a transaction graph and a particular outpoint attempts to retrieve a `FullTxOut`. This
     /// function will return `Some(full_txout)` only if the output's transaction is in `self` and
     /// the graph.
-    pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut<I>> {
-        let chain_index = self.tx_index(outpoint.txid)?;
+    pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut<P>> {
+        let chain_pos = self.tx_position(outpoint.txid)?;
 
         let txout = graph.txout(outpoint).cloned()?;
 
         let spent_by = self
             .spent_by(graph, outpoint)
-            .map(|(index, txid)| (index.clone(), txid));
+            .map(|(pos, txid)| (pos.clone(), txid));
 
         Some(FullTxOut {
             outpoint,
             txout,
-            chain_index: chain_index.clone(),
+            chain_position: chain_pos.clone(),
             spent_by,
         })
     }
@@ -464,14 +464,14 @@ impl<I: ChainIndex> SparseChain<I> {
     /// was applied.
     pub fn changeset_additions<'a>(
         &'a self,
-        changeset: &'a ChangeSet<I>,
+        changeset: &'a ChangeSet<P>,
     ) -> impl Iterator<Item = Txid> + 'a {
         changeset
             .txids
             .iter()
-            .filter(|(&txid, index)| {
-                index.is_some() /*it was not a deletion*/ &&
-                self.tx_index(txid).is_none() /*we don't have the txid already*/
+            .filter(|(&txid, pos)| {
+                pos.is_some() /*it was not a deletion*/ &&
+                self.tx_position(txid).is_none() /*we don't have the txid already*/
             })
             .map(|(&txid, _)| txid)
     }
@@ -493,11 +493,11 @@ impl<I: ChainIndex> SparseChain<I> {
     /// Finds the transaction in the chain that spends `outpoint` given the input/output
     /// relationships in `graph`. Note that the transaction including `outpoint` does not need to be
     /// in the `graph` or the `chain` for this to return `Some(_)`.
-    pub fn spent_by(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<(&I, Txid)> {
+    pub fn spent_by(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<(&P, Txid)> {
         graph
             .outspends(outpoint)
             .iter()
-            .find_map(|&txid| Some((self.tx_index(txid)?, txid)))
+            .find_map(|&txid| Some((self.tx_position(txid)?, txid)))
     }
 }
 
@@ -524,7 +524,7 @@ impl<I> Default for ChangeSet<I> {
     }
 }
 
-impl<I: ChainIndex> ChangeSet<I> {
+impl<P: ChainPosition> ChangeSet<P> {
     pub fn merge(mut self, new_set: Self) -> Self {
         for (height, new_change) in new_set.checkpoints {
             self.checkpoints
@@ -558,37 +558,39 @@ fn max_txid() -> Txid {
     Txid::from_inner([0xff; 32])
 }
 
-/// Represents an index in which transactions are ordered by in [`SparseChain`].
+/// Represents an position in which transactions are ordered in [`SparseChain`].
 ///
-/// [`ChainIndex`] implementations must be [`Ord`] by [`TxHeight`] first.
-pub trait ChainIndex: core::fmt::Debug + Clone + Eq + PartialOrd + Ord + core::hash::Hash {
-    /// Obtain the transaction height of the index.
+/// [`ChainPosition`] implementations must be [`Ord`] by [`TxHeight`] first.
+pub trait ChainPosition:
+    core::fmt::Debug + Clone + Eq + PartialOrd + Ord + core::hash::Hash
+{
+    /// Obtain the transaction height of the positon.
     fn height(&self) -> TxHeight;
 
-    /// Obtain the index's upper bound of a given height.
+    /// Obtain the positon's upper bound of a given height.
     fn max_ord_of_height(height: TxHeight) -> Self;
 
-    /// Obtain the index's lower bound of a given height.
+    /// Obtain the position's lower bound of a given height.
     fn min_ord_of_height(height: TxHeight) -> Self;
 }
 
 #[cfg(test)]
-pub mod verify_chain_index {
-    use crate::{sparse_chain::ChainIndex, ConfirmationTime, TxHeight};
+pub mod verify_chain_position {
+    use crate::{sparse_chain::ChainPosition, ConfirmationTime, TxHeight};
     use alloc::vec::Vec;
 
-    pub fn verify_chain_index<I: ChainIndex>(head_count: u32, tail_count: u32) {
+    pub fn verify_chain_position<P: ChainPosition>(head_count: u32, tail_count: u32) {
         let values = (0..head_count)
             .chain(u32::MAX - tail_count..u32::MAX)
             .flat_map(|i| {
                 [
-                    I::min_ord_of_height(TxHeight::Confirmed(i)),
-                    I::max_ord_of_height(TxHeight::Confirmed(i)),
+                    P::min_ord_of_height(TxHeight::Confirmed(i)),
+                    P::max_ord_of_height(TxHeight::Confirmed(i)),
                 ]
             })
             .chain([
-                I::min_ord_of_height(TxHeight::Unconfirmed),
-                I::max_ord_of_height(TxHeight::Unconfirmed),
+                P::min_ord_of_height(TxHeight::Unconfirmed),
+                P::max_ord_of_height(TxHeight::Unconfirmed),
             ])
             .collect::<Vec<_>>();
 
@@ -609,11 +611,11 @@ pub mod verify_chain_index {
 
     #[test]
     fn verify_tx_height() {
-        verify_chain_index::<TxHeight>(1000, 1000);
+        verify_chain_position::<TxHeight>(1000, 1000);
     }
 
     #[test]
     fn verify_confirmation_time() {
-        verify_chain_index::<ConfirmationTime>(1000, 1000);
+        verify_chain_position::<ConfirmationTime>(1000, 1000);
     }
 }

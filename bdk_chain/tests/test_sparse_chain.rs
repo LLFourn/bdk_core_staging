@@ -8,7 +8,7 @@ use core::ops::Bound;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub struct TestIndex(TxHeight, u32);
 
-impl ChainIndex for TestIndex {
+impl ChainPosition for TestIndex {
     fn height(&self) -> TxHeight {
         self.0
     }
@@ -147,8 +147,8 @@ fn invalidate_a_checkpoint_and_try_and_move_tx_when_it_wasnt_within_invalidation
         chain1.determine_changeset(&chain2),
         Err(UpdateFailure::InconsistentTx {
             inconsistent_txid: h!("tx0"),
-            original_index: TxHeight::Confirmed(0).into(),
-            update_index: TxHeight::Confirmed(1).into(),
+            original_pos: TxHeight::Confirmed(0).into(),
+            update_pos: TxHeight::Confirmed(1).into(),
         })
     );
 }
@@ -321,8 +321,8 @@ fn cannot_change_ext_index_of_confirmed_tx() {
         chain1.determine_changeset(&chain2),
         Err(UpdateFailure::InconsistentTx {
             inconsistent_txid: h!("tx0"),
-            original_index: TestIndex(TxHeight::Confirmed(1), 10),
-            update_index: TestIndex(TxHeight::Confirmed(1), 20),
+            original_pos: TestIndex(TxHeight::Confirmed(1), 10),
+            update_pos: TestIndex(TxHeight::Confirmed(1), 20),
         }),
     )
 }
@@ -590,13 +590,13 @@ fn range_txids_by_index() {
     // inclusive start
     assert_eq!(
         chain
-            .range_txids_by_index(TestIndex(TxHeight::Confirmed(1), u32::MIN)..)
+            .range_txids_by_position(TestIndex(TxHeight::Confirmed(1), u32::MIN)..)
             .collect::<Vec<_>>(),
         txids.iter().collect::<Vec<_>>(),
     );
     assert_eq!(
         chain
-            .range_txids_by_index(TestIndex(TxHeight::Confirmed(1), u32::MAX)..)
+            .range_txids_by_position(TestIndex(TxHeight::Confirmed(1), u32::MAX)..)
             .collect::<Vec<_>>(),
         txids[1..].iter().collect::<Vec<_>>(),
     );
@@ -604,7 +604,7 @@ fn range_txids_by_index() {
     // exclusive start
     assert_eq!(
         chain
-            .range_txids_by_index((
+            .range_txids_by_position((
                 Bound::Excluded(TestIndex(TxHeight::Confirmed(1), u32::MIN)),
                 Bound::Unbounded
             ))
@@ -613,7 +613,7 @@ fn range_txids_by_index() {
     );
     assert_eq!(
         chain
-            .range_txids_by_index((
+            .range_txids_by_position((
                 Bound::Excluded(TestIndex(TxHeight::Confirmed(1), u32::MAX)),
                 Bound::Unbounded
             ))
@@ -624,7 +624,7 @@ fn range_txids_by_index() {
     // inclusive end
     assert_eq!(
         chain
-            .range_txids_by_index((
+            .range_txids_by_position((
                 Bound::Unbounded,
                 Bound::Included(TestIndex(TxHeight::Confirmed(2), u32::MIN))
             ))
@@ -633,7 +633,7 @@ fn range_txids_by_index() {
     );
     assert_eq!(
         chain
-            .range_txids_by_index((
+            .range_txids_by_position((
                 Bound::Unbounded,
                 Bound::Included(TestIndex(TxHeight::Confirmed(2), u32::MAX))
             ))
@@ -644,13 +644,13 @@ fn range_txids_by_index() {
     // exclusive end
     assert_eq!(
         chain
-            .range_txids_by_index(..TestIndex(TxHeight::Confirmed(2), u32::MIN))
+            .range_txids_by_position(..TestIndex(TxHeight::Confirmed(2), u32::MIN))
             .collect::<Vec<_>>(),
         txids[..2].iter().collect::<Vec<_>>(),
     );
     assert_eq!(
         chain
-            .range_txids_by_index(..TestIndex(TxHeight::Confirmed(2), u32::MAX))
+            .range_txids_by_position(..TestIndex(TxHeight::Confirmed(2), u32::MAX))
             .collect::<Vec<_>>(),
         txids[..3].iter().collect::<Vec<_>>(),
     );

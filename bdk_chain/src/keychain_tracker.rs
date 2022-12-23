@@ -11,22 +11,22 @@ use crate::{
     BlockId, FullTxOut,
 };
 
-/// A convenient combination of a `KeychainTxOutIndex<K>` and a `ChainGraph<I>`.
+/// A convenient combination of a `KeychainTxOutIndex<K>` and a `ChainGraph<P>`.
 ///
-/// The `KeychainTracker<K, I>` atomically updates its `KeychainTxOutIndex<K>` whenever new chain data is
+/// The `KeychainTracker<K, P>` atomically updates its `KeychainTxOutIndex<K>` whenever new chain data is
 /// incorporated into its internal `chain_graph`.
 ///
 /// [`KeychainTxOutIndex<K>`]: crate::KeychainTxOutIndex
 #[derive(Clone, Debug)]
-pub struct KeychainTracker<K, I> {
+pub struct KeychainTracker<K, P> {
     /// Index between script pubkeys to transaction outputs
     pub txout_index: KeychainTxOutIndex<K>,
-    chain_graph: ChainGraph<I>,
+    chain_graph: ChainGraph<P>,
 }
 
-impl<K, I> KeychainTracker<K, I>
+impl<K, P> KeychainTracker<K, P>
 where
-    I: sparse_chain::ChainIndex,
+    P: sparse_chain::ChainPosition,
     K: Ord + Clone + core::fmt::Debug,
 {
     /// Add a keychain to the tracker's `txout_index` with a descriptor to derive addresses for it.
@@ -55,8 +55,8 @@ where
 
     pub fn determine_changeset(
         &self,
-        scan: &KeychainScan<K, I>,
-    ) -> Result<KeychainChangeSet<K, I>, chain_graph::UpdateFailure<I>> {
+        scan: &KeychainScan<K, P>,
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::UpdateFailure<P>> {
         let mut new_derivation_indices = scan.last_active_indexes.clone();
         new_derivation_indices.retain(|keychain, index| {
             match self.txout_index.derivation_index(keychain) {
@@ -73,8 +73,8 @@ where
 
     pub fn apply_changeset(
         &mut self,
-        changeset: KeychainChangeSet<K, I>,
-    ) -> Result<(), (KeychainChangeSet<K, I>, HashSet<Txid>)> {
+        changeset: KeychainChangeSet<K, P>,
+    ) -> Result<(), (KeychainChangeSet<K, P>, HashSet<Txid>)> {
         self.txout_index
             .store_all_up_to(&changeset.derivation_indices);
         self.txout_index.scan(&changeset);
@@ -92,18 +92,18 @@ where
             })
     }
 
-    pub fn full_txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {
+    pub fn full_txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<P>)> + '_ {
         self.txout_index
             .txouts()
             .filter_map(|(spk_i, op, _)| Some((spk_i, self.chain_graph.full_txout(op)?)))
     }
 
-    pub fn full_utxos(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {
+    pub fn full_utxos(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<P>)> + '_ {
         self.full_txouts()
             .filter(|(_, txout)| txout.spent_by.is_none())
     }
 
-    pub fn chain_graph(&self) -> &ChainGraph<I> {
+    pub fn chain_graph(&self) -> &ChainGraph<P> {
         &self.chain_graph
     }
 
@@ -111,7 +111,7 @@ where
         &self.chain_graph().graph()
     }
 
-    pub fn chain(&self) -> &SparseChain<I> {
+    pub fn chain(&self) -> &SparseChain<P> {
         &self.chain_graph().chain()
     }
 
@@ -137,7 +137,7 @@ where
     pub fn insert_tx(
         &mut self,
         tx: Transaction,
-        position: Option<I>,
+        position: Option<P>,
     ) -> Result<bool, sparse_chain::InsertTxErr> {
         let changed = self.chain_graph.insert_tx(tx.clone(), position)?;
         self.txout_index.scan(&tx);
@@ -145,7 +145,7 @@ where
     }
 }
 
-impl<K, I> Default for KeychainTracker<K, I> {
+impl<K, P> Default for KeychainTracker<K, P> {
     fn default() -> Self {
         Self {
             txout_index: Default::default(),
@@ -154,7 +154,7 @@ impl<K, I> Default for KeychainTracker<K, I> {
     }
 }
 
-impl<K, I> AsRef<TxGraph> for KeychainTracker<K, I> {
+impl<K, P> AsRef<TxGraph> for KeychainTracker<K, P> {
     fn as_ref(&self) -> &TxGraph {
         self.chain_graph.as_ref()
     }
