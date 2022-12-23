@@ -360,3 +360,36 @@ fn test_get_tx_in_chain() {
         Some((&TxHeight::Unconfirmed, &tx))
     );
 }
+
+#[test]
+fn test_iterate_transactions() {
+    let mut cg = ChainGraph::default();
+    let txs = (0..3)
+        .map(|i| Transaction {
+            version: i,
+            lock_time: PackedLockTime(0),
+            input: vec![],
+            output: vec![TxOut::default()],
+        })
+        .collect::<Vec<_>>();
+    cg.insert_checkpoint(BlockId {
+        height: 1,
+        hash: h!("A"),
+    })
+    .unwrap();
+    cg.insert_tx(txs[0].clone(), Some(TxHeight::Confirmed(1)))
+        .unwrap();
+    cg.insert_tx(txs[1].clone(), Some(TxHeight::Unconfirmed))
+        .unwrap();
+    cg.insert_tx(txs[2].clone(), Some(TxHeight::Confirmed(0)))
+        .unwrap();
+
+    assert_eq!(
+        cg.transactions_in_chain().collect::<Vec<_>>(),
+        vec![
+            (&TxHeight::Confirmed(0), &txs[2]),
+            (&TxHeight::Confirmed(1), &txs[0]),
+            (&TxHeight::Unconfirmed, &txs[1]),
+        ]
+    );
+}
