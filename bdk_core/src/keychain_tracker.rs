@@ -1,10 +1,11 @@
-use crate::KeychainTxOutIndex;
-use bdk_core::{
-    bitcoin::{Transaction, Txid},
+use bitcoin::{Transaction, Txid};
+use miniscript::{Descriptor, DescriptorPublicKey};
+
+use crate::{
     chain_graph::{self, ChainGraph},
-    collections::{BTreeMap, HashSet},
+    collections::*,
     keychain::{KeychainChangeSet, KeychainScan},
-    miniscript::{Descriptor, DescriptorPublicKey},
+    keychain_txout_index::KeychainTxOutIndex,
     sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
     BlockId, FullTxOut,

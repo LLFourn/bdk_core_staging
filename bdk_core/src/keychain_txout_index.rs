@@ -1,9 +1,9 @@
-use crate::miniscript::{Descriptor, DescriptorPublicKey};
-use bdk_core::{
-    bitcoin::{secp256k1::Secp256k1, OutPoint, Script, TxOut},
+use crate::{
     collections::*,
+    miniscript::{Descriptor, DescriptorPublicKey},
     ForEachTxout, SpkTxOutIndex,
 };
+use bitcoin::{secp256k1::Secp256k1, OutPoint, Script, TxOut};
 use core::{fmt::Debug, ops::Deref};
 
 /// A convenient wrapper around [`SpkTxOutIndex`] that sets the script pubkeys basaed on a miniscript
@@ -12,8 +12,8 @@ use core::{fmt::Debug, ops::Deref};
 /// ## Synopsis
 ///
 /// ```
-/// use bdk_keychain::KeychainTxOutIndex;
-/// # use bdk_keychain::{ miniscript::{Descriptor, DescriptorPublicKey} };
+/// use bdk_core::keychain_txout_index::KeychainTxOutIndex;
+/// # use bdk_core::{ miniscript::{Descriptor, DescriptorPublicKey} };
 /// # use core::str::FromStr;
 ///
 /// // imagine our service has internal and external addresses but also addresses for users
@@ -28,7 +28,7 @@ use core::{fmt::Debug, ops::Deref};
 ///
 /// let mut txout_index = KeychainTxOutIndex::<MyKeychain>::default();
 ///
-/// # let secp = bdk_keychain::bdk_core::bitcoin::secp256k1::Secp256k1::signing_only();
+/// # let secp = bdk_core::bitcoin::secp256k1::Secp256k1::signing_only();
 /// # let (external_descriptor,_) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)").unwrap();
 /// # let (internal_descriptor,_) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/*)").unwrap();
 /// # let descriptor_for_user_42 = external_descriptor.clone();
@@ -41,7 +41,7 @@ use core::{fmt::Debug, ops::Deref};
 /// ```
 ///
 /// [`Ord`]: core::cmp::Ord
-/// [`SpkTxOutIndex`]: bdk_core::SpkTxOutIndex
+/// [`SpkTxOutIndex`]: crate::spk_txout_index::SpkTxOutIndex
 /// [`Descriptor`]: crate::miniscript::Descriptor
 #[derive(Clone, Debug)]
 pub struct KeychainTxOutIndex<K> {
@@ -77,7 +77,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// See [`ForEachTxout`] for the types that support this.
     ///
-    /// [`ForEachTxout`]: bdk_core::ForEachTxout
+    /// [`ForEachTxout`]: crate::ForEachTxout
     pub fn scan(&mut self, txouts: &impl ForEachTxout) {
         self.inner.scan(txouts);
     }

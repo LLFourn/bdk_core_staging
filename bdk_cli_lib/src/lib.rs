@@ -7,17 +7,17 @@ use bdk_core::{
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    sparse_chain::{self, ChainIndex},
-    FullTxOut,
-};
-use bdk_file_store::KeychainStore;
-use bdk_keychain::{
+    descriptor_ext::DescriptorExt,
+    keychain::KeychainChangeSet,
+    keychain_tracker::KeychainTracker,
     miniscript::{
         descriptor::{DescriptorSecretKey, KeyMap},
         Descriptor, DescriptorPublicKey,
     },
-    DescriptorExt, KeychainChangeSet, KeychainTracker,
+    sparse_chain::{self, ChainIndex},
+    FullTxOut,
 };
+use bdk_file_store::KeychainStore;
 pub use clap;
 use clap::{Parser, Subcommand};
 use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::Duration};

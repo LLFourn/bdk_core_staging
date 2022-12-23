@@ -1,7 +1,5 @@
 #![no_std]
 pub use bitcoin;
-#[cfg(feature = "miniscript")]
-pub use miniscript;
 pub mod chain_graph;
 mod spk_txout_index;
 pub use spk_txout_index::*;
@@ -12,6 +10,15 @@ pub mod keychain;
 pub mod sparse_chain;
 pub mod tx_graph;
 pub use for_each_txout::*;
+
+#[cfg(feature = "miniscript")]
+pub use miniscript;
+#[cfg(feature = "miniscript")]
+pub mod descriptor_ext;
+#[cfg(feature = "miniscript")]
+pub mod keychain_tracker;
+#[cfg(feature = "miniscript")]
+pub mod keychain_txout_index;
 
 #[allow(unused_imports)]
 #[macro_use]
