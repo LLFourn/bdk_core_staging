@@ -255,6 +255,40 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         }
     }
 
+    /// Convenience method to call [`pad_with_unused`] on all keychains.
+    ///
+    /// Returns whether any new scripts were derived.
+    ///
+    /// [`pad_with_unused`]: Self::pad_with_unused
+    pub fn pad_all_with_unused(&mut self, pad_len: u32) -> bool {
+        let mut changed = false;
+        let keychains = self
+            .keychains
+            .keys()
+            .cloned()
+            .collect::<alloc::vec::Vec<_>>();
+        for keychain in keychains {
+            changed |= self.pad_with_unused(&keychain, pad_len);
+        }
+        changed
+    }
+
+    /// Derives and stores `pad_len` new script pubkeys after the last active index of `keychain`.
+    ///
+    /// This is useful when scanning blockchain data for transaction outputs belonging to the
+    /// keychain since the derivation index of new transactions is likely to be higher than the
+    /// current last active index.
+    pub fn pad_with_unused(&mut self, keychain: &K, pad_len: u32) -> bool {
+        let up_to = self
+            .last_active_index(keychain)
+            .map(|i| i.saturating_add(pad_len))
+            .or(pad_len.checked_sub(1));
+        match up_to {
+            Some(up_to) => self.store_up_to(keychain, up_to),
+            None => false,
+        }
+    }
+
     /// Iterates over all unused script pubkeys for a `keychain` that have been stored in the index.
     pub fn keychain_unused(&self, keychain: &K) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
         let range = (keychain.clone(), u32::MIN)..(keychain.clone(), u32::MAX);
