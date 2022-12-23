@@ -2,7 +2,7 @@
 mod common;
 
 use bdk_core::{
-    chain_graph::{ChainGraph, ChangeSet, UpdateFailure},
+    chain_graph::{ChainGraph, ChangeSet, InflateFailure, UnresolvableConflict, UpdateFailure},
     collections::HashSet,
     sparse_chain,
     tx_graph::{self, Additions},
@@ -165,10 +165,10 @@ fn update_evicts_conflicting_tx() {
         };
         assert_eq!(
             cg1.determine_changeset(&cg2),
-            Err(UpdateFailure::Conflict {
+            Err(UpdateFailure::UnresolvableConflict(UnresolvableConflict {
                 already_confirmed_tx: (TxHeight::Confirmed(1), tx_b.txid()),
                 update_tx: (TxHeight::Unconfirmed, tx_b2.txid()),
-            }),
+            })),
             "fail if tx is evicted from valid block"
         );
     }
@@ -316,13 +316,19 @@ fn chain_graph_inflate_changeset() {
 
     assert_eq!(
         cg.inflate_changeset(chain_changeset.clone(), vec![]),
-        Err((chain_changeset.clone(), expected_missing.clone()))
+        Err((
+            chain_changeset.clone(),
+            InflateFailure::Missing(expected_missing.clone())
+        ))
     );
 
     expected_missing.remove(&tx_b.txid());
     assert_eq!(
         cg.inflate_changeset(chain_changeset.clone(), vec![tx_b.clone()]),
-        Err((chain_changeset.clone(), expected_missing))
+        Err((
+            chain_changeset.clone(),
+            InflateFailure::Missing(expected_missing)
+        ))
     );
 
     let mut additions = tx_graph::Additions::default();
