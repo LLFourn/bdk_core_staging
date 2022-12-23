@@ -5,7 +5,7 @@ authors = [ "LLFourn <lloyd.fourn@gmail.com>" ]
 
 
 [dependencies]
-bdk_core = { path = "../bdk_core" }
+bdk_chain = { path = "../bdk_chain" }
 
 [features]
 default = ["std"]

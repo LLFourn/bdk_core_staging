@@ -13,7 +13,7 @@
 //!
 //! Once you've obstained signatures, hash pre-images etc required by the plan, it can create a
 //! witness/script_sig for the input.
-use bdk_core::{bitcoin, collections::*, miniscript};
+use bdk_chain::{bitcoin, collections::*, miniscript};
 use bitcoin::{
     blockdata::{locktime::LockTime, transaction::Sequence},
     hashes::{hash160, ripemd160, sha256},

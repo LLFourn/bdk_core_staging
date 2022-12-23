@@ -1,5 +1,5 @@
 use anyhow::Context;
-use bdk_core::{keychain::KeychainChangeSet, keychain_tracker::KeychainTracker, sparse_chain};
+use bdk_chain::{keychain::KeychainChangeSet, keychain_tracker::KeychainTracker, sparse_chain};
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},

@@ -11,7 +11,7 @@ macro_rules! chain {
     (checkpoints: $($tail:tt)*) => { chain!( index: TxHeight, checkpoints: $($tail)*) };
     (index: $ind:ty, checkpoints: [ $([$height:expr, $block_hash:expr]),* ] $(,txids: [$(($txid:expr, $tx_height:expr)),*])?) => {{
         #[allow(unused_mut)]
-        let mut chain = bdk_core::sparse_chain::SparseChain::<$ind>::from_checkpoints([$(($height, $block_hash).into()),*]);
+        let mut chain = bdk_chain::sparse_chain::SparseChain::<$ind>::from_checkpoints([$(($height, $block_hash).into()),*]);
 
         $(
             $(
@@ -31,10 +31,10 @@ macro_rules! changeset {
         checkpoints: [ $(( $height:expr, $cp_to:expr )),* ]
         $(,txids: [ $(( $txid:expr, $tx_to:expr )),* ])?
     ) => {{
-        use bdk_core::collections::BTreeMap;
+        use bdk_chain::collections::BTreeMap;
 
         #[allow(unused_mut)]
-        bdk_core::sparse_chain::ChangeSet::<$ind> {
+        bdk_chain::sparse_chain::ChangeSet::<$ind> {
             checkpoints: {
                 let mut changes = BTreeMap::default();
                 $(changes.insert($height, $cp_to);)*

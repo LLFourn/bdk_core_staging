@@ -1,7 +1,7 @@
 #[macro_use]
 mod common;
 
-use bdk_core::{collections::BTreeSet, sparse_chain::*, BlockId, TxHeight};
+use bdk_chain::{collections::BTreeSet, sparse_chain::*, BlockId, TxHeight};
 use bitcoin::{hashes::Hash, Txid};
 use core::ops::Bound;
 

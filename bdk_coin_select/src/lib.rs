@@ -5,10 +5,10 @@ extern crate std;
 
 #[macro_use]
 extern crate alloc;
-extern crate bdk_core;
+extern crate bdk_chain;
 
 use alloc::vec::Vec;
-use bdk_core::{
+use bdk_chain::{
     bitcoin,
     collections::{BTreeSet, HashMap},
 };

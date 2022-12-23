@@ -1,4 +1,4 @@
-use bdk_core::{bitcoin, collections::*, miniscript};
+use bdk_chain::{bitcoin, collections::*, miniscript};
 use core::ops::Deref;
 
 use bitcoin::{

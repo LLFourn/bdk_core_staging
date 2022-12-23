@@ -1,4 +1,4 @@
-use bdk_core::{bitcoin, miniscript};
+use bdk_chain::{bitcoin, miniscript};
 use bitcoin::{
     hashes::{hash160, ripemd160, sha256},
     util::bip32::DerivationPath,

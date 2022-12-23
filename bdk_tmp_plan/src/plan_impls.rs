@@ -1,4 +1,4 @@
-use bdk_core::{bitcoin, miniscript};
+use bdk_chain::{bitcoin, miniscript};
 use bitcoin::locktime::{Height, Time};
 use miniscript::Terminal;
 

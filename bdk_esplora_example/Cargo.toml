@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 # BDK Core
-bdk_core = { path = "../bdk_core", features = ["serde", "miniscript"] }
+bdk_chain = { path = "../bdk_chain", features = ["serde", "miniscript"] }
 bdk_cli = { path = "../bdk_cli_lib"}
 bdk_file_store = { path = "../bdk_file_store"}
 

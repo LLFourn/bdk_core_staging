@@ -1,4 +1,4 @@
-use bdk_core::SpkTxOutIndex;
+use bdk_chain::SpkTxOutIndex;
 use bitcoin::{hashes::hex::FromHex, OutPoint, PackedLockTime, Script, Transaction, TxIn, TxOut};
 
 #[test]

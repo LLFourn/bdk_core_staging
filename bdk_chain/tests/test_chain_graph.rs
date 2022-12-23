@@ -1,7 +1,7 @@
 #[macro_use]
 mod common;
 
-use bdk_core::{
+use bdk_chain::{
     chain_graph::{ChainGraph, ChangeSet, InflateFailure, UnresolvableConflict, UpdateFailure},
     collections::HashSet,
     sparse_chain,

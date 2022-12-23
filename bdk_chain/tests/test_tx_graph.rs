@@ -1,6 +1,6 @@
 #[macro_use]
 mod common;
-use bdk_core::{
+use bdk_chain::{
     collections::*,
     tx_graph::{Additions, TxGraph},
 };

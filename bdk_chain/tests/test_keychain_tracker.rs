@@ -1,4 +1,4 @@
-use bdk_core::{
+use bdk_chain::{
     keychain_tracker::KeychainTracker,
     miniscript::{
         bitcoin::{secp256k1::Secp256k1, OutPoint, PackedLockTime, Transaction, TxOut},

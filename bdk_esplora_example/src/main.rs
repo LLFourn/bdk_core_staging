@@ -1,6 +1,6 @@
 mod esplora;
 use crate::esplora::Client;
-use bdk_core::bitcoin::Network;
+use bdk_chain::bitcoin::Network;
 
 use std::io::{self, Write};
 
@@ -106,7 +106,7 @@ fn main() -> anyhow::Result<()> {
                 unused = false;
                 unspent = false
             }
-            let mut spks: Box<dyn Iterator<Item = bdk_core::bitcoin::Script>> =
+            let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
                 Box::new(core::iter::empty());
 
             if all {

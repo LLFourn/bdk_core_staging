@@ -1,7 +1,7 @@
 [workspace]
 
 members = [
-    "bdk_core",
+    "bdk_chain",
     "bdk_cli_lib",
     "bdk_esplora_example",
     "bdk_file_store",

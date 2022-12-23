@@ -12,8 +12,8 @@ use core::{fmt::Debug, ops::Deref};
 /// ## Synopsis
 ///
 /// ```
-/// use bdk_core::keychain_txout_index::KeychainTxOutIndex;
-/// # use bdk_core::{ miniscript::{Descriptor, DescriptorPublicKey} };
+/// use bdk_chain::keychain_txout_index::KeychainTxOutIndex;
+/// # use bdk_chain::{ miniscript::{Descriptor, DescriptorPublicKey} };
 /// # use core::str::FromStr;
 ///
 /// // imagine our service has internal and external addresses but also addresses for users
@@ -28,7 +28,7 @@ use core::{fmt::Debug, ops::Deref};
 ///
 /// let mut txout_index = KeychainTxOutIndex::<MyKeychain>::default();
 ///
-/// # let secp = bdk_core::bitcoin::secp256k1::Secp256k1::signing_only();
+/// # let secp = bdk_chain::bitcoin::secp256k1::Secp256k1::signing_only();
 /// # let (external_descriptor,_) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)").unwrap();
 /// # let (internal_descriptor,_) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/*)").unwrap();
 /// # let descriptor_for_user_42 = external_descriptor.clone();

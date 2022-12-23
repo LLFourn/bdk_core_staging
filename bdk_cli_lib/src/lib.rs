@@ -1,7 +1,6 @@
 pub extern crate anyhow;
 use anyhow::{anyhow, Result};
-use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
-use bdk_core::{
+use bdk_chain::{
     bitcoin::{
         secp256k1::Secp256k1,
         util::sighash::{Prevouts, SighashCache},
@@ -17,6 +16,7 @@ use bdk_core::{
     sparse_chain::{self, ChainIndex},
     FullTxOut,
 };
+use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
 use bdk_file_store::KeychainStore;
 pub use clap;
 use clap::{Parser, Subcommand};
