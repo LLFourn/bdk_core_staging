@@ -93,10 +93,15 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         &self.inner
     }
 
+    /// Get the internal map of keychains to their descriptors.
     pub fn keychains(&self) -> &BTreeMap<K, Descriptor<DescriptorPublicKey>> {
         &self.keychains
     }
 
+    /// Add a keychain to the tracker's `txout_index` with a descriptor to derive addresses for it.
+    ///
+    /// Adding a keychain means you will be able to derive new script pubkeys under that keychain
+    /// and the txout index will discover transaction outputs with those script pubkeys.
     pub fn add_keychain(&mut self, keychain: K, descriptor: Descriptor<DescriptorPublicKey>) {
         // TODO: panic if already different descriptor at that keychain
         self.keychains.insert(keychain, descriptor);
