@@ -196,6 +196,39 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         self.spk_indexes.get(script).cloned()
     }
 
+    /// Computes total input value going from script pubkeys in the index (sent) and total output
+    /// value going to script pubkeys in the index (received) in `tx`. For the `sent` to be computed
+    /// correctly the output being spent must have already been scanned by the index. Calculating
+    /// received just uses the transaction outputs directly so will be correct even if it has not
+    /// been scanned.
+    pub fn sent_and_received(&self, tx: &Transaction) -> (u64, u64) {
+        let mut sent = 0;
+        let mut received = 0;
+
+        for txin in &tx.input {
+            if let Some((_, txout)) = self.txout(txin.previous_output) {
+                sent += txout.value;
+            }
+        }
+        for txout in &tx.output {
+            if self.index_of_spk(&txout.script_pubkey).is_some() {
+                received += txout.value;
+            }
+        }
+
+        (sent, received)
+    }
+
+    /// Computes the net value that this transaction gives to the script pubkeys in the index and
+    /// *takes* from the transaction outputs in the index. Shorthand for calling
+    /// [`sent_and_received`] and subtracting sent from received.
+    ///
+    /// [`sent_and_received`]: Self::sent_and_received
+    pub fn net_value(&self, tx: &Transaction) -> i64 {
+        let (sent, received) = self.sent_and_received(tx);
+        received as i64 - sent as i64
+    }
+
     /// Whether any of the inputs of this transaction spend a txout tracked or whether any output
     /// matches one of our script pubkeys.
     ///
