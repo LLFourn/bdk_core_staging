@@ -1,5 +1,5 @@
 [package]
-name = "bdk_keychain"
+name = "bdk_tmp_plan"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,9 +7,7 @@ edition = "2021"
 
 [dependencies]
 bdk_core = {  path = "../bdk_core", features = ["miniscript"] }
-serde_crate = { package = "serde", version = "1", optional = true, default-features = false, features = ["derive", "alloc"] }
 
 [features]
 default = ["std"]
-serde = ["serde_crate", "bdk_core/serde"]
-std = ["bdk_core/std"]
+std = []

@@ -1,11 +1,12 @@
 #![no_std]
 pub use bitcoin;
+#[cfg(feature = "miniscript")]
+pub use miniscript;
 pub mod chain_graph;
 mod spk_txout_index;
 pub use spk_txout_index::*;
 mod chain_data;
 pub use chain_data::*;
-pub mod coin_select;
 mod for_each_txout;
 pub mod keychain;
 pub mod sparse_chain;

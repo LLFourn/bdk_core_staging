@@ -1,4 +1,4 @@
-use miniscript::{Descriptor, DescriptorPublicKey};
+use crate::miniscript::{Descriptor, DescriptorPublicKey};
 
 pub trait DescriptorExt {
     /// Iterates over all the script pubkeys of a descriptor.

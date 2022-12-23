@@ -13,6 +13,5 @@ pub use keychain_txout_index::*;
 mod keychain_tracker;
 pub use keychain_tracker::*;
 mod descriptor_ext;
-pub use bdk_core::{self, keychain::*};
+pub use bdk_core::{self, keychain::*, miniscript};
 pub use descriptor_ext::*;
-pub use miniscript;

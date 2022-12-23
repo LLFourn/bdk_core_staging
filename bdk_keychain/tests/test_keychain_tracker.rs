@@ -1,9 +1,11 @@
-use bdk_core::ConfirmationTime;
-use bdk_keychain::KeychainTracker;
-use miniscript::{
-    bitcoin::{secp256k1::Secp256k1, OutPoint, PackedLockTime, Transaction, TxOut},
-    Descriptor,
+use bdk_core::{
+    miniscript::{
+        bitcoin::{secp256k1::Secp256k1, OutPoint, PackedLockTime, Transaction, TxOut},
+        Descriptor,
+    },
+    ConfirmationTime,
 };
+use bdk_keychain::KeychainTracker;
 
 #[test]
 fn test_insert_tx() {

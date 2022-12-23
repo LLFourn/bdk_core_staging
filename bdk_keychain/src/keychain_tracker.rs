@@ -1,18 +1,14 @@
+use crate::KeychainTxOutIndex;
 use bdk_core::{
     bitcoin::{Transaction, Txid},
     chain_graph::{self, ChainGraph},
     collections::{BTreeMap, HashSet},
     keychain::{KeychainChangeSet, KeychainScan},
+    miniscript::{Descriptor, DescriptorPublicKey},
     sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
     BlockId, FullTxOut,
 };
-use miniscript::{
-    plan::{Assets, CanDerive, Plan},
-    Descriptor, DescriptorPublicKey,
-};
-
-use crate::KeychainTxOutIndex;
 
 /// A convenient combination of a `KeychainTxOutIndex<K>` and a `ChainGraph<I>`.
 ///
@@ -104,24 +100,6 @@ where
     pub fn full_utxos(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<I>)> + '_ {
         self.full_txouts()
             .filter(|(_, txout)| txout.spent_by.is_none())
-    }
-
-    pub fn planned_utxos<'a, AK: CanDerive + Clone>(
-        &'a self,
-        assets: &'a Assets<AK>,
-    ) -> impl Iterator<Item = (Plan<AK>, FullTxOut<I>)> + 'a {
-        self.full_utxos()
-            .filter_map(|((keychain, derivation_index), full_txout)| {
-                Some((
-                    self.txout_index
-                        .keychains()
-                        .get(keychain)
-                        .expect("must exist since we have a utxo for it")
-                        .at_derivation_index(*derivation_index)
-                        .plan_satisfaction(assets)?,
-                    full_txout,
-                ))
-            })
     }
 
     pub fn chain_graph(&self) -> &ChainGraph<I> {

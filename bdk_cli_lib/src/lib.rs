@@ -1,13 +1,14 @@
 pub extern crate anyhow;
 use anyhow::{anyhow, Result};
+use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
 use bdk_core::{
     bitcoin::{
         secp256k1::Secp256k1,
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
     sparse_chain::{self, ChainIndex},
+    FullTxOut,
 };
 use bdk_file_store::KeychainStore;
 use bdk_keychain::{
@@ -264,13 +265,13 @@ pub fn create_tx<I: ChainIndex>(
     keychain_tracker: &mut KeychainTracker<Keychain, I>,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
 ) -> Result<Transaction> {
-    use bdk_keychain::miniscript::plan::*;
-    let assets = Assets {
+    let assets = bdk_tmp_plan::Assets {
         keys: keymap.iter().map(|(pk, _)| pk.clone()).collect(),
         ..Default::default()
     };
 
-    let mut candidates = keychain_tracker.planned_utxos(&assets).collect::<Vec<_>>();
+    // TODO use planning module
+    let mut candidates = planned_utxos(keychain_tracker, &assets).collect::<Vec<_>>();
 
     // apply coin selection algorithm
     match coin_select {
@@ -321,14 +322,16 @@ pub fn create_tx<I: ChainIndex>(
             .derive_next_unused(&internal_keychain);
         (index, script.clone())
     };
-    let change_plan = keychain_tracker
-        .txout_index
-        .keychains()
-        .get(&internal_keychain)
-        .expect("must exist")
-        .at_derivation_index(change_index)
-        .plan_satisfaction(&assets)
-        .expect("failed to obtain change plan");
+    let change_plan = bdk_tmp_plan::plan_satisfaction(
+        &keychain_tracker
+            .txout_index
+            .keychains()
+            .get(&internal_keychain)
+            .expect("must exist")
+            .at_derivation_index(change_index),
+        &assets,
+    )
+    .expect("failed to obtain change plan");
 
     let mut change_output = TxOut {
         value: 0,
@@ -412,7 +415,7 @@ pub fn create_tx<I: ChainIndex>(
 
     for (i, (plan, _)) in selected_txos.iter().enumerate() {
         let requirements = plan.requirements();
-        let mut auth_data = SatisfactionMaterial::default();
+        let mut auth_data = bdk_tmp_plan::SatisfactionMaterial::default();
         assert!(
             !requirements.requires_hash_preimages(),
             "can't have hash pre-images since we didn't provide any"
@@ -432,7 +435,7 @@ pub fn create_tx<I: ChainIndex>(
         );
 
         match plan.try_complete(&auth_data) {
-            PlanState::Complete {
+            bdk_tmp_plan::PlanState::Complete {
                 final_script_sig,
                 final_script_witness,
             } => {
@@ -444,7 +447,7 @@ pub fn create_tx<I: ChainIndex>(
                     transaction.input[i].script_sig = script_sig;
                 }
             }
-            PlanState::Incomplete(_) => {
+            bdk_tmp_plan::PlanState::Incomplete(_) => {
                 return Err(anyhow!(
                     "we weren't able to complete the plan with our keys"
                 ));
@@ -535,4 +538,26 @@ where
     let db = KeychainStore::<Keychain, I>::load(args.db_dir.as_path(), &mut keychain_tracker)?;
 
     Ok((Args::parse(), keymap, keychain_tracker, db))
+}
+
+pub fn planned_utxos<'a, AK: bdk_tmp_plan::CanDerive + Clone, P: ChainIndex>(
+    tracker: &'a KeychainTracker<Keychain, P>,
+    assets: &'a bdk_tmp_plan::Assets<AK>,
+) -> impl Iterator<Item = (bdk_tmp_plan::Plan<AK>, FullTxOut<P>)> + 'a {
+    tracker
+        .full_utxos()
+        .filter_map(|((keychain, derivation_index), full_txout)| {
+            Some((
+                bdk_tmp_plan::plan_satisfaction(
+                    &tracker
+                        .txout_index
+                        .keychains()
+                        .get(keychain)
+                        .expect("must exist since we have a utxo for it")
+                        .at_derivation_index(*derivation_index),
+                    assets,
+                )?,
+                full_txout,
+            ))
+        })
 }

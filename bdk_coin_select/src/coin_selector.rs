@@ -244,14 +244,14 @@ impl<'a> CoinSelector<'a> {
     pub fn selected(&self) -> impl Iterator<Item = (usize, &'a WeightedValue)> + '_ {
         self.selected
             .iter()
-            .map(|&index| (index, &self.candidates[index]))
+            .map(move |&index| (index, &self.candidates[index]))
     }
 
     pub fn unselected(&self) -> impl Iterator<Item = (usize, &'a WeightedValue)> + '_ {
         self.candidates
             .iter()
             .enumerate()
-            .filter(|(index, _)| !self.selected.contains(index))
+            .filter(move |(index, _)| !self.selected.contains(index))
     }
 
     pub fn selected_indexes(&self) -> impl Iterator<Item = usize> + '_ {
@@ -259,7 +259,7 @@ impl<'a> CoinSelector<'a> {
     }
 
     pub fn unselected_indexes(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.candidates.len()).filter(|index| !self.selected.contains(index))
+        (0..self.candidates.len()).filter(move |index| !self.selected.contains(index))
     }
 
     pub fn all_selected(&self) -> bool {
@@ -330,14 +330,14 @@ impl<'a> CoinSelector<'a> {
                     },
                 ),
             ]
-            .into_iter()
-            .filter(|&(_, v)| v > 0)
+            .iter()
+            .filter(|&(_, v)| v > &0)
             .max_by_key(|&(_, v)| v)
             .map_or(Ok(()), |(constraint, missing)| {
                 Err(SelectionFailure {
                     selected,
-                    missing,
-                    constraint,
+                    missing: *missing,
+                    constraint: *constraint,
                 })
             })?;
 
@@ -495,7 +495,7 @@ impl Selection {
         &'a self,
         candidates: &'a [T],
     ) -> impl Iterator<Item = &'a T> + 'a {
-        self.selected.iter().map(|i| &candidates[*i])
+        self.selected.iter().map(move |i| &candidates[*i])
     }
 
     /// Returns the [`ExcessStrategy`] that results in the least waste.
@@ -526,7 +526,7 @@ impl ExcessStrategy {
 
 #[cfg(test)]
 mod test {
-    use crate::coin_select::{ExcessStrategyKind, SelectionConstraint};
+    use crate::{ExcessStrategyKind, SelectionConstraint};
 
     use super::{CoinSelector, CoinSelectorOpt, WeightedValue};
 

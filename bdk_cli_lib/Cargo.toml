@@ -9,6 +9,8 @@ edition = "2021"
 bdk_core = { path = "../bdk_core", features = ["serde"]}
 bdk_keychain = { path = "../bdk_keychain" }
 bdk_file_store = { path = "../bdk_file_store"}
+bdk_tmp_plan = { path = "../bdk_tmp_plan" }
+bdk_coin_select = { path = "../bdk_coin_select" }
 # Auxiliaries
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"

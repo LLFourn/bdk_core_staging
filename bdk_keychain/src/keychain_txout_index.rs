@@ -1,10 +1,10 @@
+use crate::miniscript::{Descriptor, DescriptorPublicKey};
 use bdk_core::{
     bitcoin::{secp256k1::Secp256k1, OutPoint, Script, TxOut},
     collections::*,
     ForEachTxout, SpkTxOutIndex,
 };
 use core::{fmt::Debug, ops::Deref};
-use miniscript::{Descriptor, DescriptorPublicKey};
 
 /// A convenient wrapper around [`SpkTxOutIndex`] that sets the script pubkeys basaed on a miniscript
 /// [`Descriptor<DescriptorPublicKey>`][`Descriptor`]s.
@@ -42,7 +42,7 @@ use miniscript::{Descriptor, DescriptorPublicKey};
 ///
 /// [`Ord`]: core::cmp::Ord
 /// [`SpkTxOutIndex`]: bdk_core::SpkTxOutIndex
-/// [`Descriptor`]: miniscript::Descriptor
+/// [`Descriptor`]: crate::miniscript::Descriptor
 #[derive(Clone, Debug)]
 pub struct KeychainTxOutIndex<K> {
     inner: SpkTxOutIndex<(K, u32)>,
