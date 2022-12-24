@@ -24,7 +24,7 @@ jobs:
           CARGO_INCREMENTAL: '0'
           RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off'
           RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off'
-        run: cargo test --package bdk_core --all-features
+        run: cargo test --package bdk_chain --all-features
 
       - id: coverage
         name: Generate coverage

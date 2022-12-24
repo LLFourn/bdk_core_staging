@@ -1,22 +1,22 @@
 pub extern crate anyhow;
 use anyhow::{anyhow, Result};
-use bdk_core::{
+use bdk_chain::{
     bitcoin::{
         secp256k1::Secp256k1,
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
-    coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue},
-    sparse_chain::{self, ChainIndex},
-};
-use bdk_file_store::KeychainStore;
-use bdk_keychain::{
+    descriptor_ext::DescriptorExt,
+    keychain::{KeychainChangeSet, KeychainTracker},
     miniscript::{
         descriptor::{DescriptorSecretKey, KeyMap},
         Descriptor, DescriptorPublicKey,
     },
-    DescriptorExt, KeychainChangeSet, KeychainTracker,
+    sparse_chain::{self, ChainPosition},
+    FullTxOut,
 };
+use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
+use bdk_file_store::KeychainStore;
 pub use clap;
 use clap::{Parser, Subcommand};
 use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::Duration};
@@ -35,6 +35,9 @@ pub struct Args<C: clap::Subcommand> {
 
     #[clap(env = "BDK_DB_DIR", long, default_value = ".bdk_example_db")]
     pub db_dir: PathBuf,
+
+    #[clap(env = "BDK_CP_LIMIT", long, default_value = "20")]
+    pub cp_limit: usize,
 
     #[clap(subcommand)]
     pub command: Commands<C>,
@@ -159,15 +162,15 @@ pub struct AddrsOutput {
     used: bool,
 }
 
-pub fn run_address_cmd<I>(
-    keychain_tracker: &mut KeychainTracker<Keychain, I>,
-    db: &mut KeychainStore<Keychain, I>,
+pub fn run_address_cmd<P>(
+    keychain_tracker: &mut KeychainTracker<Keychain, P>,
+    db: &mut KeychainStore<Keychain, P>,
     addr_cmd: AddressCmd,
     network: Network,
 ) -> Result<()>
 where
-    I: sparse_chain::ChainIndex,
-    KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
+    P: sparse_chain::ChainPosition,
+    KeychainChangeSet<Keychain, P>: serde::Serialize + serde::de::DeserializeOwned,
 {
     let txout_index = &mut keychain_tracker.txout_index;
 
@@ -217,12 +220,12 @@ where
     }
 }
 
-pub fn run_balance_cmd<I: ChainIndex>(keychain_tracker: &KeychainTracker<Keychain, I>) {
+pub fn run_balance_cmd<P: ChainPosition>(keychain_tracker: &KeychainTracker<Keychain, P>) {
     let (confirmed, unconfirmed) =
         keychain_tracker
             .full_utxos()
             .fold((0, 0), |(confirmed, unconfirmed), (_, utxo)| {
-                if utxo.chain_index.height().is_confirmed() {
+                if utxo.chain_position.height().is_confirmed() {
                     (confirmed + utxo.txout.value, unconfirmed)
                 } else {
                     (confirmed, unconfirmed + utxo.txout.value)
@@ -233,9 +236,9 @@ pub fn run_balance_cmd<I: ChainIndex>(keychain_tracker: &KeychainTracker<Keychai
     println!("unconfirmed: {}", unconfirmed);
 }
 
-pub fn run_txo_cmd<K: Debug + Clone + Ord, I: ChainIndex>(
+pub fn run_txo_cmd<K: Debug + Clone + Ord, P: ChainPosition>(
     txout_cmd: TxOutCmd,
-    keychain_tracker: &KeychainTracker<K, I>,
+    keychain_tracker: &KeychainTracker<K, P>,
     network: Network,
 ) {
     match txout_cmd {
@@ -257,20 +260,20 @@ pub fn run_txo_cmd<K: Debug + Clone + Ord, I: ChainIndex>(
     }
 }
 
-pub fn create_tx<I: ChainIndex>(
+pub fn create_tx<P: ChainPosition>(
     value: u64,
     address: Address,
     coin_select: CoinSelectionAlgo,
-    keychain_tracker: &mut KeychainTracker<Keychain, I>,
+    keychain_tracker: &mut KeychainTracker<Keychain, P>,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
 ) -> Result<Transaction> {
-    use bdk_keychain::miniscript::plan::*;
-    let assets = Assets {
+    let assets = bdk_tmp_plan::Assets {
         keys: keymap.iter().map(|(pk, _)| pk.clone()).collect(),
         ..Default::default()
     };
 
-    let mut candidates = keychain_tracker.planned_utxos(&assets).collect::<Vec<_>>();
+    // TODO use planning module
+    let mut candidates = planned_utxos(keychain_tracker, &assets).collect::<Vec<_>>();
 
     // apply coin selection algorithm
     match coin_select {
@@ -279,10 +282,10 @@ pub fn create_tx<I: ChainIndex>(
         }
         CoinSelectionAlgo::SmallestFirst => candidates.sort_by_key(|(_, utxo)| utxo.txout.value),
         CoinSelectionAlgo::OldestFirst => {
-            candidates.sort_by_key(|(_, utxo)| utxo.chain_index.clone())
+            candidates.sort_by_key(|(_, utxo)| utxo.chain_position.clone())
         }
         CoinSelectionAlgo::NewestFirst => {
-            candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_index.clone()))
+            candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_position.clone()))
         }
         CoinSelectionAlgo::BranchAndBound => {}
     }
@@ -321,14 +324,16 @@ pub fn create_tx<I: ChainIndex>(
             .derive_next_unused(&internal_keychain);
         (index, script.clone())
     };
-    let change_plan = keychain_tracker
-        .txout_index
-        .keychains()
-        .get(&internal_keychain)
-        .expect("must exist")
-        .at_derivation_index(change_index)
-        .plan_satisfaction(&assets)
-        .expect("failed to obtain change plan");
+    let change_plan = bdk_tmp_plan::plan_satisfaction(
+        &keychain_tracker
+            .txout_index
+            .keychains()
+            .get(&internal_keychain)
+            .expect("must exist")
+            .at_derivation_index(change_index),
+        &assets,
+    )
+    .expect("failed to obtain change plan");
 
     let mut change_output = TxOut {
         value: 0,
@@ -412,7 +417,7 @@ pub fn create_tx<I: ChainIndex>(
 
     for (i, (plan, _)) in selected_txos.iter().enumerate() {
         let requirements = plan.requirements();
-        let mut auth_data = SatisfactionMaterial::default();
+        let mut auth_data = bdk_tmp_plan::SatisfactionMaterial::default();
         assert!(
             !requirements.requires_hash_preimages(),
             "can't have hash pre-images since we didn't provide any"
@@ -432,7 +437,7 @@ pub fn create_tx<I: ChainIndex>(
         );
 
         match plan.try_complete(&auth_data) {
-            PlanState::Complete {
+            bdk_tmp_plan::PlanState::Complete {
                 final_script_sig,
                 final_script_witness,
             } => {
@@ -444,7 +449,7 @@ pub fn create_tx<I: ChainIndex>(
                     transaction.input[i].script_sig = script_sig;
                 }
             }
-            PlanState::Incomplete(_) => {
+            bdk_tmp_plan::PlanState::Incomplete(_) => {
                 return Err(anyhow!(
                     "we weren't able to complete the plan with our keys"
                 ));
@@ -460,17 +465,17 @@ pub trait Broadcast {
     fn broadcast(&self, tx: &Transaction) -> Result<(), Self::Error>;
 }
 
-pub fn handle_commands<C: clap::Subcommand, I>(
+pub fn handle_commands<C: clap::Subcommand, P>(
     command: Commands<C>,
     client: impl Broadcast,
-    tracker: &mut KeychainTracker<Keychain, I>,
-    store: &mut KeychainStore<Keychain, I>,
+    tracker: &mut KeychainTracker<Keychain, P>,
+    store: &mut KeychainStore<Keychain, P>,
     network: Network,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
 ) -> Result<()>
 where
-    I: ChainIndex,
-    KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
+    P: ChainPosition,
+    KeychainChangeSet<Keychain, P>: serde::Serialize + serde::de::DeserializeOwned,
 {
     match command {
         // TODO: Make these functions return stuffs
@@ -500,15 +505,15 @@ where
     Ok(())
 }
 
-pub fn init<C: clap::Subcommand, I>() -> anyhow::Result<(
+pub fn init<C: clap::Subcommand, P>() -> anyhow::Result<(
     Args<C>,
     KeyMap,
-    KeychainTracker<Keychain, I>,
-    KeychainStore<Keychain, I>,
+    KeychainTracker<Keychain, P>,
+    KeychainStore<Keychain, P>,
 )>
 where
-    I: sparse_chain::ChainIndex,
-    KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
+    P: sparse_chain::ChainPosition,
+    KeychainChangeSet<Keychain, P>: serde::Serialize + serde::de::DeserializeOwned,
 {
     let args = Args::<C>::parse();
     let secp = Secp256k1::default();
@@ -516,6 +521,8 @@ where
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
 
     let mut keychain_tracker = KeychainTracker::default();
+    keychain_tracker.set_checkpoint_limit(Some(args.cp_limit));
+
     keychain_tracker
         .txout_index
         .add_keychain(Keychain::External, descriptor);
@@ -524,7 +531,6 @@ where
         .change_descriptor
         .map(|descriptor| Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &descriptor))
         .transpose()?;
-
     if let Some((internal_descriptor, internal_keymap)) = internal {
         keymap.extend(internal_keymap);
         keychain_tracker
@@ -532,7 +538,29 @@ where
             .add_keychain(Keychain::Internal, internal_descriptor);
     };
 
-    let db = KeychainStore::<Keychain, I>::load(args.db_dir.as_path(), &mut keychain_tracker)?;
+    let db = KeychainStore::<Keychain, P>::load(args.db_dir.as_path(), &mut keychain_tracker)?;
 
     Ok((Args::parse(), keymap, keychain_tracker, db))
+}
+
+pub fn planned_utxos<'a, AK: bdk_tmp_plan::CanDerive + Clone, P: ChainPosition>(
+    tracker: &'a KeychainTracker<Keychain, P>,
+    assets: &'a bdk_tmp_plan::Assets<AK>,
+) -> impl Iterator<Item = (bdk_tmp_plan::Plan<AK>, FullTxOut<P>)> + 'a {
+    tracker
+        .full_utxos()
+        .filter_map(|((keychain, derivation_index), full_txout)| {
+            Some((
+                bdk_tmp_plan::plan_satisfaction(
+                    &tracker
+                        .txout_index
+                        .keychains()
+                        .get(keychain)
+                        .expect("must exist since we have a utxo for it")
+                        .at_derivation_index(*derivation_index),
+                    assets,
+                )?,
+                full_txout,
+            ))
+        })
 }

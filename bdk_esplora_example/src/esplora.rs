@@ -1,4 +1,4 @@
-use bdk_core::{
+use bdk_chain::{
     bitcoin::{BlockHash, Script, Transaction},
     chain_graph::ChainGraph,
     keychain::KeychainScan,
