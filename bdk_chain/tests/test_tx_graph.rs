@@ -61,9 +61,9 @@ fn insert_txouts() {
     );
 
     graph.apply_additions(additions);
-    assert_eq!(graph.iter_all_txouts().count(), 3);
-    assert_eq!(graph.iter_full_transactions().count(), 0);
-    assert_eq!(graph.iter_partial_transactions().count(), 2);
+    assert_eq!(graph.all_txouts().count(), 3);
+    assert_eq!(graph.full_transactions().count(), 0);
+    assert_eq!(graph.partial_transactions().count(), 2);
 }
 
 #[test]

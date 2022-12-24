@@ -287,7 +287,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     /// in ascending order.
     pub fn transactions_in_chain(&self) -> impl DoubleEndedIterator<Item = (&P, &Transaction)> {
         self.chain
-            .iter_txids()
+            .txids()
             .map(|(pos, txid)| (pos, self.graph.tx(*txid).expect("must exist")))
     }
 

@@ -61,7 +61,7 @@ fn main() -> anyhow::Result<()> {
         EsploraCommands::Scan { stop_gap } => {
             let spk_iterators = keychain_tracker
                 .txout_index
-                .iter_all_script_pubkeys_by_keychain()
+                .script_pubkeys_of_all_keychains()
                 .into_iter()
                 .map(|(keychain, iter)| {
                     let mut first = true;

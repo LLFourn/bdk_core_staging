@@ -148,7 +148,7 @@ impl TxGraph {
     }
 
     /// Iterate over all tx outputs known by [`TxGraph`].
-    pub fn iter_all_txouts(&self) -> impl Iterator<Item = (OutPoint, &TxOut)> {
+    pub fn all_txouts(&self) -> impl Iterator<Item = (OutPoint, &TxOut)> {
         self.txs.iter().flat_map(|(txid, tx)| match tx {
             TxNode::Whole(tx) => tx
                 .output
@@ -164,14 +164,14 @@ impl TxGraph {
     }
 
     /// Iterate over all full transactions in the graph
-    pub fn iter_full_transactions(&self) -> impl Iterator<Item = &Transaction> {
+    pub fn full_transactions(&self) -> impl Iterator<Item = &Transaction> {
         self.txs.iter().filter_map(|(_, tx)| match tx {
             TxNode::Whole(tx) => Some(tx),
             TxNode::Partial(_) => None,
         })
     }
 
-    pub fn iter_partial_transactions(&self) -> impl Iterator<Item = (Txid, &BTreeMap<u32, TxOut>)> {
+    pub fn partial_transactions(&self) -> impl Iterator<Item = (Txid, &BTreeMap<u32, TxOut>)> {
         self.txs.iter().filter_map(|(txid, tx)| match tx {
             TxNode::Whole(_) => None,
             TxNode::Partial(partial) => Some((*txid, partial)),
@@ -289,7 +289,7 @@ impl Additions {
 
 impl<T: AsRef<TxGraph>> ForEachTxout for T {
     fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
-        self.as_ref().iter_all_txouts().for_each(f)
+        self.as_ref().all_txouts().for_each(f)
     }
 }
 

@@ -368,9 +368,7 @@ impl<P: ChainPosition> SparseChain<P> {
         Ok(true)
     }
 
-    pub fn iter_txids(
-        &self,
-    ) -> impl DoubleEndedIterator<Item = &(P, Txid)> + ExactSizeIterator + '_ {
+    pub fn txids(&self) -> impl DoubleEndedIterator<Item = &(P, Txid)> + ExactSizeIterator + '_ {
         self.ordered_txids.iter()
     }
 
