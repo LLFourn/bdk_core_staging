@@ -7,6 +7,7 @@ use bdk_chain::{
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
     descriptor_ext::DescriptorExt,
+    file_store::KeychainStore,
     keychain::{KeychainChangeSet, KeychainTracker},
     miniscript::{
         descriptor::{DescriptorSecretKey, KeyMap},
@@ -16,7 +17,6 @@ use bdk_chain::{
     FullTxOut,
 };
 use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
-use bdk_file_store::KeychainStore;
 pub use clap;
 use clap::{Parser, Subcommand};
 use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::Duration};
