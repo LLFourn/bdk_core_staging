@@ -7,6 +7,5 @@ edition = "2021"
 
 [dependencies]
 bincode = {  version = "2.0.0-rc.2", features = ["serde"] }
-anyhow = "1"
 serde = "1"
 bdk_chain = { path = "../bdk_chain", features = ["miniscript"] }
