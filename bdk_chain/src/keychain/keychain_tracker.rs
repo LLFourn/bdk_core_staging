@@ -4,8 +4,7 @@ use miniscript::{Descriptor, DescriptorPublicKey};
 use crate::{
     chain_graph::{self, ChainGraph},
     collections::*,
-    keychain::{KeychainChangeSet, KeychainScan},
-    keychain_txout_index::KeychainTxOutIndex,
+    keychain::{KeychainChangeSet, KeychainScan, KeychainTxOutIndex},
     sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
     BlockId, FullTxOut,

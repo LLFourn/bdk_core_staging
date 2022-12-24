@@ -12,7 +12,7 @@ use core::{fmt::Debug, ops::Deref};
 /// ## Synopsis
 ///
 /// ```
-/// use bdk_chain::keychain_txout_index::KeychainTxOutIndex;
+/// use bdk_chain::keychain::KeychainTxOutIndex;
 /// # use bdk_chain::{ miniscript::{Descriptor, DescriptorPublicKey} };
 /// # use core::str::FromStr;
 ///

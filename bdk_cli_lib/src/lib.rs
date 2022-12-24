@@ -7,8 +7,7 @@ use bdk_chain::{
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
     descriptor_ext::DescriptorExt,
-    keychain::KeychainChangeSet,
-    keychain_tracker::KeychainTracker,
+    keychain::{KeychainChangeSet, KeychainTracker},
     miniscript::{
         descriptor::{DescriptorSecretKey, KeyMap},
         Descriptor, DescriptorPublicKey,

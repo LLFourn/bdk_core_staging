@@ -15,10 +15,6 @@ pub use for_each_txout::*;
 pub use miniscript;
 #[cfg(feature = "miniscript")]
 pub mod descriptor_ext;
-#[cfg(feature = "miniscript")]
-pub mod keychain_tracker;
-#[cfg(feature = "miniscript")]
-pub mod keychain_txout_index;
 
 #[allow(unused_imports)]
 #[macro_use]

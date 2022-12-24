@@ -1,6 +1,6 @@
 use bdk_chain::collections::BTreeMap;
 
-use bdk_chain::keychain_txout_index::KeychainTxOutIndex;
+use bdk_chain::keychain::KeychainTxOutIndex;
 use bitcoin::{OutPoint, TxOut};
 use miniscript::{Descriptor, DescriptorPublicKey};
 

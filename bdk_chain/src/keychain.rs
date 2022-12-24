@@ -1,9 +1,23 @@
+//! Modules for keychain based structures.
+//!
+//! A keychain here is a set of application defined indexes for a minscript descriptor where we can
+//! derive script pubkeys at a particular derivation index. The application's index is simply
+//! anything that implemetns `Ord`.
 use crate::{
     chain_graph::{self, ChainGraph},
     collections::BTreeMap,
     tx_graph::TxGraph,
     ForEachTxout,
 };
+
+#[cfg(feature = "miniscript")]
+mod keychain_tracker;
+#[cfg(feature = "miniscript")]
+pub use keychain_tracker::*;
+#[cfg(feature = "miniscript")]
+mod keychain_txout_index;
+#[cfg(feature = "miniscript")]
+pub use keychain_txout_index::*;
 
 #[derive(Clone, Debug, PartialEq)]
 /// An update that includes the last active indexes of each keychain.
