@@ -162,15 +162,15 @@ pub struct AddrsOutput {
     used: bool,
 }
 
-pub fn run_address_cmd<I>(
-    keychain_tracker: &mut KeychainTracker<Keychain, I>,
-    db: &mut KeychainStore<Keychain, I>,
+pub fn run_address_cmd<P>(
+    keychain_tracker: &mut KeychainTracker<Keychain, P>,
+    db: &mut KeychainStore<Keychain, P>,
     addr_cmd: AddressCmd,
     network: Network,
 ) -> Result<()>
 where
-    I: sparse_chain::ChainPosition,
-    KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
+    P: sparse_chain::ChainPosition,
+    KeychainChangeSet<Keychain, P>: serde::Serialize + serde::de::DeserializeOwned,
 {
     let txout_index = &mut keychain_tracker.txout_index;
 
@@ -220,7 +220,7 @@ where
     }
 }
 
-pub fn run_balance_cmd<I: ChainPosition>(keychain_tracker: &KeychainTracker<Keychain, I>) {
+pub fn run_balance_cmd<P: ChainPosition>(keychain_tracker: &KeychainTracker<Keychain, P>) {
     let (confirmed, unconfirmed) =
         keychain_tracker
             .full_utxos()
@@ -236,9 +236,9 @@ pub fn run_balance_cmd<I: ChainPosition>(keychain_tracker: &KeychainTracker<Keyc
     println!("unconfirmed: {}", unconfirmed);
 }
 
-pub fn run_txo_cmd<K: Debug + Clone + Ord, I: ChainPosition>(
+pub fn run_txo_cmd<K: Debug + Clone + Ord, P: ChainPosition>(
     txout_cmd: TxOutCmd,
-    keychain_tracker: &KeychainTracker<K, I>,
+    keychain_tracker: &KeychainTracker<K, P>,
     network: Network,
 ) {
     match txout_cmd {
@@ -260,11 +260,11 @@ pub fn run_txo_cmd<K: Debug + Clone + Ord, I: ChainPosition>(
     }
 }
 
-pub fn create_tx<I: ChainPosition>(
+pub fn create_tx<P: ChainPosition>(
     value: u64,
     address: Address,
     coin_select: CoinSelectionAlgo,
-    keychain_tracker: &mut KeychainTracker<Keychain, I>,
+    keychain_tracker: &mut KeychainTracker<Keychain, P>,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
 ) -> Result<Transaction> {
     let assets = bdk_tmp_plan::Assets {
@@ -465,17 +465,17 @@ pub trait Broadcast {
     fn broadcast(&self, tx: &Transaction) -> Result<(), Self::Error>;
 }
 
-pub fn handle_commands<C: clap::Subcommand, I>(
+pub fn handle_commands<C: clap::Subcommand, P>(
     command: Commands<C>,
     client: impl Broadcast,
-    tracker: &mut KeychainTracker<Keychain, I>,
-    store: &mut KeychainStore<Keychain, I>,
+    tracker: &mut KeychainTracker<Keychain, P>,
+    store: &mut KeychainStore<Keychain, P>,
     network: Network,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
 ) -> Result<()>
 where
-    I: ChainPosition,
-    KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
+    P: ChainPosition,
+    KeychainChangeSet<Keychain, P>: serde::Serialize + serde::de::DeserializeOwned,
 {
     match command {
         // TODO: Make these functions return stuffs
@@ -505,15 +505,15 @@ where
     Ok(())
 }
 
-pub fn init<C: clap::Subcommand, I>() -> anyhow::Result<(
+pub fn init<C: clap::Subcommand, P>() -> anyhow::Result<(
     Args<C>,
     KeyMap,
-    KeychainTracker<Keychain, I>,
-    KeychainStore<Keychain, I>,
+    KeychainTracker<Keychain, P>,
+    KeychainStore<Keychain, P>,
 )>
 where
-    I: sparse_chain::ChainPosition,
-    KeychainChangeSet<Keychain, I>: serde::Serialize + serde::de::DeserializeOwned,
+    P: sparse_chain::ChainPosition,
+    KeychainChangeSet<Keychain, P>: serde::Serialize + serde::de::DeserializeOwned,
 {
     let args = Args::<C>::parse();
     let secp = Secp256k1::default();
@@ -538,7 +538,7 @@ where
             .add_keychain(Keychain::Internal, internal_descriptor);
     };
 
-    let db = KeychainStore::<Keychain, I>::load(args.db_dir.as_path(), &mut keychain_tracker)?;
+    let db = KeychainStore::<Keychain, P>::load(args.db_dir.as_path(), &mut keychain_tracker)?;
 
     Ok((Args::parse(), keymap, keychain_tracker, db))
 }
