@@ -137,7 +137,7 @@ where
         &mut self,
         tx: Transaction,
         position: Option<P>,
-    ) -> Result<bool, sparse_chain::InsertTxErr> {
+    ) -> Result<bool, chain_graph::InsertTxErr<P>> {
         let changed = self.chain_graph.insert_tx(tx.clone(), position)?;
         self.txout_index.scan(&tx);
         Ok(changed)

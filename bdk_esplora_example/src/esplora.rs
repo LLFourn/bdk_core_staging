@@ -1,8 +1,8 @@
 use bdk_chain::{
     bitcoin::{BlockHash, Script, Transaction},
-    chain_graph::ChainGraph,
+    chain_graph::{ChainGraph, InsertTxErr},
     keychain::KeychainScan,
-    sparse_chain::{InsertCheckpointErr, InsertTxErr},
+    sparse_chain::{self, InsertCheckpointErr},
     BlockId, ConfirmationTime,
 };
 use esplora_client::{BlockingClient, Builder};
@@ -165,10 +165,13 @@ impl Client {
                         };
                         if let Err(err) = update.insert_tx(tx.to_tx(), Some(confirmation_time)) {
                             match err {
-                                InsertTxErr::TxTooHigh => {
+                                InsertTxErr::Chain(sparse_chain::InsertTxErr::TxTooHigh) => {
                                     /* Don't care about new transactions confirmed while syncing */
                                 }
-                                InsertTxErr::TxMoved => {
+                                InsertTxErr::Chain(sparse_chain::InsertTxErr::TxMoved) => {
+                                    /* This means there is a reorg, we will catch that below */
+                                }
+                                InsertTxErr::Conflicts(_) => {
                                     /* This means there is a reorg, we will catch that below */
                                 }
                             }

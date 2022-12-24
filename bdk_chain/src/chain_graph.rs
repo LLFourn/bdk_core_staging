@@ -4,6 +4,7 @@ use crate::{
     tx_graph::{self, TxGraph},
     BlockId, ForEachTxout, FullTxOut, TxHeight,
 };
+use alloc::collections::BTreeMap;
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use core::fmt::Debug;
 
@@ -55,13 +56,27 @@ impl<P: ChainPosition> ChainGraph<P> {
     /// Inserts a transaction into the inner [`ChainGraph`] and optionally into the chain at
     /// `position`.
     ///
+    /// If inserting it into a chain `position` will result in a conflict, an error will be returned
+    /// instead.
+    ///
     /// **Warning**: This function modifies the internal state of the chain graph. You are
     /// responsible for persisting these changes to disk if you need to restore them.
     pub fn insert_tx(
         &mut self,
         tx: Transaction,
         position: Option<P>,
-    ) -> Result<bool, sparse_chain::InsertTxErr> {
+    ) -> Result<bool, InsertTxErr<P>> {
+        // only care about conflicts if chain position is provided
+        if position.is_some() {
+            let conflicts = self
+                .conflicting_txids(&tx)
+                .map(|(k, v)| (k.clone(), v))
+                .collect::<BTreeMap<_, _>>();
+            if !conflicts.is_empty() {
+                return Err(InsertTxErr::Conflicts(conflicts));
+            }
+        }
+
         let chain_changed = match position {
             Some(pos) => self.chain.insert_tx(tx.txid(), pos)?,
             None => false,
@@ -116,6 +131,21 @@ impl<P: ChainPosition> ChainGraph<P> {
         Ok(changeset)
     }
 
+    /// Given a transaction, return an iterator of conflicting [`Txid`]s that are marked within the
+    /// internal chain.
+    pub fn conflicting_txids<'a>(
+        &'a self,
+        tx: &'a Transaction,
+    ) -> impl Iterator<Item = (&'a P, Txid)> + 'a {
+        self.graph
+            .conflicting_txids(tx)
+            .filter_map(|(_, conflicting_txid)| {
+                self.chain
+                    .tx_position(conflicting_txid)
+                    .map(|conflicting_pos| (conflicting_pos, conflicting_txid))
+            })
+    }
+
     fn fix_conflicts(&self, changeset: &mut ChangeSet<P>) -> Result<(), UnresolvableConflict<P>> {
         let chain_conflicts = changeset
             .graph
@@ -125,21 +155,16 @@ impl<P: ChainPosition> ChainGraph<P> {
             // we care about transactions that are not already in the chain
             .filter(|(_, txid)| self.chain.tx_position(*txid).is_none())
             // and are going to be added to the chain
-            .filter_map(|(tx, txid)| Some((changeset.chain.txids.get(&txid)?.clone()?, txid, tx)))
+            .filter_map(|(tx, txid)| Some((changeset.chain.txids.get(&txid)?.as_ref()?, txid, tx)))
             .flat_map(|(update_pos, update_txid, update_tx)| {
-                self.graph
-                    .conflicting_txids(update_tx)
-                    .filter_map(move |(_, conflicting_txid)| {
-                        self.chain
-                            .tx_position(conflicting_txid)
-                            .map(|conflicting_pos| {
-                                (
-                                    update_pos.clone(),
-                                    update_txid,
-                                    conflicting_pos,
-                                    conflicting_txid,
-                                )
-                            })
+                self.conflicting_txids(update_tx)
+                    .map(move |(conflicting_pos, conflicting_txid)| {
+                        (
+                            update_pos.clone(),
+                            update_txid,
+                            conflicting_pos,
+                            conflicting_txid,
+                        )
                     })
             })
             .collect::<alloc::vec::Vec<_>>();
@@ -150,14 +175,14 @@ impl<P: ChainPosition> ChainGraph<P> {
             // If so, we will modify the changeset to evict the conflicting txid.
 
             // determine the position of the conflicting txid after current changeset is applied
-            let conflicting_new_ind = changeset
+            let conflicting_new_pos = changeset
                 .chain
                 .txids
                 .get(&conflicting_txid)
                 .map(Option::as_ref)
                 .unwrap_or(Some(conflicting_pos));
 
-            match conflicting_new_ind {
+            match conflicting_new_pos {
                 None => {
                     // conflicting txid will be deleted, can ignore
                 }
@@ -167,7 +192,7 @@ impl<P: ChainPosition> ChainGraph<P> {
                         // evicted, return error
                         return Err(UnresolvableConflict {
                             already_confirmed_tx: (conflicting_pos.clone(), conflicting_txid),
-                            update_tx: (update_pos, update_txid),
+                            update_tx: (update_pos.clone(), update_txid),
                         });
                     }
                     TxHeight::Unconfirmed => {
@@ -311,6 +336,33 @@ impl<P> ForEachTxout for ChangeSet<P> {
         self.graph.for_each_txout(f)
     }
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InsertTxErr<P> {
+    Chain(sparse_chain::InsertTxErr),
+    Conflicts(BTreeMap<P, Txid>),
+}
+
+impl<P: core::fmt::Debug> core::fmt::Display for InsertTxErr<P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            InsertTxErr::Chain(inner) => core::fmt::Display::fmt(inner, f),
+            InsertTxErr::Conflicts(_) => write!(
+                f,
+                "cannot directly insert conflicting transaction into chaingraph"
+            ),
+        }
+    }
+}
+
+impl<P> From<sparse_chain::InsertTxErr> for InsertTxErr<P> {
+    fn from(inner: sparse_chain::InsertTxErr) -> Self {
+        Self::Chain(inner)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<P: core::fmt::Debug> std::error::Error for InsertTxErr<P> {}
 
 /// Represents an update failure.
 #[derive(Clone, Debug, PartialEq)]

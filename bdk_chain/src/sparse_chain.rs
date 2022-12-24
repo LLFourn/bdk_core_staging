@@ -320,16 +320,16 @@ impl<P: ChainPosition> SparseChain<P> {
     /// Insert an arbitrary txid. This assumes that we have at least one checkpoint and the tx does
     /// not already exist in [`SparseChain`]. Returns a [`ChangeSet`] on success.
     pub fn insert_tx(&mut self, txid: Txid, pos: P) -> Result<bool, InsertTxErr> {
-        let new_height = pos.height();
+        let tx_height = pos.height();
 
-        let latest = self
+        let tip_height = self
             .checkpoints
             .keys()
             .last()
             .cloned()
             .map(TxHeight::Confirmed);
 
-        if new_height.is_confirmed() && (latest.is_none() || new_height > latest.unwrap()) {
+        if tx_height.is_confirmed() && Some(tx_height) > tip_height {
             return Err(InsertTxErr::TxTooHigh);
         }
 
