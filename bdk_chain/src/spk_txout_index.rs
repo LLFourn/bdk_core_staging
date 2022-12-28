@@ -1,9 +1,6 @@
 use core::ops::RangeBounds;
 
-use crate::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    ForEachTxout,
-};
+use crate::{collections::*, ForEachTxout};
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
 /// An index storing [`TxOut`]s that have a script pubkey that matches those in a list.
@@ -149,13 +146,19 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         &self.script_pubkeys
     }
 
-    /// Adds a script pubkey to scan for.
+    /// Adds a script pubkey to scan for. Returns `false` is spk already exists in the map
     ///
     /// the index will look for outputs spending to whenever it scans new data.
-    pub fn add_spk(&mut self, index: I, spk: Script) {
-        self.spk_indexes.insert(spk.clone(), index.clone());
-        self.script_pubkeys.insert(index.clone(), spk);
-        self.unused.insert(index);
+    pub fn add_spk(&mut self, index: I, spk: Script) -> bool {
+        match self.spk_indexes.entry(spk.clone()) {
+            Entry::Vacant(value) => {
+                value.insert(index.clone());
+                self.script_pubkeys.insert(index.clone(), spk);
+                self.unused.insert(index);
+                return true;
+            }
+            Entry::Occupied(_) => return false,
+        }
     }
 
     /// Iterates over a unused script pubkeys in a index range.
