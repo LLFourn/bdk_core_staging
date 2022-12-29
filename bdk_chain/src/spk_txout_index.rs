@@ -19,7 +19,7 @@ use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 /// chain or unspent etc you must use other sources of information like a [`SparseChain`].
 ///
 /// [`TxOut`]: bitcoin::TxOut
-/// [`add_spk`]: Self::add_spk
+/// [`add_spk`]: Self::insert_script_pubkey
 /// [`Ord`]: core::cmp::Ord
 /// [`scan`]: Self::scan
 /// [`SparseChain`]: crate::sparse_chain::SparseChain
@@ -149,7 +149,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// Adds a script pubkey to scan for. Returns `false` is spk already exists in the map
     ///
     /// the index will look for outputs spending to whenever it scans new data.
-    pub fn add_spk(&mut self, index: I, spk: Script) -> bool {
+    pub fn insert_script_pubkey(&mut self, index: I, spk: Script) -> bool {
         match self.spk_indexes.entry(spk.clone()) {
             Entry::Vacant(value) => {
                 value.insert(index.clone());
