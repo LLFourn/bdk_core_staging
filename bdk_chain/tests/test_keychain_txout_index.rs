@@ -1,9 +1,7 @@
 #![cfg(feature = "miniscript")]
-use bdk_chain::collections::BTreeMap;
 
-use bdk_chain::keychain::KeychainTxOutIndex;
+use bdk_chain::collections::BTreeMap;
 use bitcoin::{OutPoint, TxOut};
-use miniscript::{Descriptor, DescriptorPublicKey};
 
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 enum TestKeychain {
@@ -11,8 +9,10 @@ enum TestKeychain {
     Internal,
 }
 
-fn init_txout_index() -> KeychainTxOutIndex<TestKeychain> {
-    let mut txout_index = KeychainTxOutIndex::<TestKeychain>::default();
+fn init_txout_index() -> bdk_chain::keychain::KeychainTxOutIndex<TestKeychain> {
+    use miniscript::{Descriptor, DescriptorPublicKey};
+
+    let mut txout_index = bdk_chain::keychain::KeychainTxOutIndex::<TestKeychain>::default();
 
     let secp = bdk_chain::bitcoin::secp256k1::Secp256k1::signing_only();
     let (external_descriptor,_) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)").unwrap();

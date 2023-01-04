@@ -106,12 +106,13 @@ impl ElectrumClient {
                 .inner
                 .block_header(existing_height as usize)?
                 .block_hash();
-            sparse_chain
-                .insert_checkpoint(BlockId {
+            let changeset = sparse_chain
+                .insert_checkpoint_preview(BlockId {
                     height: existing_height,
                     hash: current_hash,
                 })
                 .expect("This never errors because we are working with a fresh chain");
+            sparse_chain.apply_changeset(changeset);
 
             if current_hash == existing_hash {
                 break;
@@ -119,13 +120,13 @@ impl ElectrumClient {
         }
 
         // Insert the new tip so new transactions will be accepted into the sparse chain.
-        let (tip_height, tip_hash) = self.get_tip()?;
-        if let Err(e) = sparse_chain.insert_checkpoint(BlockId {
-            height: tip_height,
-            hash: tip_hash,
-        }) {
-            match e {
-                sparse_chain::InsertCheckpointErr::HashNotMatching => {
+        let tip = {
+            let (height, hash) = self.get_tip()?;
+            BlockId { height, hash }
+        };
+        if let Err(failure) = sparse_chain.insert_checkpoint(tip) {
+            match failure {
+                sparse_chain::InsertCheckpointFailure::HashNotMatching { .. } => {
                     // There has been a re-org before we even begin scanning addresses.
                     // Just recursively call (this should never happen).
                     return self.wallet_txid_scan(scripts, stop_gap, local_chain, batch_size);
@@ -157,7 +158,7 @@ impl ElectrumClient {
                         .iter()
                         .map(|history_result| {
                             if history_result.height > 0
-                                && (history_result.height as u32) <= tip_height
+                                && (history_result.height as u32) <= tip.height
                             {
                                 (
                                     history_result.tx_hash,
@@ -178,13 +179,13 @@ impl ElectrumClient {
                         unused_script_count = 0;
                     }
 
-                    for (txid, index) in txid_list {
-                        if let Err(err) = sparse_chain.insert_tx(txid, index) {
-                            match err {
-                                sparse_chain::InsertTxErr::TxTooHigh => {
-                                    unreachable!("We should not encounter this error as we ensured TxHeight <= tip_height");
+                    for (txid, pos) in txid_list {
+                        if let Err(failure) = sparse_chain.insert_tx(txid, pos) {
+                            match failure {
+                                sparse_chain::InsertTxFailure::TxTooHigh { .. } => {
+                                    unreachable!("We should not encounter this error as we ensured tx_height <= tip.height");
                                 }
-                                sparse_chain::InsertTxErr::TxMoved => {
+                                sparse_chain::InsertTxFailure::TxMovedUnexpectedly { .. } => {
                                     /* This means there is a reorg, we will handle this situation below */
                                 }
                             }

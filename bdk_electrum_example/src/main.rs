@@ -83,7 +83,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             let scripts = tracker
                 .txout_index
-                .iter_all_script_pubkeys_by_keychain()
+                .script_pubkeys_of_all_keychains()
                 .into_iter()
                 .map(|(keychain, iter)| {
                     let mut first = true;

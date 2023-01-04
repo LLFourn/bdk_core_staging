@@ -1,5 +1,5 @@
 use core::{
-    fmt::{Debug, Display},
+    fmt::Debug,
     ops::{Bound, RangeBounds},
 };
 
@@ -35,34 +35,72 @@ impl<P> Default for SparseChain<P> {
     }
 }
 
+/// Represents a failure when trying to insert a [`Txid`] into [`SparseChain`].
 #[derive(Clone, Debug, PartialEq)]
-pub enum InsertTxErr {
-    TxTooHigh,
-    TxMoved,
+pub enum InsertTxFailure<P> {
+    /// Occurs when the [`Txid`] is to be inserted at a hight higher than the [`SparseChain`]'s
+    /// tip.
+    TxTooHigh {
+        txid: Txid,
+        tx_height: u32,
+        tip_height: Option<u32>,
+    },
+    /// Occurs when the [`Txid`] is already in the [`SparseChain`] and the insertion would result in
+    /// an unexpected move in [`ChainPosition`].
+    TxMovedUnexpectedly {
+        txid: Txid,
+        original_pos: P,
+        update_pos: P,
+    },
 }
 
-impl Display for InsertTxErr {
+impl<P: core::fmt::Debug> core::fmt::Display for InsertTxFailure<P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            InsertTxFailure::TxTooHigh {
+                txid,
+                tx_height,
+                tip_height,
+            } => write!(
+                f,
+                "txid ({}) cannot be inserted at height ({}) greater than chain tip ({:?})",
+                txid, tx_height, tip_height
+            ),
+            InsertTxFailure::TxMovedUnexpectedly {
+                txid,
+                original_pos,
+                update_pos,
+            } => write!(
+                f,
+                "txid ({}) insertion resulted in an expected positional move from {:?} to {:?}",
+                txid, original_pos, update_pos
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl<P: core::fmt::Debug> std::error::Error for InsertTxFailure<P> {}
+
+/// Represents a failure when trying to insert a checkpoint into [`SparseChain`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum InsertCheckpointFailure {
+    /// Occurs when checkpoint of the same height already exists with a different [`BlockHash`].
+    HashNotMatching {
+        height: u32,
+        original_hash: BlockHash,
+        update_hash: BlockHash,
+    },
+}
+
+impl core::fmt::Display for InsertCheckpointFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:?}", self)
     }
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for InsertTxErr {}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum InsertCheckpointErr {
-    HashNotMatching,
-}
-
-impl Display for InsertCheckpointErr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for InsertCheckpointErr {}
+impl std::error::Error for InsertCheckpointFailure {}
 
 /// Represents an update failure of [`SparseChain`].
 #[derive(Clone, Debug, PartialEq)]
@@ -73,8 +111,8 @@ pub enum UpdateFailure<P = TxHeight> {
     NotConnected(u32),
     /// The update contains inconsistent tx states (e.g. it changed the transaction's height).
     /// This error is usually the inconsistency found.
-    InconsistentTx {
-        inconsistent_txid: Txid,
+    TxInconsistent {
+        txid: Txid,
         original_pos: P,
         update_pos: P,
     },
@@ -86,9 +124,9 @@ impl<P: core::fmt::Debug> core::fmt::Display for UpdateFailure<P> {
             Self::NotConnected(h) =>
                 write!(f, "the checkpoints in the update could not be connected to the checkpoints in the chain, try include checkpoint of height {} to connect",
                     h),
-            Self::InconsistentTx { inconsistent_txid, original_pos, update_pos } =>
-                write!(f, "inconsistent update: first inconsistent tx is ({}) which had position ({:?}), but is ({:?}) in the update", 
-                    inconsistent_txid, original_pos, update_pos),
+            Self::TxInconsistent { txid, original_pos, update_pos } =>
+                write!(f, "tx ({}) had position ({:?}), but is ({:?}) in the update", 
+                    txid, original_pos, update_pos),
         }
     }
 }
@@ -146,9 +184,19 @@ impl<P: ChainPosition> SparseChain<P> {
             .map(|(&height, &hash)| BlockId { height, hash })
     }
 
-    /// Determines the [`ChangeSet`] when `update` is applied to self.
+    /// Preview changes of updating [`Self`] with another chain that connects to it.
     ///
-    /// Invalidated checkpoints result in invalidated transactions becoming "unconfirmed".
+    /// If the `update` wishes to introduce confirmed transactions, it must contain a checkpoint
+    /// that is exactly the same height as one of `self`'s checkpoints.
+    ///
+    /// To invalidate from a given checkpoint, `update` must contain a checkpoint of the same height
+    /// but different hash. Invalidated checkpoints result in invalidated transactions becoming
+    /// "unconfirmed".
+    ///
+    /// An error will be returned if an update will result in inconsistencies or if the update does
+    /// not properly connect with `self`.
+    ///
+    /// **WARNING:** The exact behaviour of updating needs to be better documented.
     pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<P>, UpdateFailure<P>> {
         let agreement_point = update
             .checkpoints
@@ -185,8 +233,8 @@ impl<P: ChainPosition> SparseChain<P> {
                 if original_pos.height() < TxHeight::Confirmed(invalid_lb)
                     && original_pos != &update_pos
                 {
-                    return Err(UpdateFailure::InconsistentTx {
-                        inconsistent_txid: txid,
+                    return Err(UpdateFailure::TxInconsistent {
+                        txid,
                         original_pos: P::clone(original_pos),
                         update_pos: update_pos.clone(),
                     });
@@ -196,7 +244,7 @@ impl<P: ChainPosition> SparseChain<P> {
 
         // create initial change-set, based on checkpoints and txids that are to be "invalidated"
         let mut changeset = invalid_from
-            .map(|from_height| self.invalidate_checkpoints_changeset(from_height))
+            .map(|from_height| self.invalidate_checkpoints_preview(from_height))
             .unwrap_or_default();
 
         for (&height, &new_hash) in &update.checkpoints {
@@ -230,41 +278,42 @@ impl<P: ChainPosition> SparseChain<P> {
         Ok(changeset)
     }
 
+    /// Updates [`Self`] with another chain that connects to it. This is equivilant to calling
+    /// [`Self::determine_changeset()`] and [`Self::apply_changeset`] in sequence.
+    pub fn apply_update(&mut self, update: Self) -> Result<ChangeSet<P>, UpdateFailure<P>> {
+        let changeset = self.determine_changeset(&update)?;
+        self.apply_changeset(changeset.clone());
+        Ok(changeset)
+    }
+
     pub fn apply_changeset(&mut self, changeset: ChangeSet<P>) {
-        for (height, update_hash) in &changeset.checkpoints {
+        for (height, update_hash) in changeset.checkpoints {
             let _original_hash = match update_hash {
-                Some(update_hash) => self.checkpoints.insert(*height, *update_hash),
+                Some(update_hash) => self.checkpoints.insert(height, update_hash),
                 None => self.checkpoints.remove(&height),
             };
         }
 
-        for (txid, update_pos) in &changeset.txids {
-            let original_pos = self.txid_to_pos.remove(txid);
+        for (txid, update_pos) in changeset.txids {
+            let original_pos = self.txid_to_pos.remove(&txid);
 
             if let Some(pos) = original_pos {
-                self.ordered_txids.remove(&(pos, *txid));
+                self.ordered_txids.remove(&(pos, txid));
             }
 
             if let Some(pos) = update_pos {
-                self.txid_to_pos.insert(*txid, pos.clone());
-                self.ordered_txids.insert((pos.clone(), *txid));
+                self.txid_to_pos.insert(txid, pos.clone());
+                self.ordered_txids.insert((pos.clone(), txid));
             }
         }
 
         self.prune_checkpoints();
     }
 
-    /// Tries to update `self` with another chain that connects to it.
-    pub fn apply_update(&mut self, update: Self) -> Result<(), UpdateFailure<P>> {
-        let changeset = self.determine_changeset(&update)?;
-        self.apply_changeset(changeset);
-        Ok(())
-    }
-
     /// Derives a [`ChangeSet`] that assumes that there are no preceding changesets.
     ///
     /// The changeset returned will record additions of all [`Txid`]s and checkpoints included in
-    /// this [`SparseChain`].
+    /// [`Self`].
     pub fn initial_changeset(&self) -> ChangeSet<P> {
         ChangeSet {
             checkpoints: self
@@ -281,8 +330,8 @@ impl<P: ChainPosition> SparseChain<P> {
     }
 
     /// Determines the [`ChangeSet`] when checkpoints `from_height` (inclusive) and above are
-    /// invalidated. Displaced transactions are moved to `TxHeight::Unconfirmed`.
-    pub fn invalidate_checkpoints_changeset(&self, from_height: u32) -> ChangeSet<P> {
+    /// invalidated. Displaced [`Txid`]s will be repositioned to [`TxHeight::Unconfirmed`].
+    pub fn invalidate_checkpoints_preview(&self, from_height: u32) -> ChangeSet<P> {
         ChangeSet::<P> {
             checkpoints: self
                 .checkpoints
@@ -297,9 +346,19 @@ impl<P: ChainPosition> SparseChain<P> {
         }
     }
 
-    /// Determines the [`ChangeSet`] when all transactions of height `TxHeight::Unconfirmed` are
+    /// Invalidate checkpoints `from_height` (inclusive) and above.
+    ///
+    /// Internally, this uses [`Self::invalidate_checkpoints_preview`] and also applies the
+    /// resultant [`ChangeSet`].
+    pub fn invalidate_checkpoints(&mut self, from_height: u32) -> ChangeSet<P> {
+        let changeset = self.invalidate_checkpoints_preview(from_height);
+        self.apply_changeset(changeset.clone());
+        changeset
+    }
+
+    /// Determines the [`ChangeSet`] when all transactions of height [`TxHeight::Unconfirmed`] are
     /// removed completely.
-    pub fn clear_mempool_changeset(&self) -> ChangeSet<P> {
+    pub fn clear_mempool_preview(&self) -> ChangeSet<P> {
         let mempool_range = &(
             P::min_ord_of_height(TxHeight::Unconfirmed),
             Txid::all_zeros(),
@@ -317,57 +376,118 @@ impl<P: ChainPosition> SparseChain<P> {
         }
     }
 
-    /// Insert an arbitrary txid. This assumes that we have at least one checkpoint and the tx does
-    /// not already exist in [`SparseChain`]. Returns a [`ChangeSet`] on success.
-    pub fn insert_tx(&mut self, txid: Txid, pos: P) -> Result<bool, InsertTxErr> {
-        let tx_height = pos.height();
-
-        let tip_height = self
-            .checkpoints
-            .keys()
-            .last()
-            .cloned()
-            .map(TxHeight::Confirmed);
-
-        if tx_height.is_confirmed() && Some(tx_height) > tip_height {
-            return Err(InsertTxErr::TxTooHigh);
-        }
-
-        if let Some(original_pos) = self.txid_to_pos.get(&txid) {
-            if original_pos.height().is_confirmed() && *original_pos != pos {
-                return Err(InsertTxErr::TxMoved);
-            }
-
-            return Ok(false);
-        }
-
-        self.txid_to_pos.insert(txid, pos.clone());
-        self.ordered_txids.insert((pos, txid));
-
-        Ok(true)
-    }
-
-    /// Insert a `block_id` (a height and block hash) into the chain. The caller is responsible for
-    /// guaranteeing that a block exists at that height. If a checkpoint already exists at that
-    /// height with a different hash this will return an error. Otherwise it will return `Ok(true)`
-    /// if the checkpoint didn't already exist or `Ok(false)` if it did.
+    /// Clears all transactions of height [`TxHeight::Unconfirmed`].
     ///
-    /// **Warning**: This function modifies the internal state of the chain. You are responsible
-    /// for persisting these changes to disk if you need to restore them.
-    pub fn insert_checkpoint(&mut self, block_id: BlockId) -> Result<bool, InsertCheckpointErr> {
-        if let Some(&old_hash) = self.checkpoints.get(&block_id.height) {
-            if old_hash != block_id.hash {
-                return Err(InsertCheckpointErr::HashNotMatching);
-            }
-
-            return Ok(false);
-        }
-
-        self.checkpoints.insert(block_id.height, block_id.hash);
-        self.prune_checkpoints();
-        Ok(true)
+    /// Internally, this uses [`Self::clear_mempool_preview()`] and applies the resultant
+    /// [`ChangeSet`].
+    pub fn clear_mempool(&mut self) -> ChangeSet<P> {
+        let changeset = self.clear_mempool_preview();
+        self.apply_changeset(changeset.clone());
+        changeset
     }
 
+    /// Determines the resultant [`ChangeSet`] if [`Txid`] was inserted at position `pos`.
+    ///
+    /// Changes to the [`Txid`]'s position is allowed and will be reflected in the [`ChangeSet`].
+    pub fn insert_tx_preview(
+        &self,
+        txid: Txid,
+        pos: P,
+    ) -> Result<ChangeSet<P>, InsertTxFailure<P>> {
+        let mut update = Self::default();
+
+        if let Some(block_id) = self.latest_checkpoint() {
+            let _old_hash = update.checkpoints.insert(block_id.height, block_id.hash);
+            debug_assert!(_old_hash.is_none());
+        }
+
+        let tip_height = self.checkpoints.iter().last().map(|(h, _)| *h);
+        if let TxHeight::Confirmed(tx_height) = pos.height() {
+            if Some(tx_height) > tip_height {
+                return Err(InsertTxFailure::TxTooHigh {
+                    txid,
+                    tx_height,
+                    tip_height,
+                });
+            }
+        }
+
+        let _old_pos = update.txid_to_pos.insert(txid, pos.clone());
+        debug_assert!(_old_pos.is_none());
+
+        let _inserted = update.ordered_txids.insert((pos, txid));
+        debug_assert!(_inserted, "must insert tx");
+
+        match self.determine_changeset(&update) {
+            Ok(changeset) => Ok(changeset),
+            Err(UpdateFailure::NotConnected(_)) => panic!("should always connect"),
+            Err(UpdateFailure::TxInconsistent {
+                txid: inconsistent_txid,
+                original_pos,
+                update_pos,
+            }) => Err(InsertTxFailure::TxMovedUnexpectedly {
+                txid: inconsistent_txid,
+                original_pos,
+                update_pos,
+            }),
+        }
+    }
+
+    /// Inserts a given [`Txid`] at `pos`.
+    ///
+    /// Internally, this uses [`Self::insert_tx_preview()`] and also applies the changes.
+    pub fn insert_tx(&mut self, txid: Txid, pos: P) -> Result<ChangeSet<P>, InsertTxFailure<P>> {
+        let changeset = self.insert_tx_preview(txid, pos)?;
+        self.apply_changeset(changeset.clone());
+        Ok(changeset)
+    }
+
+    /// Determines the resultant [`ChangeSet`] if [`BlockId`] was inserted.
+    ///
+    /// If the change would result in a change in block hash of a certain height, insertion would
+    /// fail.
+    pub fn insert_checkpoint_preview(
+        &self,
+        block_id: BlockId,
+    ) -> Result<ChangeSet<P>, InsertCheckpointFailure> {
+        let mut update = Self::default();
+
+        if let Some(block_id) = self.latest_checkpoint() {
+            let _old_hash = update.checkpoints.insert(block_id.height, block_id.hash);
+            debug_assert!(_old_hash.is_none());
+        }
+
+        if let Some(original_hash) = update.checkpoints.insert(block_id.height, block_id.hash) {
+            if original_hash != block_id.hash {
+                return Err(InsertCheckpointFailure::HashNotMatching {
+                    height: block_id.height,
+                    original_hash,
+                    update_hash: block_id.hash,
+                });
+            }
+        }
+
+        match self.determine_changeset(&update) {
+            Ok(changeset) => Ok(changeset),
+            Err(UpdateFailure::NotConnected(_)) => panic!("error should have caught above"),
+            Err(UpdateFailure::TxInconsistent { .. }) => panic!("should never add txs"),
+        }
+    }
+
+    /// Insert a checkpoint ([`BlockId`]).
+    ///
+    /// Internally, this uses [`Self::insert_checkpoint_preview()`] and applies the changes
+    /// directly.
+    pub fn insert_checkpoint(
+        &mut self,
+        block_id: BlockId,
+    ) -> Result<ChangeSet<P>, InsertCheckpointFailure> {
+        let changeset = self.insert_checkpoint_preview(block_id)?;
+        self.apply_changeset(changeset.clone());
+        Ok(changeset)
+    }
+
+    /// Iterate through all [`Txid`]s and the associated chain positions.
     pub fn txids(&self) -> impl DoubleEndedIterator<Item = &(P, Txid)> + ExactSizeIterator + '_ {
         self.ordered_txids.iter()
     }
@@ -458,8 +578,7 @@ impl<P: ChainPosition> SparseChain<P> {
         self.prune_checkpoints();
     }
 
-    /// Returns all the transaction ids that would be added to the sparse chain if this changeset
-    /// was applied.
+    /// Returns all [`Txid`]s that would be added to the sparse chain if this changeset was applied.
     pub fn changeset_additions<'a>(
         &'a self,
         changeset: &'a ChangeSet<P>,
@@ -508,6 +627,7 @@ impl<P: ChainPosition> SparseChain<P> {
     derive(serde::Deserialize, serde::Serialize),
     serde(crate = "serde_crate")
 )]
+#[must_use]
 pub struct ChangeSet<P = TxHeight> {
     pub checkpoints: BTreeMap<u32, Option<BlockHash>>,
     pub txids: BTreeMap<Txid, Option<P>>,

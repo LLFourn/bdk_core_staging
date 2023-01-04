@@ -87,11 +87,8 @@ fn main() -> anyhow::Result<()> {
                 .context("scanning the blockchain")?;
             eprintln!();
 
-            let changeset = keychain_tracker.determine_changeset(&wallet_scan)?;
+            let changeset = keychain_tracker.apply_update(wallet_scan)?;
             db.append_changeset(&changeset)?;
-            keychain_tracker
-                .apply_changeset(changeset)
-                .expect("it was just generated");
         }
         EsploraCommands::Sync {
             mut unused,

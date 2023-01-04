@@ -70,6 +70,16 @@ where
         })
     }
 
+    pub fn apply_update(
+        &mut self,
+        scan: KeychainScan<K, P>,
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::UpdateFailure<P>> {
+        let changeset = self.determine_changeset(&scan)?;
+        self.apply_changeset(changeset.clone())
+            .expect("generated changeset should apply");
+        Ok(changeset)
+    }
+
     pub fn apply_changeset(
         &mut self,
         changeset: KeychainChangeSet<K, P>,
@@ -121,11 +131,24 @@ where
     ///
     /// **Warning**: This function modifies the internal state of the tracker. You are responsible
     /// for persisting these changes to disk if you need to restore them.
+    pub fn insert_checkpoint_preview(
+        &self,
+        block_id: BlockId,
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertCheckpointFailure> {
+        Ok(KeychainChangeSet {
+            chain_graph: self.chain_graph.insert_checkpoint_preview(block_id)?,
+            ..Default::default()
+        })
+    }
+
     pub fn insert_checkpoint(
         &mut self,
         block_id: BlockId,
-    ) -> Result<bool, sparse_chain::InsertCheckpointErr> {
-        self.chain_graph.insert_checkpoint(block_id)
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertCheckpointFailure> {
+        let changeset = self.insert_checkpoint_preview(block_id)?;
+        self.apply_changeset(changeset.clone())
+            .expect("changeset should apply");
+        Ok(changeset)
     }
 
     /// Inserts a transaction into the inner [`ChainGraph`] and optionally into the inner chain at
@@ -133,14 +156,26 @@ where
     ///
     /// **Warning**: This function modifies the internal state of the chain graph. You are
     /// responsible for persisting these changes to disk if you need to restore them.
+    pub fn insert_tx_preview(
+        &self,
+        tx: Transaction,
+        pos: P,
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertTxFailure<P>> {
+        Ok(KeychainChangeSet {
+            chain_graph: self.chain_graph.insert_tx_preview(tx.clone(), pos)?,
+            ..Default::default()
+        })
+    }
+
     pub fn insert_tx(
         &mut self,
         tx: Transaction,
-        position: Option<P>,
-    ) -> Result<bool, chain_graph::InsertTxErr<P>> {
-        let changed = self.chain_graph.insert_tx(tx.clone(), position)?;
-        self.txout_index.scan(&tx);
-        Ok(changed)
+        pos: P,
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertTxFailure<P>> {
+        let changeset = self.insert_tx_preview(tx, pos)?;
+        self.apply_changeset(changeset.clone())
+            .expect("changeset should apply");
+        Ok(changeset)
     }
 }
 

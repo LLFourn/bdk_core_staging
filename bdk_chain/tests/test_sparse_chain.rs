@@ -145,8 +145,8 @@ fn invalidate_a_checkpoint_and_try_and_move_tx_when_it_wasnt_within_invalidation
     let chain2 = chain!(checkpoints: [[0, h!("A")], [1, h!("B'")]], txids: [(h!("tx0"), TxHeight::Confirmed(1))]);
     assert_eq!(
         chain1.determine_changeset(&chain2),
-        Err(UpdateFailure::InconsistentTx {
-            inconsistent_txid: h!("tx0"),
+        Err(UpdateFailure::TxInconsistent {
+            txid: h!("tx0"),
             original_pos: TxHeight::Confirmed(0).into(),
             update_pos: TxHeight::Confirmed(1).into(),
         })
@@ -240,10 +240,14 @@ fn merging_mempool_of_empty_chains_doesnt_fail() {
 
 #[test]
 fn cannot_insert_confirmed_tx_without_checkpoints() {
-    let mut chain = SparseChain::default();
+    let chain = SparseChain::default();
     assert_eq!(
-        chain.insert_tx(h!("A"), TxHeight::Confirmed(0)),
-        Err(InsertTxErr::TxTooHigh)
+        chain.insert_tx_preview(h!("A"), TxHeight::Confirmed(0)),
+        Err(InsertTxFailure::TxTooHigh {
+            txid: h!("A"),
+            tx_height: 0,
+            tip_height: None
+        })
     );
 }
 
@@ -319,8 +323,8 @@ fn cannot_change_ext_index_of_confirmed_tx() {
 
     assert_eq!(
         chain1.determine_changeset(&chain2),
-        Err(UpdateFailure::InconsistentTx {
-            inconsistent_txid: h!("tx0"),
+        Err(UpdateFailure::TxInconsistent {
+            txid: h!("tx0"),
             original_pos: TestIndex(TxHeight::Confirmed(1), 10),
             update_pos: TestIndex(TxHeight::Confirmed(1), 20),
         }),
@@ -480,7 +484,7 @@ fn invalidation_but_no_connection() {
 #[test]
 fn checkpoint_limit_is_respected() {
     let mut chain1 = SparseChain::default();
-    chain1
+    let _ = chain1
         .apply_update(chain!(
             [1, h!("A")],
             [2, h!("B")],
@@ -494,7 +498,7 @@ fn checkpoint_limit_is_respected() {
     chain1.set_checkpoint_limit(Some(4));
     assert_eq!(chain1.checkpoints().len(), 4);
 
-    chain1
+    let _ = chain1
         .insert_checkpoint(BlockId {
             height: 6,
             hash: h!("F"),
@@ -535,7 +539,7 @@ fn range_txids_by_height() {
 
     // populate chain with txids
     for (index, txid) in txids {
-        chain.insert_tx(txid, index).expect("should succeed");
+        let _ = chain.insert_tx(txid, index).expect("should succeed");
     }
 
     // inclusive start
@@ -584,7 +588,7 @@ fn range_txids_by_index() {
 
     // populate chain with txids
     for (index, txid) in txids {
-        chain.insert_tx(txid, index).expect("should succeed");
+        let _ = chain.insert_tx(txid, index).expect("should succeed");
     }
 
     // inclusive start
@@ -666,7 +670,7 @@ fn range_txids() {
 
     // populate chain
     for txid in &txids {
-        chain
+        let _ = chain
             .insert_tx(*txid, TxHeight::Unconfirmed)
             .expect("should succeed");
     }
