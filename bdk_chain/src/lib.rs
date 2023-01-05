@@ -15,6 +15,8 @@ pub use for_each_txout::*;
 pub use miniscript;
 #[cfg(feature = "miniscript")]
 pub mod descriptor_ext;
+#[cfg(feature = "file_store")]
+pub mod file_store;
 
 #[allow(unused_imports)]
 #[macro_use]
@@ -22,6 +24,9 @@ extern crate alloc;
 
 #[cfg(feature = "serde")]
 extern crate serde_crate as serde;
+
+#[cfg(feature = "bincode")]
+extern crate bincode;
 
 #[cfg(feature = "std")]
 #[macro_use]

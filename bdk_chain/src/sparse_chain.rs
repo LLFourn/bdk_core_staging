@@ -510,9 +510,9 @@ impl<P: ChainPosition> SparseChain<P> {
     derive(serde::Deserialize, serde::Serialize),
     serde(crate = "serde_crate")
 )]
-pub struct ChangeSet<I = TxHeight> {
+pub struct ChangeSet<P = TxHeight> {
     pub checkpoints: BTreeMap<u32, Option<BlockHash>>,
-    pub txids: BTreeMap<Txid, Option<I>>,
+    pub txids: BTreeMap<Txid, Option<P>>,
 }
 
 impl<I> Default for ChangeSet<I> {
