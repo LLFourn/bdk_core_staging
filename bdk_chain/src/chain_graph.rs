@@ -206,12 +206,11 @@ impl<P: ChainPosition> ChainGraph<P> {
 
     /// Convets a [`sparse_chain::ChangeSet`] to a valid [`ChangeSet`] by providing
     /// full transactions for each addition.
-    ///
     pub fn inflate_changeset(
         &self,
         changeset: sparse_chain::ChangeSet<P>,
         full_txs: impl IntoIterator<Item = Transaction>,
-    ) -> Result<ChangeSet<P>, (sparse_chain::ChangeSet<P>, InflateFailure<P>)> {
+    ) -> Result<ChangeSet<P>, InflateFailure<P>> {
         let mut missing = self
             .chain
             .changeset_additions(&changeset)
@@ -235,15 +234,10 @@ impl<P: ChainPosition> ChainGraph<P> {
                     ..Default::default()
                 },
             };
-            self.fix_conflicts(&mut changeset).map_err(|inner| {
-                (
-                    changeset.chain.clone(),
-                    InflateFailure::UnresolvableConflict(inner),
-                )
-            })?;
+            self.fix_conflicts(&mut changeset)?;
             Ok(changeset)
         } else {
-            Err((changeset, InflateFailure::Missing(missing)))
+            Err(InflateFailure::Missing(missing))
         }
     }
 
@@ -358,7 +352,7 @@ impl<P: core::fmt::Debug> core::fmt::Display for InflateFailure<P> {
                 missing.len()
             ),
             InflateFailure::UnresolvableConflict(inner) => {
-                write!(f, "cannot inflate changeset: {:?}", inner)
+                write!(f, "cannot inflate changeset: {}", inner)
             }
         }
     }

@@ -11,7 +11,3 @@ bdk_cli = { path = "../bdk_cli_lib"}
 
 # Electrum
 electrum-client = { version = "0.12" }
-
-# Auxiliary
-log = "0.4"
-env_logger = "0.7"

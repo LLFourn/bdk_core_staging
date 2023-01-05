@@ -2,11 +2,11 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use bdk_chain::{
     bitcoin::{BlockHash, Script, Txid},
-    sparse_chain::{InsertTxErr, SparseChain},
+    sparse_chain::{self, SparseChain},
     BlockId, TxHeight,
 };
 use bdk_cli::Broadcast;
-use electrum_client::{Client, Config, ElectrumApi};
+use electrum_client::{Client, ElectrumApi};
 
 #[derive(Debug)]
 pub enum ElectrumError {
@@ -35,37 +35,36 @@ impl From<electrum_client::Error> for ElectrumError {
 }
 
 pub struct ElectrumClient {
-    client: Client,
+    inner: Client,
 }
 
 impl ElectrumClient {
-    pub fn new(url: &str) -> Result<Self, ElectrumError> {
-        let client = Client::from_config(url, Config::default())?;
-        Ok(Self { client })
+    pub fn new(client: Client) -> Result<Self, ElectrumError> {
+        Ok(Self { inner: client })
     }
 }
 
 impl Deref for ElectrumClient {
     type Target = Client;
     fn deref(&self) -> &Self::Target {
-        &self.client
+        &self.inner
     }
 }
 
 impl Broadcast for ElectrumClient {
-    type Error = ElectrumError;
+    type Error = electrum_client::Error;
     fn broadcast(&self, tx: &bdk_chain::bitcoin::Transaction) -> Result<(), Self::Error> {
-        let _ = self.client.transaction_broadcast(tx)?;
+        let _ = self.inner.transaction_broadcast(tx)?;
         Ok(())
     }
 }
 
 impl ElectrumClient {
     /// Fetch latest block height.
-    pub fn get_tip(&self) -> Result<(u32, BlockHash), ElectrumError> {
+    pub fn get_tip(&self) -> Result<(u32, BlockHash), electrum_client::Error> {
         // TODO: unsubscribe when added to the client, or is there a better call to use here?
         Ok(self
-            .client
+            .inner
             .block_headers_subscribe()
             .map(|data| (data.height as u32, data.header.block_hash()))?)
     }
@@ -105,7 +104,7 @@ impl ElectrumClient {
         // In case of reorg, new checkpoints until the last common checkpoint is added to the structure
         for (&existing_height, &existing_hash) in local_chain.iter().rev() {
             let current_hash = self
-                .client
+                .inner
                 .block_header(existing_height as usize)?
                 .block_hash();
             sparse_chain
@@ -122,15 +121,17 @@ impl ElectrumClient {
 
         // Insert the new tip
         let (tip_height, tip_hash) = self.get_tip()?;
-        if sparse_chain
-            .insert_checkpoint(BlockId {
-                height: tip_height,
-                hash: tip_hash,
-            })
-            .is_err()
-        {
-            // There has been an reorg since the last call to `block_header` in the loop above at the current tip.
-            return Err(ElectrumError::Reorg);
+        if let Err(e) = sparse_chain.insert_checkpoint(BlockId {
+            height: tip_height,
+            hash: tip_hash,
+        }) {
+            match e {
+                sparse_chain::InsertCheckpointErr::HashNotMatching => {
+                    // There has been a re-org before we even begin scanning addresses.
+                    // Just recursively call (this should never happen).
+                    return self.wallet_txid_scan(scripts, stop_gap, local_chain, batch_size);
+                }
+            }
         }
 
         let mut keychain_index_update = BTreeMap::new();
@@ -142,20 +143,21 @@ impl ElectrumClient {
             let mut unused_script_count = 0usize;
 
             loop {
-                let batch_scripts = (0..batch_size)
+                let mut next_batch = (0..batch_size)
                     .map(|_| scripts.next())
                     .filter_map(|item| item)
-                    .collect::<Vec<_>>();
+                    .peekable();
 
-                if batch_scripts.is_empty() {
-                    // We reached the end of the script list
+                if next_batch.peek().is_none() {
                     break;
                 }
 
+                let (indexes, scripts): (Vec<_>, Vec<_>) = next_batch.unzip();
+
                 for (history, index) in self
-                    .batch_script_get_history(batch_scripts.iter().map(|(_, script)| script))?
-                    .iter()
-                    .zip(batch_scripts.iter().map(|(index, _)| index))
+                    .batch_script_get_history(scripts.iter())?
+                    .into_iter()
+                    .zip(indexes)
                 {
                     let txid_list = history
                         .iter()
@@ -163,40 +165,40 @@ impl ElectrumClient {
                             if history_result.height > 0
                                 && (history_result.height as u32) <= tip_height
                             {
-                                return (
+                                (
                                     history_result.tx_hash,
                                     TxHeight::Confirmed(history_result.height as u32),
-                                );
+                                )
                             } else {
-                                return (history_result.tx_hash, TxHeight::Unconfirmed);
-                            };
+                                (history_result.tx_hash, TxHeight::Unconfirmed)
+                            }
                         })
                         .collect::<Vec<(Txid, TxHeight)>>();
 
                     if txid_list.is_empty() {
                         unused_script_count += 1;
                     } else {
-                        last_active_index = *index;
+                        last_active_index = index;
                         unused_script_count = 0;
                     }
 
                     for (txid, index) in txid_list {
                         if let Err(err) = sparse_chain.insert_tx(txid, index) {
                             match err {
-                                InsertTxErr::TxTooHigh => {
+                                sparse_chain::InsertTxErr::TxTooHigh => {
                                     unreachable!("We should not encounter this error as we ensured TxHeight <= tip_height");
                                 }
-                                InsertTxErr::TxMoved => {
+                                sparse_chain::InsertTxErr::TxMoved => {
                                     /* This means there is a reorg, we will handle this situation below */
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            if unused_script_count >= stop_gap.unwrap_or(usize::MAX) {
-                break;
+                if unused_script_count >= stop_gap.unwrap_or(usize::MAX) {
+                    break;
+                }
             }
 
             keychain_index_update.insert(keychain, last_active_index);

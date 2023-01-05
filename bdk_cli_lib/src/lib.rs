@@ -210,7 +210,8 @@ where
                 let address = Address::from_script(&spk, network)
                     .expect("should always be able to derive address");
                 println!(
-                    "{} used:{}",
+                    "{:?} {} used:{}",
+                    index,
                     address,
                     txout_index.is_used(&(target_keychain, index))
                 );

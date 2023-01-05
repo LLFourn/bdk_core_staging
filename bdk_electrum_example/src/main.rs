@@ -1,17 +1,14 @@
 mod electrum;
-
-use std::fmt::Debug;
-
 use bdk_chain::{bitcoin::Network, keychain::KeychainChangeSet};
-use electrum::ElectrumClient;
-
 use bdk_cli::{
-    anyhow::{self, anyhow, Context},
+    anyhow::{self, Context},
     clap::{self, Parser, Subcommand},
 };
-use log::debug;
+use electrum::ElectrumClient;
+use std::io;
+use std::{fmt::Debug, io::Write};
 
-use electrum_client::ElectrumApi;
+use electrum_client::{Client, ConfigBuilder, ElectrumApi};
 
 #[derive(Subcommand, Debug, Clone)]
 enum ElectrumCommands {
@@ -53,11 +50,16 @@ fn main() -> anyhow::Result<()> {
         Network::Bitcoin => "ssl://electrum.blockstream.info:50002",
         Network::Testnet => "ssl://electrum.blockstream.info:60002",
         Network::Regtest => "ssl://localhost:60401",
-        // TODO: Find a electrum signet endpoint
-        Network::Signet => return Err(anyhow::anyhow!("Signet nor supported for Electrum")),
+        Network::Signet => "tcp://signet-electrumx.wakiyamap.dev:50001",
     };
+    let config = ConfigBuilder::new()
+        .validate_domain(match args.network {
+            Network::Bitcoin => true,
+            _ => false,
+        })
+        .build();
 
-    let client = ElectrumClient::new(electrum_url)?;
+    let client = ElectrumClient::new(Client::from_config(electrum_url, config)?)?;
 
     let electrum_cmd = match args.command {
         bdk_cli::Commands::ChainSpecific(electrum_cmd) => electrum_cmd,
@@ -80,7 +82,26 @@ fn main() -> anyhow::Result<()> {
             stop_gap,
             scan_option,
         } => {
-            let scripts = tracker.txout_index.iter_all_script_pubkeys_by_keychain();
+            let scripts = tracker
+                .txout_index
+                .iter_all_script_pubkeys_by_keychain()
+                .into_iter()
+                .map(|(keychain, iter)| {
+                    let mut first = true;
+                    (
+                        keychain,
+                        iter.inspect(move |(i, _)| {
+                            if first {
+                                eprint!("\nscanning {}: ", keychain);
+                                first = false;
+                            }
+
+                            eprint!("{} ", i);
+                            let _ = io::stdout().flush();
+                        }),
+                    )
+                })
+                .collect();
 
             let (new_sparsechain, keychain_index_update) = client.wallet_txid_scan(
                 scripts,
@@ -88,6 +109,8 @@ fn main() -> anyhow::Result<()> {
                 tracker.chain().checkpoints(),
                 scan_option.batch_size,
             )?;
+
+            eprintln!();
 
             keychain_changeset.derivation_indices = keychain_index_update;
 
@@ -142,45 +165,27 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let sparsechain_changeset = match tracker.chain().determine_changeset(&chain_update) {
-        Ok(cs) => cs,
-        Err(update_failure) => {
-            return Err(anyhow!(
-                "Changeset determination failed : {:?}",
-                update_failure
-            ))
-        }
-    };
+    let sparsechain_changeset = tracker.chain().determine_changeset(&chain_update)?;
 
     let new_txids = tracker
         .chain()
         .changeset_additions(&sparsechain_changeset)
         .collect::<Vec<_>>();
 
-    let new_txs = client.batch_transaction_get(new_txids.iter())?;
+    let new_txs = client
+        .batch_transaction_get(new_txids.iter())
+        .context("fetching full transactions")?;
 
-    let chaingraph_changeset = match tracker
+    let chaingraph_changeset = tracker
         .chain_graph()
         .inflate_changeset(sparsechain_changeset, new_txs)
-    {
-        Ok(cs) => cs,
-        Err(cs_error) => {
-            return Err(anyhow!(
-                "Chaingraph changeset creation failed : {:?}",
-                cs_error
-            ))
-        }
-    };
+        .context("inflating changeset")?;
 
     keychain_changeset.chain_graph = chaingraph_changeset;
 
     db.append_changeset(&keychain_changeset)?;
-    if let Err(err) = tracker.apply_changeset(keychain_changeset) {
-        return Err(anyhow!(
-            "Changeset application failed in tracker : {:?}",
-            err
-        ));
-    }
-    debug!("sync completed!!");
+    tracker
+        .apply_changeset(keychain_changeset)
+        .expect("cannot happen as tracker produced this changeset");
     Ok(())
 }
