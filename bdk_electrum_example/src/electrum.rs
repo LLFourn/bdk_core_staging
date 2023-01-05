@@ -100,8 +100,7 @@ impl ElectrumClient {
     ) -> Result<(SparseChain, BTreeMap<K, u32>), ElectrumError> {
         let mut sparse_chain = SparseChain::default();
 
-        // Check for reorgs.
-        // In case of reorg, new checkpoints until the last common checkpoint is added to the structure
+        // Find local chain block that is still there so our update can connect to the local chain.
         for (&existing_height, &existing_hash) in local_chain.iter().rev() {
             let current_hash = self
                 .inner
@@ -119,7 +118,7 @@ impl ElectrumClient {
             }
         }
 
-        // Insert the new tip
+        // Insert the new tip so new transactions will be accepted into the sparse chain.
         let (tip_height, tip_hash) = self.get_tip()?;
         if let Err(e) = sparse_chain.insert_checkpoint(BlockId {
             height: tip_height,
@@ -136,8 +135,6 @@ impl ElectrumClient {
 
         let mut keychain_index_update = BTreeMap::new();
 
-        // Fetch Keychain's last_active_index and all related txids.
-        // Add them into the SparseChain
         for (keychain, mut scripts) in scripts {
             let mut last_active_index = 0;
             let mut unused_script_count = 0usize;
