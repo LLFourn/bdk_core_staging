@@ -69,10 +69,10 @@ impl ElectrumClient {
             .map(|data| (data.height as u32, data.header.block_hash()))?)
     }
 
-    /// Scan for a given list of scripts, and create an initial [`bdk_core::sparse_chain::SparseChain`] update candidate.
+    /// Scan for a given list of scripts, and create an initial [`bdk_chain::sparse_chain::SparseChain`] update candidate.
     /// This will only contain [`Txid`]s in SparseChain, and no actual transaction data.
     ///
-    /// User needs to fetch the required transaction data and create the final [`bdk_core::keychain::KeychainChangeSet`] before applying it.
+    /// User needs to fetch the required transaction data and create the final [`bdk_chain::keychain::KeychainChangeSet`] before applying it.
     pub fn spk_txid_scan(
         &self,
         spks: impl Iterator<Item = Script>,
@@ -87,10 +87,10 @@ impl ElectrumClient {
             .0)
     }
 
-    /// Scan for a keychain tracker, and create an initial [`bdk_core::sparse_chain::SparseChain`] update candidate.
+    /// Scan for a keychain tracker, and create an initial [`bdk_chain::sparse_chain::SparseChain`] update candidate.
     /// This will only contain [`Txid`]s in SparseChain, and no actual transaction data.
     ///
-    /// User needs to fetch the required transaction data and create the final [`bdk_core::keychain::KeychainChangeSet`] before applying it.
+    /// User needs to fetch the required transaction data and create the final [`bdk_chain::keychain::KeychainChangeSet`] before applying it.
     pub fn wallet_txid_scan<K: Ord + Clone>(
         &self,
         scripts: BTreeMap<K, impl Iterator<Item = (u32, Script)>>,
