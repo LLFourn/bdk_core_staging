@@ -316,19 +316,13 @@ fn chain_graph_inflate_changeset() {
 
     assert_eq!(
         cg.inflate_changeset(chain_changeset.clone(), vec![]),
-        Err((
-            chain_changeset.clone(),
-            InflateFailure::Missing(expected_missing.clone())
-        ))
+        Err(InflateFailure::Missing(expected_missing.clone()))
     );
 
     expected_missing.remove(&tx_b.txid());
     assert_eq!(
         cg.inflate_changeset(chain_changeset.clone(), vec![tx_b.clone()]),
-        Err((
-            chain_changeset.clone(),
-            InflateFailure::Missing(expected_missing)
-        ))
+        Err(InflateFailure::Missing(expected_missing))
     );
 
     let mut additions = tx_graph::Additions::default();

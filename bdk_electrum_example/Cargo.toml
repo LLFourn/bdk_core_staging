@@ -1,0 +1,13 @@
+[package]
+name = "bdk_electrum_example"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+# BDK Core
+bdk_chain = { path = "../bdk_chain", features = ["serde"] }
+bdk_cli = { path = "../bdk_cli_lib"}
+
+# Electrum
+electrum-client = { version = "0.12" }
