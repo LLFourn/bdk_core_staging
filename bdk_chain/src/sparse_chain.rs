@@ -555,7 +555,9 @@ impl<P: ChainPosition> SparseChain<P> {
     pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut<P>> {
         let chain_pos = self.tx_position(outpoint.txid)?;
 
-        let txout = graph.get_txout(outpoint).cloned()?;
+        let tx = graph.get_tx(outpoint.txid)?;
+        let is_on_coinbase = tx.is_coin_base();
+        let txout = tx.output.get(outpoint.vout as usize)?.clone();
 
         let spent_by = self
             .spent_by(graph, outpoint)
@@ -566,6 +568,7 @@ impl<P: ChainPosition> SparseChain<P> {
             txout,
             chain_position: chain_pos.clone(),
             spent_by,
+            is_on_coinbase,
         })
     }
 

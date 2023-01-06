@@ -7,8 +7,10 @@ use crate::{
     keychain::{KeychainChangeSet, KeychainScan, KeychainTxOutIndex},
     sparse_chain::{self, SparseChain},
     tx_graph::TxGraph,
-    BlockId, FullTxOut,
+    BlockId, FullTxOut, TxHeight,
 };
+
+use super::Balance;
 
 /// A convenient combination of a `KeychainTxOutIndex<K>` and a `ChainGraph<P>`.
 ///
@@ -165,6 +167,69 @@ where
         self.apply_changeset(changeset.clone())
             .expect("changeset should apply");
         Ok(changeset)
+    }
+
+    /// Returns the *balance* of the keychain i.e. the value of unspent transaction outputs tracked.
+    /// The caller provides a `should_trust` predicate which must decide whether the value of
+    /// unconfirmed outputs on this keychain are guaranteed to be realized or not. For example:
+    ///
+    /// - For an *internal* (change) keychain `should_trust` should in general be `true` since even if
+    /// you lose an internal output due to eviction you will always gain back the value from whatever output the
+    /// unconfirmed transaction was spending (since that output is presumeably from your wallet).
+    /// - For an *external* keychain you might want `should_trust` to return  `false` since someone may cancel (by double spending)
+    /// a payment made to addresses on that keychain.
+    ///
+    /// When in doubt set `should_trust` to return false. This doesn't do anything other than change
+    /// where the unconfirmed output's value is accounted for in `Balance`.
+    pub fn balance(&self, mut should_trust: impl FnMut(&K) -> bool) -> Balance {
+        let mut immature = 0;
+        let mut trusted_pending = 0;
+        let mut untrusted_pending = 0;
+        let mut confirmed = 0;
+        let last_sync_height = self.chain().latest_checkpoint().map(|latest| latest.height);
+        for ((keychain, _), utxo) in self.full_utxos() {
+            let chain_position = &utxo.chain_position;
+
+            match chain_position.height() {
+                TxHeight::Confirmed(_) => {
+                    if utxo.is_on_coinbase {
+                        if utxo.is_mature(
+                            last_sync_height
+                                .expect("since it's confirmed we must have a checkpoint"),
+                        ) {
+                            confirmed += utxo.txout.value;
+                        } else {
+                            immature += utxo.txout.value;
+                        }
+                    } else {
+                        confirmed += utxo.txout.value;
+                    }
+                }
+                TxHeight::Unconfirmed => {
+                    if should_trust(keychain) {
+                        trusted_pending += utxo.txout.value;
+                    } else {
+                        untrusted_pending += utxo.txout.value;
+                    }
+                }
+            }
+        }
+
+        Balance {
+            immature,
+            trusted_pending,
+            untrusted_pending,
+            confirmed,
+        }
+    }
+
+    /// Returns the balance of all spendable confirmed unspent outputs of this tracker at a
+    /// particular height.
+    pub fn balance_at(&self, height: u32) -> u64 {
+        self.full_txouts()
+            .filter(|(_, full_txout)| full_txout.is_spendable_at(height))
+            .map(|(_, full_txout)| full_txout.txout.value)
+            .sum()
     }
 }
 

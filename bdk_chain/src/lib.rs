@@ -62,3 +62,6 @@ pub mod collections {
     pub use alloc::collections::*;
     pub use hashbrown::hash_map;
 }
+
+/// How many confirmations are needed for a coinbase output to be spent
+pub const COINBASE_MATURITY: u32 = 100;
