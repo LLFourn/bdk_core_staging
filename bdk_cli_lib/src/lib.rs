@@ -175,7 +175,7 @@ where
     let txout_index = &mut keychain_tracker.txout_index;
 
     let new_address = match addr_cmd {
-        AddressCmd::Next => Some(txout_index.derive_next_unused(&Keychain::External)),
+        AddressCmd::Next => Some(txout_index.next_unused(&Keychain::External)),
         AddressCmd::New => Some(txout_index.derive_new(&Keychain::External)),
         _ => None,
     };
@@ -320,9 +320,7 @@ pub fn create_tx<P: ChainPosition>(
     };
 
     let (change_index, change_script) = {
-        let (index, script) = keychain_tracker
-            .txout_index
-            .derive_next_unused(&internal_keychain);
+        let (index, script) = keychain_tracker.txout_index.next_unused(&internal_keychain);
         (index, script.clone())
     };
     let change_plan = bdk_tmp_plan::plan_satisfaction(

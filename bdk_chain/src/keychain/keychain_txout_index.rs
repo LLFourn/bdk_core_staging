@@ -245,7 +245,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// ## Panics
     ///
     /// Panics if `keychain` has never been added to the index
-    pub fn derive_next_unused(&mut self, keychain: &K) -> (u32, &Script) {
+    pub fn next_unused(&mut self, keychain: &K) -> (u32, &Script) {
         let need_new = self.keychain_unused(keychain).next().is_none();
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
