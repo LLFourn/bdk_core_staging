@@ -5,8 +5,7 @@ use bdk_cli::{
     clap::{self, Parser, Subcommand},
 };
 use electrum::ElectrumClient;
-use std::io;
-use std::{fmt::Debug, io::Write};
+use std::{fmt::Debug, io, io::Write};
 
 use electrum_client::{Client, ConfigBuilder, ElectrumApi};
 

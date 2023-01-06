@@ -140,10 +140,7 @@ impl ElectrumClient {
             let mut unused_script_count = 0usize;
 
             loop {
-                let mut next_batch = (0..batch_size)
-                    .map(|_| scripts.next())
-                    .filter_map(|item| item)
-                    .peekable();
+                let mut next_batch = (0..batch_size).filter_map(|_| scripts.next()).peekable();
 
                 if next_batch.peek().is_none() {
                     break;
@@ -175,7 +172,9 @@ impl ElectrumClient {
                     if txid_list.is_empty() {
                         unused_script_count += 1;
                     } else {
-                        last_active_index = index;
+                        if index > last_active_index {
+                            last_active_index = index;
+                        }
                         unused_script_count = 0;
                     }
 
