@@ -1,0 +1,47 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+env:
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+
+  # test without default features
+  bdk-chain-test-minimal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: "x86_64-unknown-linux-gnu"
+          override: true
+      - uses: Swatinem/rust-cache@v2.0.0
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --release --no-default-features -p bdk_chain
+
+
+  # test without default features
+  bdk-chain-test-default:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: "x86_64-unknown-linux-gnu"
+          override: true
+      - uses: Swatinem/rust-cache@v2.0.0
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --release -p bdk_chain
