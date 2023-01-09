@@ -1,3 +1,4 @@
+#![cfg(feature = "miniscript")]
 use bdk_chain::collections::BTreeMap;
 
 use bdk_chain::keychain::KeychainTxOutIndex;
