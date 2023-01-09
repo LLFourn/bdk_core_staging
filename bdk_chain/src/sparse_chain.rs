@@ -334,11 +334,11 @@ impl<P: ChainPosition> SparseChain<P> {
         }
 
         if let Some(original_pos) = self.txid_to_pos.get(&txid) {
-            if original_pos.height().is_confirmed() && *original_pos != pos {
-                return Err(InsertTxErr::TxMoved);
+            if original_pos != &pos {
+                if original_pos.height().is_confirmed() {
+                    return Err(InsertTxErr::TxMoved);
+                }
             }
-
-            return Ok(false);
         }
 
         self.txid_to_pos.insert(txid, pos.clone());

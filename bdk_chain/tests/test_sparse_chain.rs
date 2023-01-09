@@ -748,3 +748,22 @@ fn invalidated_txs_move_to_unconfirmed() {
         },)
     );
 }
+
+#[test]
+fn change_tx_position_from_unconfirmed_to_confirmed() {
+    let mut chain = SparseChain::<TxHeight>::default();
+    let txid = h!("txid");
+
+    chain.insert_tx(txid, TxHeight::Unconfirmed).unwrap();
+
+    assert_eq!(chain.tx_position(txid), Some(&TxHeight::Unconfirmed));
+    chain
+        .insert_checkpoint(BlockId {
+            height: 0,
+            hash: h!("0"),
+        })
+        .unwrap();
+    chain.insert_tx(txid, TxHeight::Confirmed(0)).unwrap();
+
+    assert_eq!(chain.tx_position(txid), Some(&TxHeight::Confirmed(0)));
+}
