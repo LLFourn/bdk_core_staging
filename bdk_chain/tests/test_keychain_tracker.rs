@@ -1,3 +1,4 @@
+#![cfg(feature = "miniscript")]
 use bdk_chain::{
     keychain::KeychainTracker,
     miniscript::{
