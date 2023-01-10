@@ -2,8 +2,7 @@ use bdk_chain::{
     bitcoin::{BlockHash, Script, Transaction},
     chain_graph::ChainGraph,
     keychain::KeychainScan,
-    sparse_chain::{InsertCheckpointErr, InsertTxErr},
-    BlockId, ConfirmationTime,
+    sparse_chain, BlockId, ConfirmationTime,
 };
 use esplora_client::{BlockingClient, Builder};
 use std::collections::BTreeMap;
@@ -79,16 +78,15 @@ impl Client {
         let mut wallet_scan = KeychainScan::default();
         let update = &mut wallet_scan.update;
 
-        for (&existing_height, &existing_hash) in local_chain.iter().rev() {
-            let current_hash = self.client.get_block_hash(existing_height)?;
-            update
-                .insert_checkpoint(BlockId {
-                    height: existing_height,
-                    hash: current_hash,
-                })
+        for (&height, &original_hash) in local_chain.iter().rev() {
+            let update_block_id = BlockId {
+                height,
+                hash: self.client.get_block_hash(height)?,
+            };
+            let _ = update
+                .insert_checkpoint(update_block_id)
                 .expect("should not collide");
-
-            if current_hash == existing_hash {
+            if update_block_id.hash == original_hash {
                 break;
             }
         }
@@ -97,9 +95,9 @@ impl Client {
             height: self.client.get_height()?,
             hash: self.client.get_tip_hash()?,
         };
-        if let Err(err) = update.insert_checkpoint(tip_at_start) {
-            match err {
-                InsertCheckpointErr::HashNotMatching => {
+        if let Err(failure) = update.insert_checkpoint(tip_at_start) {
+            match failure {
+                sparse_chain::InsertCheckpointFailure::HashNotMatching { .. } => {
                     /* There has been a reorg since the line of code above, we will catch this later on */
                 }
             }
@@ -163,13 +161,19 @@ impl Client {
                             },
                             false => ConfirmationTime::Unconfirmed,
                         };
-                        if let Err(err) = update.insert_tx(tx.to_tx(), Some(confirmation_time)) {
-                            match err {
-                                InsertTxErr::TxTooHigh => {
-                                    /* Don't care about new transactions confirmed while syncing */
+                        if let Err(failure) = update.insert_tx(tx.to_tx(), confirmation_time) {
+                            use bdk_chain::{
+                                chain_graph::InsertTxFailure, sparse_chain::InsertTxFailure::*,
+                            };
+                            match failure {
+                                InsertTxFailure::Chain(TxTooHigh { .. }) => {
+                                    /* Chain tip has increased, ignore tx for now */
                                 }
-                                InsertTxErr::TxMoved => {
-                                    /* This means there is a reorg, we will catch that below */
+                                InsertTxFailure::Chain(TxMovedUnexpectedly { .. }) => {
+                                    /* Reorg occured (catch error below), ignore tx for now */
+                                }
+                                InsertTxFailure::UnresolvableConflict(_) => {
+                                    /* Reorg occured (catch error below), ignore tx for now */
                                 }
                             }
                         }
@@ -191,18 +195,14 @@ impl Client {
         // Depending upon service providers number of recent blocks returned will vary.
         // esplora returns 10.
         // mempool.space returns 15.
-        for block in self
-            .client
-            .get_recent_blocks(None)?
-            .iter()
-            .map(|esplora_block| BlockId {
-                height: esplora_block.height,
-                hash: esplora_block.id,
-            })
-        {
-            if update.insert_checkpoint(block).is_err() {
-                return Err(UpdateError::Reorg);
-            }
+        for block in self.client.get_recent_blocks(None)? {
+            let block_id = BlockId {
+                height: block.height,
+                hash: block.id,
+            };
+            let _ = update
+                .insert_checkpoint(block_id)
+                .map_err(|_| UpdateError::Reorg)?;
         }
 
         Ok(wallet_scan)

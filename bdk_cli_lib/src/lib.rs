@@ -206,7 +206,7 @@ where
                 true => Keychain::Internal,
                 false => Keychain::External,
             };
-            for (index, spk) in txout_index.script_pubkeys_by_keychain(&target_keychain) {
+            for (index, spk) in txout_index.script_pubkeys_of_keychain(&target_keychain) {
                 let address = Address::from_script(&spk, network)
                     .expect("should always be able to derive address");
                 println!(

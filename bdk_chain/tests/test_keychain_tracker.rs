@@ -1,4 +1,5 @@
 #![cfg(feature = "miniscript")]
+
 use bdk_chain::{
     keychain::KeychainTracker,
     miniscript::{
@@ -27,9 +28,10 @@ fn test_insert_tx() {
     };
 
     assert!(tracker.txout_index.store_up_to(&(), 5));
-    tracker
-        .insert_tx(tx.clone(), Some(ConfirmationTime::Unconfirmed))
+    let changeset = tracker
+        .insert_tx_preview(tx.clone(), ConfirmationTime::Unconfirmed)
         .unwrap();
+    tracker.apply_changeset(changeset).unwrap();
     assert_eq!(
         tracker
             .chain_graph()

@@ -90,44 +90,47 @@ impl TxGraph {
         })
     }
 
-    /// Add transaction, returns true when [`TxGraph`] is updated.
-    pub fn insert_tx(&mut self, tx: Transaction) -> bool {
-        let txid = tx.txid();
+    /// Returns the resultant [`Additions`] if the given transaction is inserted. Does not actually
+    /// mutate [`Self`].
+    pub fn insert_tx_preview(&mut self, tx: Transaction) -> Additions {
+        let mut update = Self::default();
+        update.txs.insert(tx.txid(), TxNode::Whole(tx));
 
-        if let Some(TxNode::Whole(old_tx)) = self.txs.insert(txid, TxNode::Whole(tx.clone())) {
-            debug_assert_eq!(old_tx, tx);
-            return false;
-        }
-
-        tx.input
-            .into_iter()
-            .map(|txin| txin.previous_output)
-            // coinbase spends are not to be counted
-            .filter(|outpoint| !outpoint.is_null())
-            .for_each(|outpoint| {
-                self.spends.entry(outpoint).or_default().insert(txid);
-            });
-
-        true
+        self.apply_update(update)
+            .expect("txout should be as expected")
     }
 
-    /// Inserts an auxiliary txout. Returns true if txout is newly added.
-    pub fn insert_txout(&mut self, outpoint: OutPoint, txout: TxOut) -> bool {
-        let tx_entry = self
-            .txs
-            .entry(outpoint.txid)
-            .or_insert_with(TxNode::default);
+    /// Inserts the given transaction into [`Self`].
+    pub fn insert_tx(&mut self, tx: Transaction) -> Additions {
+        let additions = self.insert_tx_preview(tx);
+        self.apply_additions(additions.clone());
+        additions
+    }
 
-        match tx_entry {
-            TxNode::Whole(_) => false,
-            TxNode::Partial(txouts) => match txouts.insert(outpoint.vout as _, txout.clone()) {
-                Some(old_txout) => {
-                    debug_assert_eq!(txout, old_txout);
-                    false
-                }
-                None => true,
-            },
-        }
+    /// Returns the resultant [`Additions`] if the given [`TxOut`] is inserted at [`OutPoint`]. Does
+    /// not actually mutate [`Self`].
+    pub fn insert_txout_preview(
+        &self,
+        outpoint: OutPoint,
+        txout: TxOut,
+    ) -> Result<Additions, TxOutConflict> {
+        let mut update = Self::default();
+        update.txs.insert(
+            outpoint.txid,
+            TxNode::Partial([(outpoint.vout, txout)].into()),
+        );
+        self.determine_additions(&update)
+    }
+
+    /// Inserts the given [`TxOut`] at [`OutPoint`].
+    pub fn insert_txout(
+        &mut self,
+        outpoint: OutPoint,
+        txout: TxOut,
+    ) -> Result<Additions, TxOutConflict> {
+        let additions = self.insert_txout_preview(outpoint, txout)?;
+        self.apply_additions(additions.clone());
+        Ok(additions)
     }
 
     /// Calculates the fee of a given transaction (if we have all relevant data).
@@ -148,7 +151,7 @@ impl TxGraph {
     }
 
     /// Iterate over all tx outputs known by [`TxGraph`].
-    pub fn iter_all_txouts(&self) -> impl Iterator<Item = (OutPoint, &TxOut)> {
+    pub fn all_txouts(&self) -> impl Iterator<Item = (OutPoint, &TxOut)> {
         self.txs.iter().flat_map(|(txid, tx)| match tx {
             TxNode::Whole(tx) => tx
                 .output
@@ -164,14 +167,14 @@ impl TxGraph {
     }
 
     /// Iterate over all full transactions in the graph
-    pub fn iter_full_transactions(&self) -> impl Iterator<Item = &Transaction> {
+    pub fn full_transactions(&self) -> impl Iterator<Item = &Transaction> {
         self.txs.iter().filter_map(|(_, tx)| match tx {
             TxNode::Whole(tx) => Some(tx),
             TxNode::Partial(_) => None,
         })
     }
 
-    pub fn iter_partial_transactions(&self) -> impl Iterator<Item = (Txid, &BTreeMap<u32, TxOut>)> {
+    pub fn partial_transactions(&self) -> impl Iterator<Item = (Txid, &BTreeMap<u32, TxOut>)> {
         self.txs.iter().filter_map(|(txid, tx)| match tx {
             TxNode::Whole(_) => None,
             TxNode::Partial(partial) => Some((*txid, partial)),
@@ -197,55 +200,123 @@ impl TxGraph {
             .filter(move |(_, spend_txid)| spend_txid != &tx.txid())
     }
 
-    /// Extends this graph with another so that `self` becomes the union of the two sets of
-    /// transactions.
-    pub fn apply_update(&mut self, update: TxGraph) {
-        let additions = self.determine_additions(&update);
-        self.apply_additions(additions);
-    }
-
-    pub fn determine_additions(&self, update: &TxGraph) -> Additions {
+    /// Previews the resultant [`Additions`] when [`Self`] is updated against the `update` graph.
+    pub fn determine_additions(&self, update: &Self) -> Result<Additions, TxOutConflict> {
         let mut additions = Additions::default();
 
-        for (&txid, tx) in &update.txs {
-            match tx {
+        for (&txid, update_tx) in &update.txs {
+            match update_tx {
                 TxNode::Whole(tx) => {
-                    if self.tx(txid).is_none() {
+                    if matches!(self.txs.get(&txid), None | Some(TxNode::Partial(_))) {
                         additions.tx.insert(tx.clone());
                     }
                 }
                 TxNode::Partial(partial) => {
-                    for (&vout, txout) in partial {
-                        let op = OutPoint { txid, vout };
+                    for (&vout, update_txout) in partial {
+                        let outpoint = OutPoint::new(txid, vout);
+
                         let insert = match self.txouts(txid) {
                             Some(txouts) => match txouts.get(&vout) {
-                                Some(existing_txout) => *existing_txout != txout,
+                                Some(&original_txout) if original_txout != update_txout => {
+                                    return Err(TxOutConflict {
+                                        outpoint,
+                                        original_txout: original_txout.clone(),
+                                        update_txout: update_txout.clone(),
+                                    });
+                                }
+                                Some(_) => false,
                                 None => true,
                             },
                             None => true,
                         };
 
                         if insert {
-                            additions.txout.insert(op, txout.clone());
+                            additions
+                                .txout
+                                .insert(OutPoint { txid, vout }, update_txout.clone());
                         }
                     }
                 }
             }
         }
 
-        additions
+        Ok(additions)
+    }
+
+    /// Extends this graph with another so that `self` becomes the union of the two sets of
+    /// transactions.
+    pub fn apply_update(&mut self, update: TxGraph) -> Result<Additions, TxOutConflict> {
+        let additions = self.determine_additions(&update)?;
+        self.apply_additions(additions.clone());
+        Ok(additions)
     }
 
     pub fn apply_additions(&mut self, additions: Additions) {
         for tx in additions.tx {
-            self.insert_tx(tx);
+            let txid = tx.txid();
+
+            tx.input
+                .iter()
+                .map(|txin| txin.previous_output)
+                // coinbase spends are not to be counted
+                .filter(|outpoint| !outpoint.is_null())
+                // record spend as this tx has spent this outpoint
+                .for_each(|outpoint| {
+                    self.spends.entry(outpoint).or_default().insert(txid);
+                });
+
+            if let Some(TxNode::Whole(old_tx)) = self.txs.insert(txid, TxNode::Whole(tx)) {
+                debug_assert_eq!(
+                    old_tx.txid(),
+                    txid,
+                    "old tx of same txid should not be different"
+                );
+            }
         }
 
-        for (outpoint, txout) in &additions.txout {
-            self.insert_txout(*outpoint, txout.clone());
+        for (outpoint, txout) in additions.txout {
+            let tx_entry = self
+                .txs
+                .entry(outpoint.txid)
+                .or_insert_with(TxNode::default);
+
+            match tx_entry {
+                TxNode::Whole(_) => {
+                    debug_assert!(
+                        false,
+                        "graph additions must not replace whole tx with partial"
+                    );
+                }
+                TxNode::Partial(txouts) => {
+                    debug_assert!(
+                        !matches!(txouts.get(&outpoint.vout), Some(original_txout) if original_txout != &txout),
+                        "txout addition should not have different txout of same outpoint"
+                    );
+                    txouts.insert(outpoint.vout, txout);
+                }
+            }
         }
     }
 }
+
+/// Failure case that occurs when a [`TxOut`] is inserted at a given [`OutPoint`] in which a
+/// non-matching [`TxOut`] already exists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TxOutConflict {
+    pub outpoint: OutPoint,
+    pub original_txout: TxOut,
+    pub update_txout: TxOut,
+}
+
+impl core::fmt::Display for TxOutConflict {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "cannot insert txout ({:?}) at outpoint ({}) as this replaces a non-matching txout ({:?})",
+            self.update_txout, self.outpoint, self.original_txout)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for TxOutConflict {}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(
@@ -253,6 +324,7 @@ impl TxGraph {
     derive(serde::Deserialize, serde::Serialize),
     serde(crate = "serde_crate")
 )]
+#[must_use]
 pub struct Additions {
     pub tx: BTreeSet<Transaction>,
     pub txout: BTreeMap<OutPoint, TxOut>,
@@ -289,7 +361,7 @@ impl Additions {
 
 impl<T: AsRef<TxGraph>> ForEachTxout for T {
     fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
-        self.as_ref().iter_all_txouts().for_each(f)
+        self.as_ref().all_txouts().for_each(f)
     }
 }
 

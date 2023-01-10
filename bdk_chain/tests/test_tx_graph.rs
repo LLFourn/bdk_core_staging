@@ -37,7 +37,15 @@ fn insert_txouts() {
     let mut graph = {
         let mut graph = TxGraph::default();
         for (outpoint, txout) in &original_ops {
-            assert!(graph.insert_txout(*outpoint, txout.clone()));
+            assert_eq!(
+                graph
+                    .insert_txout(*outpoint, txout.clone())
+                    .expect("should not conflict"),
+                Additions {
+                    txout: [(*outpoint, txout.clone())].into(),
+                    ..Default::default()
+                }
+            );
         }
         graph
     };
@@ -45,12 +53,22 @@ fn insert_txouts() {
     let update = {
         let mut graph = TxGraph::default();
         for (outpoint, txout) in &update_ops {
-            assert!(graph.insert_txout(*outpoint, txout.clone()));
+            assert_eq!(
+                graph
+                    .insert_txout(*outpoint, txout.clone())
+                    .expect("should not conflict"),
+                Additions {
+                    txout: [(*outpoint, txout.clone())].into(),
+                    ..Default::default()
+                }
+            );
         }
         graph
     };
 
-    let additions = graph.determine_additions(&update);
+    let additions = graph
+        .determine_additions(&update)
+        .expect("should not conflict");
 
     assert_eq!(
         additions,
@@ -61,9 +79,9 @@ fn insert_txouts() {
     );
 
     graph.apply_additions(additions);
-    assert_eq!(graph.iter_all_txouts().count(), 3);
-    assert_eq!(graph.iter_full_transactions().count(), 0);
-    assert_eq!(graph.iter_partial_transactions().count(), 2);
+    assert_eq!(graph.all_txouts().count(), 3);
+    assert_eq!(graph.full_transactions().count(), 0);
+    assert_eq!(graph.partial_transactions().count(), 2);
 }
 
 #[test]
@@ -79,7 +97,7 @@ fn insert_tx_graph_doesnt_count_coinbase_as_spent() {
     };
 
     let mut graph = TxGraph::default();
-    graph.insert_tx(tx);
+    let _ = graph.insert_tx(tx);
     assert!(graph.outspends(OutPoint::null()).is_empty());
     assert!(graph.tx_outspends(Txid::all_zeros()).next().is_none());
 }
@@ -112,11 +130,11 @@ fn insert_tx_graph_keeps_track_of_spend() {
     let mut graph2 = TxGraph::default();
 
     // insert in different order
-    graph1.insert_tx(tx1.clone());
-    graph1.insert_tx(tx2.clone());
+    let _ = graph1.insert_tx(tx1.clone());
+    let _ = graph1.insert_tx(tx2.clone());
 
-    graph2.insert_tx(tx2.clone());
-    graph2.insert_tx(tx1.clone());
+    let _ = graph2.insert_tx(tx2.clone());
+    let _ = graph2.insert_tx(tx1.clone());
 
     assert_eq!(
         &*graph1.outspends(op),
@@ -138,6 +156,6 @@ fn insert_tx_can_retrieve_full_tx_from_graph() {
     };
 
     let mut graph = TxGraph::default();
-    graph.insert_tx(tx.clone());
+    let _ = graph.insert_tx(tx.clone());
     assert_eq!(graph.tx(tx.txid()), Some(&tx));
 }

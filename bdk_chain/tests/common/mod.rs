@@ -15,7 +15,7 @@ macro_rules! chain {
 
         $(
             $(
-                chain.insert_tx($txid, $tx_height).unwrap();
+                let _ = chain.insert_tx($txid, $tx_height).expect("should succeed");
             )*
         )?
 

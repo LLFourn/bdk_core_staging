@@ -109,10 +109,10 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 
     /// Generates iterators for the script pubkeys of every keychain.
     ///
-    /// Convienience method for calling [`script_pubkeys_by_keychain`] on each keychain.
+    /// Convienience method for calling [`script_pubkeys_of_keychain`] on each keychain.
     ///
-    /// [`script_pubkeys_by_keychain`]: Self::script_pubkeys_by_keychain
-    pub fn iter_all_script_pubkeys_by_keychain(
+    /// [`script_pubkeys_of_keychain`]: Self::script_pubkeys_of_keychain
+    pub fn script_pubkeys_of_all_keychains(
         &self,
     ) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
         self.keychains()
@@ -127,7 +127,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     }
 
     /// Iterates over the script pubkeys derived and stored by this index under `keychain`
-    pub fn script_pubkeys_by_keychain(
+    pub fn script_pubkeys_of_keychain(
         &self,
         keychain: &K,
     ) -> impl DoubleEndedIterator<Item = (u32, &Script)> {

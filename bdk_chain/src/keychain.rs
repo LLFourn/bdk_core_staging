@@ -49,6 +49,7 @@ impl<K, I> Default for KeychainScan<K, I> {
         )
     )
 )]
+#[must_use]
 pub struct KeychainChangeSet<K, P> {
     /// The changes in local keychain derivation indices
     pub derivation_indices: BTreeMap<K, u32>,

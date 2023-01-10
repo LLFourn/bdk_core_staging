@@ -46,16 +46,16 @@ fn test_spent_by() {
     };
 
     let mut cg1 = ChainGraph::default();
-    cg1.insert_tx(tx1, Some(TxHeight::Unconfirmed)).unwrap();
+    let _ = cg1
+        .insert_tx(tx1, TxHeight::Unconfirmed)
+        .expect("should insert");
     let mut cg2 = cg1.clone();
-    cg1.insert_tx(tx2.clone(), Some(TxHeight::Unconfirmed))
-        .unwrap();
-    cg2.insert_tx(tx3.clone(), Some(TxHeight::Unconfirmed))
-        .unwrap();
-    // put the these txs in the graph but not in chain. `spent_by` should return the one that was
-    // actually in the respective chain.
-    cg1.insert_tx(tx3.clone(), None).expect("should insert");
-    cg2.insert_tx(tx2.clone(), None).expect("should insert");
+    let _ = cg1
+        .insert_tx(tx2.clone(), TxHeight::Unconfirmed)
+        .expect("should insert");
+    let _ = cg2
+        .insert_tx(tx3.clone(), TxHeight::Unconfirmed)
+        .expect("should insert");
 
     assert_eq!(cg1.spent_by(op), Some((&TxHeight::Unconfirmed, tx2.txid())));
     assert_eq!(cg2.spent_by(op), Some((&TxHeight::Unconfirmed, tx3.txid())));
@@ -109,16 +109,19 @@ fn update_evicts_conflicting_tx() {
     {
         let mut cg1 = {
             let mut cg = ChainGraph::default();
-            cg.insert_checkpoint(cp_a).expect("should insert cp");
-            cg.insert_tx(tx_a.clone(), Some(TxHeight::Confirmed(0)))
+            let _ = cg.insert_checkpoint(cp_a).expect("should insert cp");
+            let _ = cg
+                .insert_tx(tx_a.clone(), TxHeight::Confirmed(0))
                 .expect("should insert tx");
-            cg.insert_tx(tx_b.clone(), Some(TxHeight::Unconfirmed))
+            let _ = cg
+                .insert_tx(tx_b.clone(), TxHeight::Unconfirmed)
                 .expect("should insert tx");
             cg
         };
         let cg2 = {
             let mut cg = ChainGraph::default();
-            cg.insert_tx(tx_b2.clone(), Some(TxHeight::Unconfirmed))
+            let _ = cg
+                .insert_tx(tx_b2.clone(), TxHeight::Unconfirmed)
                 .expect("should insert tx");
             cg
         };
@@ -149,17 +152,20 @@ fn update_evicts_conflicting_tx() {
     {
         let cg1 = {
             let mut cg = ChainGraph::default();
-            cg.insert_checkpoint(cp_a).expect("should insert cp");
-            cg.insert_checkpoint(cp_b).expect("should insert cp");
-            cg.insert_tx(tx_a.clone(), Some(TxHeight::Confirmed(0)))
+            let _ = cg.insert_checkpoint(cp_a).expect("should insert cp");
+            let _ = cg.insert_checkpoint(cp_b).expect("should insert cp");
+            let _ = cg
+                .insert_tx(tx_a.clone(), TxHeight::Confirmed(0))
                 .expect("should insert tx");
-            cg.insert_tx(tx_b.clone(), Some(TxHeight::Confirmed(1)))
+            let _ = cg
+                .insert_tx(tx_b.clone(), TxHeight::Confirmed(1))
                 .expect("should insert tx");
             cg
         };
         let cg2 = {
             let mut cg = ChainGraph::default();
-            cg.insert_tx(tx_b2.clone(), Some(TxHeight::Unconfirmed))
+            let _ = cg
+                .insert_tx(tx_b2.clone(), TxHeight::Unconfirmed)
                 .expect("should insert tx");
             cg
         };
@@ -179,19 +185,22 @@ fn update_evicts_conflicting_tx() {
         // introduced in the update to be successfully evicted.
         let mut cg1 = {
             let mut cg = ChainGraph::default();
-            cg.insert_checkpoint(cp_a).expect("should insert cp");
-            cg.insert_checkpoint(cp_b).expect("should insert cp");
-            cg.insert_tx(tx_a.clone(), Some(TxHeight::Confirmed(0)))
+            let _ = cg.insert_checkpoint(cp_a).expect("should insert cp");
+            let _ = cg.insert_checkpoint(cp_b).expect("should insert cp");
+            let _ = cg
+                .insert_tx(tx_a.clone(), TxHeight::Confirmed(0))
                 .expect("should insert tx");
-            cg.insert_tx(tx_b.clone(), Some(TxHeight::Confirmed(1)))
+            let _ = cg
+                .insert_tx(tx_b.clone(), TxHeight::Confirmed(1))
                 .expect("should insert tx");
             cg
         };
         let cg2 = {
             let mut cg = ChainGraph::default();
-            cg.insert_checkpoint(cp_a).expect("should insert cp");
-            cg.insert_checkpoint(cp_b2).expect("should insert cp");
-            cg.insert_tx(tx_b2.clone(), Some(TxHeight::Unconfirmed))
+            let _ = cg.insert_checkpoint(cp_a).expect("should insert cp");
+            let _ = cg.insert_checkpoint(cp_b2).expect("should insert cp");
+            let _ = cg
+                .insert_tx(tx_b2.clone(), TxHeight::Unconfirmed)
                 .expect("should insert tx");
             cg
         };
@@ -350,11 +359,7 @@ fn test_get_tx_in_chain() {
         output: vec![TxOut::default()],
     };
 
-    cg.insert_tx(tx.clone(), None).unwrap();
-    assert_eq!(cg.get_tx_in_chain(tx.txid()), None);
-
-    cg.insert_tx(tx.clone(), Some(TxHeight::Unconfirmed))
-        .unwrap();
+    let _ = cg.insert_tx(tx.clone(), TxHeight::Unconfirmed).unwrap();
     assert_eq!(
         cg.get_tx_in_chain(tx.txid()),
         Some((&TxHeight::Unconfirmed, &tx))
@@ -372,16 +377,18 @@ fn test_iterate_transactions() {
             output: vec![TxOut::default()],
         })
         .collect::<Vec<_>>();
-    cg.insert_checkpoint(BlockId {
-        height: 1,
-        hash: h!("A"),
-    })
-    .unwrap();
-    cg.insert_tx(txs[0].clone(), Some(TxHeight::Confirmed(1)))
+    let _ = cg
+        .insert_checkpoint(BlockId {
+            height: 1,
+            hash: h!("A"),
+        })
         .unwrap();
-    cg.insert_tx(txs[1].clone(), Some(TxHeight::Unconfirmed))
+    let _ = cg
+        .insert_tx(txs[0].clone(), TxHeight::Confirmed(1))
         .unwrap();
-    cg.insert_tx(txs[2].clone(), Some(TxHeight::Confirmed(0)))
+    let _ = cg.insert_tx(txs[1].clone(), TxHeight::Unconfirmed).unwrap();
+    let _ = cg
+        .insert_tx(txs[2].clone(), TxHeight::Confirmed(0))
         .unwrap();
 
     assert_eq!(
