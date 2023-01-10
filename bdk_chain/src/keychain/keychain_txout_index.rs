@@ -202,7 +202,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 .derived_descriptor(&secp)
                 .expect("the descritpor cannot need hardened derivation")
                 .script_pubkey();
-            self.inner.add_spk((keychain.clone(), index), spk);
+            self.inner
+                .insert_script_pubkey((keychain.clone(), index), spk);
         }
 
         true
@@ -231,7 +232,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .script_pubkey();
 
         let index = (keychain.clone(), next_derivation_index);
-        self.inner.add_spk(index.clone(), new_spk);
+        self.inner.insert_script_pubkey(index.clone(), new_spk);
         let new_spk = self
             .inner
             .script_pubkeys()

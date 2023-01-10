@@ -7,8 +7,8 @@ fn spk_txout_sent_and_received() {
     let spk2 = Script::from_hex("00142b57404ae14f08c3a0c903feb2af7830605eb00f").unwrap();
 
     let mut index = SpkTxOutIndex::default();
-    index.add_spk(0, spk1.clone());
-    index.add_spk(1, spk2.clone());
+    index.insert_script_pubkey(0, spk1.clone());
+    index.insert_script_pubkey(1, spk2.clone());
 
     let tx1 = Transaction {
         version: 0x02,

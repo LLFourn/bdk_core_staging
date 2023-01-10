@@ -42,6 +42,7 @@ pub mod collections {
     #![allow(dead_code)]
     pub type HashSet<K> = alloc::collections::BTreeSet<K>;
     pub type HashMap<K, V> = alloc::collections::BTreeMap<K, V>;
+    pub use alloc::collections::btree_map as hash_map;
     pub use alloc::collections::*;
 }
 
@@ -49,6 +50,7 @@ pub mod collections {
 #[cfg(all(feature = "std", not(feature = "hashbrown")))]
 #[doc(hidden)]
 pub mod collections {
+    pub use std::collections::hash_map;
     pub use std::collections::*;
 }
 
@@ -60,4 +62,5 @@ pub mod collections {
     pub type HashSet<K> = hashbrown::HashSet<K>;
     pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
     pub use alloc::collections::*;
+    pub use hashbrown::hash_map;
 }
