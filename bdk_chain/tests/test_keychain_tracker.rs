@@ -28,9 +28,6 @@ fn test_insert_tx() {
     };
 
     assert!(tracker.txout_index.store_up_to(&(), 5));
-    // tracker
-    //     .insert_tx(tx.clone(), ConfirmationTime::Unconfirmed)
-    //     .unwrap();
     let changeset = tracker
         .insert_tx_preview(tx.clone(), ConfirmationTime::Unconfirmed)
         .unwrap();

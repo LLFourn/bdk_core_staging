@@ -57,11 +57,6 @@ fn test_spent_by() {
         .insert_tx(tx3.clone(), TxHeight::Unconfirmed)
         .expect("should insert");
 
-    // // put the these txs in the graph but not in chain. `spent_by` should return the one that was
-    // // actually in the respective chain.
-    // cg1.insert_tx(tx3.clone(), None).expect("should insert");
-    // cg2.insert_tx(tx2.clone(), None).expect("should insert");
-
     assert_eq!(cg1.spent_by(op), Some((&TxHeight::Unconfirmed, tx2.txid())));
     assert_eq!(cg2.spent_by(op), Some((&TxHeight::Unconfirmed, tx3.txid())));
 }
@@ -363,9 +358,6 @@ fn test_get_tx_in_chain() {
         input: vec![],
         output: vec![TxOut::default()],
     };
-
-    // cg.insert_tx(tx.clone(), None).unwrap();
-    // assert_eq!(cg.get_tx_in_chain(tx.txid()), None);
 
     let _ = cg.insert_tx(tx.clone(), TxHeight::Unconfirmed).unwrap();
     assert_eq!(
