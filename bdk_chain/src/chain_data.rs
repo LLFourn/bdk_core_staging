@@ -114,6 +114,51 @@ impl ConfirmationTime {
     }
 }
 
+/// Block Position Index. Transactions are ordered in
+/// - by block height
+/// - by transaction position
+///
+/// Unconfirmed transactions are treated equal.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Copy, core::hash::Hash)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(crate = "serde_crate")
+)]
+pub enum BlockPosition {
+    Confirmed { height: u32, position: usize },
+    Unconfirmed,
+}
+
+impl sparse_chain::ChainPosition for BlockPosition {
+    fn height(&self) -> TxHeight {
+        match self {
+            BlockPosition::Confirmed { height, .. } => TxHeight::Confirmed(*height),
+            BlockPosition::Unconfirmed => TxHeight::Unconfirmed,
+        }
+    }
+
+    fn max_ord_of_height(height: TxHeight) -> Self {
+        match height {
+            TxHeight::Confirmed(height) => Self::Confirmed {
+                height,
+                position: usize::MAX,
+            },
+            TxHeight::Unconfirmed => Self::Unconfirmed,
+        }
+    }
+
+    fn min_ord_of_height(height: TxHeight) -> Self {
+        match height {
+            TxHeight::Confirmed(height) => Self::Confirmed {
+                height,
+                position: usize::MIN,
+            },
+            TxHeight::Unconfirmed => Self::Unconfirmed,
+        }
+    }
+}
+
 /// A reference to a block in the cannonical chain.
 #[derive(Debug, Clone, PartialEq, Eq, Copy, PartialOrd, Ord)]
 #[cfg_attr(
