@@ -267,7 +267,7 @@ fn insert_txout_does_not_displace_tx() {
 }
 
 #[test]
-fn test_calcualte_fee() {
+fn test_calculate_fee() {
     let mut graph = TxGraph::default();
     let intx1 = Transaction {
         version: 0x01,
@@ -299,9 +299,9 @@ fn test_calcualte_fee() {
         },
     );
 
-    graph.insert_tx(intx1.clone());
-    graph.insert_tx(intx2.clone());
-    graph.insert_txout(intxout1.0, intxout1.1);
+    let _ = graph.insert_tx(intx1.clone());
+    let _ = graph.insert_tx(intx2.clone());
+    let _ = graph.insert_txout(intxout1.0, intxout1.1);
 
     let mut tx = Transaction {
         version: 0x01,
@@ -337,11 +337,8 @@ fn test_calcualte_fee() {
     tx.input.remove(2);
 
     // fee would be negative
-    assert_eq!(graph.calculate_fee(&tx), None);
+    assert_eq!(graph.calculate_fee(&tx), Some(-200));
 }
-
-#[test]
-fn test_calculate_fee_negative_fee() {}
 
 #[test]
 fn test_calculate_fee_on_coinbase() {
