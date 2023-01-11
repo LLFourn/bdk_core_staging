@@ -331,7 +331,21 @@ fn chain_graph_inflate_changeset() {
     expected_missing.remove(&tx_b.txid());
     assert_eq!(
         cg.inflate_changeset(chain_changeset.clone(), vec![tx_b.clone()]),
-        Err(InflateFailure::Missing(expected_missing))
+        Err(InflateFailure::Missing(expected_missing.clone()))
+    );
+
+    let _ = cg.insert_txout(
+        OutPoint {
+            txid: tx_a.txid(),
+            vout: 0,
+        },
+        tx_a.output[0].clone(),
+    );
+
+    assert_eq!(
+        cg.inflate_changeset(chain_changeset.clone(), vec![tx_b.clone()]),
+        Err(InflateFailure::Missing(expected_missing)),
+        "inserting an output instead of full tx doesn't satisfy constraint"
     );
 
     let mut additions = tx_graph::Additions::default();
