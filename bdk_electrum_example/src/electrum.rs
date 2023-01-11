@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use bdk_chain::{
     bitcoin::{BlockHash, Script, Txid},
-    sparse_chain::{ChainPosition, InsertCheckpointFailure, InsertTxFailure, SparseChain},
+    sparse_chain::{self, ChainPosition, SparseChain},
     BlockId, TxHeight,
 };
 use bdk_cli::Broadcast;
@@ -189,10 +189,10 @@ impl ElectrumClient {
                     for (txid, index) in txid_list {
                         if let Err(err) = sparse_chain.insert_tx(txid, index) {
                             match err {
-                                InsertTxFailure::TxTooHigh { .. } => {
+                                sparse_chain::InsertTxFailure::TxTooHigh { .. } => {
                                     unreachable!("We should not encounter this error as we ensured TxHeight <= tip_height");
                                 }
-                                InsertTxFailure::TxMovedUnexpectedly { .. } => {
+                                sparse_chain::InsertTxFailure::TxMovedUnexpectedly { .. } => {
                                     /* This means there is a reorg, we will handle this situation below */
                                 }
                             }
@@ -256,7 +256,7 @@ impl ElectrumClient {
         };
         if let Err(failure) = sparse_chain.insert_checkpoint(tip) {
             match failure {
-                InsertCheckpointFailure::HashNotMatching { .. } => {
+                sparse_chain::InsertCheckpointFailure::HashNotMatching { .. } => {
                     // There has been a re-org before we even begin scanning addresses.
                     // Just recursively call (this should never happen).
                     return self.wallet_txid_scan(scripts, stop_gap, local_chain, batch_size);
@@ -312,10 +312,10 @@ impl ElectrumClient {
                     for (txid, pos) in txid_list {
                         if let Err(failure) = sparse_chain.insert_tx(txid, pos) {
                             match failure {
-                                InsertTxFailure::TxTooHigh { .. } => {
+                                sparse_chain::InsertTxFailure::TxTooHigh { .. } => {
                                     unreachable!("We should not encounter this error as we ensured tx_height <= tip.height");
                                 }
-                                InsertTxFailure::TxMovedUnexpectedly { .. } => {
+                                sparse_chain::InsertTxFailure::TxMovedUnexpectedly { .. } => {
                                     /* This means there is a reorg, we will handle this situation below */
                                 }
                             }
