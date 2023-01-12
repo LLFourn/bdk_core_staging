@@ -107,15 +107,12 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         self.keychains.insert(keychain, descriptor);
     }
 
-    /// Generates iterators for the script pubkeys of every keychain.
-    ///
-    /// Convienience method for calling [`script_pubkeys_of_keychain`] on each keychain.
-    ///
-    /// [`script_pubkeys_of_keychain`]: Self::script_pubkeys_of_keychain
-    pub fn script_pubkeys_of_all_keychains(
+    /// Generates script pubkey iterators for every `keychain`. The iterators iterate over all
+    /// derivable scripts.
+    pub fn scripts_of_all_keychains(
         &self,
     ) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
-        self.keychains()
+        self.keychains
             .iter()
             .map(|(keychain, descriptor)| {
                 (
@@ -126,11 +123,33 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .collect()
     }
 
-    /// Iterates over the script pubkeys derived and stored by this index under `keychain`
-    pub fn script_pubkeys_of_keychain(
+    /// Generates a script pubkey iterator for the given `keychain`'s descriptor (if exists). The
+    /// iterator iterates over all derivable scripts of the keychain's descriptor.
+    pub fn scripts_of_keychain(
         &self,
         keychain: &K,
-    ) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
+    ) -> Option<impl Iterator<Item = (u32, Script)> + Clone> {
+        self.keychains
+            .get(keychain)
+            .cloned()
+            .map(descriptor_into_script_iter)
+    }
+
+    /// Iterates over the script pubkeys derived and stored by this index of all keychains.
+    pub fn stored_scripts_of_all_keychains(
+        &self,
+    ) -> BTreeMap<K, impl Iterator<Item = (u32, &Script)> + Clone> {
+        self.keychains
+            .keys()
+            .map(|keychain| (keychain.clone(), self.stored_scripts_of_keychain(keychain)))
+            .collect()
+    }
+
+    /// Iterates over the script pubkeys derived and stored by this index under `keychain`.
+    pub fn stored_scripts_of_keychain(
+        &self,
+        keychain: &K,
+    ) -> impl DoubleEndedIterator<Item = (u32, &Script)> + Clone {
         self.inner
             .script_pubkeys()
             .range(&(keychain.clone(), u32::MIN)..=&(keychain.clone(), u32::MAX))

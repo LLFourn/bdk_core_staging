@@ -42,16 +42,14 @@ pub mod collections {
     #![allow(dead_code)]
     pub type HashSet<K> = alloc::collections::BTreeSet<K>;
     pub type HashMap<K, V> = alloc::collections::BTreeMap<K, V>;
-    pub use alloc::collections::btree_map as hash_map;
-    pub use alloc::collections::*;
+    pub use alloc::collections::{btree_map as hash_map, *};
 }
 
 // When we have std use `std`'s all collections
 #[cfg(all(feature = "std", not(feature = "hashbrown")))]
 #[doc(hidden)]
 pub mod collections {
-    pub use std::collections::hash_map;
-    pub use std::collections::*;
+    pub use std::collections::{hash_map, *};
 }
 
 // With special feature `hashbrown` use `hashbrown`'s hash collections, and else from `alloc`.
