@@ -1,6 +1,6 @@
 use crate::{collections::*, ForEachTxout};
 use alloc::{borrow::Cow, vec::Vec};
-use bitcoin::{OutPoint, Transaction, TxOut, Txid};
+use bitcoin::{OutPoint, Transaction, TxIn, TxOut, Txid};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TxGraph {
@@ -19,6 +19,14 @@ impl Default for TxNode {
     fn default() -> Self {
         Self::Partial(BTreeMap::new())
     }
+}
+
+/// Do not filter any descendants.
+///
+/// This is a convenience method intended for use with [`TxGraph::iter_tx_descendants()`] and
+/// related methods.
+pub fn no_filter(_: usize, _: Txid) -> bool {
+    true
 }
 
 impl TxGraph {
@@ -167,7 +175,7 @@ impl TxGraph {
         })
     }
 
-    /// Iterate over all full transactions in the graph
+    /// Iterate over all full transactions in the graph.
     pub fn full_transactions(&self) -> impl Iterator<Item = &Transaction> {
         self.txs.iter().filter_map(|(_, tx)| match tx {
             TxNode::Whole(tx) => Some(tx),
@@ -175,6 +183,7 @@ impl TxGraph {
         })
     }
 
+    /// Iterate over all partial transactions (outputs only) in the graph.
     pub fn partial_transactions(&self) -> impl Iterator<Item = (Txid, &BTreeMap<u32, TxOut>)> {
         self.txs.iter().filter_map(|(txid, tx)| match tx {
             TxNode::Whole(_) => None,
@@ -182,23 +191,68 @@ impl TxGraph {
         })
     }
 
-    /// Return an iterator of conflicting txids, where the first field of the tuple is the vin of
-    /// the original tx in which the txid conflicts.
-    pub fn conflicting_txids<'g>(
+    /// Iterates descendant transactions of given `txid` (including the given `txid`).
+    ///
+    /// if `path_filter` returns `true`, we will continue exploring the path from the `txid` of
+    /// `depth`, where `depth: usize` is the distance from the initial `txid` to the descendant.
+    pub fn iter_tx_descendants<'g>(
+        &'g self,
+        txid: Txid,
+        path_filter: impl FnMut(usize, Txid) -> bool + 'g,
+    ) -> impl Iterator<Item = (usize, Txid)> + '_ {
+        TxDescendants::new(self, txid, path_filter)
+    }
+
+    /// Iterates over all conflicting txids (including descendants) of the given transaction.
+    ///
+    /// The `path_filter` filters descendant paths to check. Refer to
+    /// [`Self::iter_tx_descendants()`] for more details.
+    pub fn tx_conflicts<'g>(
+        &'g self,
+        tx: &'g Transaction,
+        path_filter: impl Fn(usize, Txid) -> bool + 'g,
+    ) -> impl Iterator<Item = (usize, Txid)> + '_ {
+        self.adjacent_conflicts_of_tx(tx)
+            .flat_map(move |(_, txid)| {
+                self.iter_tx_descendants(txid, &path_filter)
+                    .collect::<Vec<_>>()
+            })
+    }
+
+    /// Given a `txin` and the `txid` of the transaction in which it resides, return an iterator of
+    /// txids which directly conflict with the given `txin`.
+    ///
+    /// **WARNING:** It is up to the caller to ensure the given `txin` actually resides in `txid`.
+    /// **WARNING:** This only returns directly conflicting txids and does not include descendants
+    /// of those txids.
+    pub fn adjacent_conflicts_of_txin<'g>(
+        &'g self,
+        txid: Txid,
+        txin: &'g TxIn,
+    ) -> impl Iterator<Item = Txid> + '_ {
+        self.spends
+            .get(&txin.previous_output)
+            .into_iter()
+            .flatten()
+            .filter(move |&&conflicting_txid| conflicting_txid != txid)
+            .cloned()
+    }
+
+    /// Given a transaction, return an iterator of txids which directly conflict with the given
+    /// transaction's inputs (spends). The conflicting txids are returned with the given
+    /// transaction's vin (in which it conflicts).
+    ///
+    /// **WARNING:** This only returns directly conflicting txids and does not include descendants
+    /// of those txids.
+    pub fn adjacent_conflicts_of_tx<'g>(
         &'g self,
         tx: &'g Transaction,
     ) -> impl Iterator<Item = (usize, Txid)> + '_ {
-        tx.input
-            .iter()
-            .enumerate()
-            .flat_map(|(vin, txin)| {
-                self.spends
-                    .get(&txin.previous_output)
-                    .into_iter()
-                    .flat_map(|spend_set| spend_set.iter())
-                    .map(move |&spend_txid| (vin, spend_txid))
-            })
-            .filter(move |(_, spend_txid)| spend_txid != &tx.txid())
+        let txid = tx.txid();
+        tx.input.iter().enumerate().flat_map(move |(vin, txin)| {
+            self.adjacent_conflicts_of_txin(txid, txin)
+                .map(move |txid| (vin, txid))
+        })
     }
 
     /// Previews the resultant [`Additions`] when [`Self`] is updated against the `update` graph.
@@ -346,5 +400,54 @@ impl AsRef<TxGraph> for TxGraph {
 impl ForEachTxout for Additions {
     fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
         self.txouts().for_each(f)
+    }
+}
+
+pub struct TxDescendants<'a, F> {
+    graph: &'a TxGraph,
+    path_filter: F,
+    visited: HashSet<Txid>,
+    stack: Vec<(usize, Txid)>,
+}
+
+impl<'a, F> TxDescendants<'a, F> {
+    fn new(graph: &'a TxGraph, txid: Txid, path_filter: F) -> Self {
+        Self {
+            graph,
+            path_filter,
+            visited: [].into(),
+            stack: [(0, txid)].into(),
+        }
+    }
+}
+
+impl<'a, F> Iterator for TxDescendants<'a, F>
+where
+    F: FnMut(usize, Txid) -> bool,
+{
+    type Item = (usize, Txid);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (depth, txid) = self.stack.pop()?;
+            if !self.visited.insert(txid) {
+                continue;
+            }
+            if (self.path_filter)(depth, txid) {
+                let mut children = self
+                    .graph
+                    .spends
+                    .range(OutPoint::new(txid, u32::MIN)..=OutPoint::new(txid, u32::MAX))
+                    .flat_map(|(_, txids)| txids)
+                    .map(|&txid| (depth + 1, txid))
+                    .collect::<Vec<_>>();
+                self.stack.append(&mut children);
+                return Some((depth, txid));
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.stack.len(), None)
     }
 }

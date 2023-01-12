@@ -2,7 +2,7 @@
 mod common;
 use bdk_chain::{
     collections::*,
-    tx_graph::{Additions, TxGraph},
+    tx_graph::{self, Additions, TxGraph},
 };
 use bitcoin::{hashes::Hash, OutPoint, PackedLockTime, Script, Transaction, TxIn, TxOut, Txid};
 use core::iter;
@@ -365,4 +365,145 @@ fn test_calculate_fee_on_coinbase() {
     let graph = TxGraph::default();
 
     assert_eq!(graph.calculate_fee(&tx), Some(0));
+}
+
+#[test]
+fn test_conflicting_descendants() {
+    let previous_output = OutPoint::new(h!("op"), 2);
+
+    // tx_a spends previous_output
+    let tx_a = Transaction {
+        input: vec![TxIn {
+            previous_output,
+            ..TxIn::default()
+        }],
+        output: vec![TxOut::default()],
+        ..common::new_tx(0)
+    };
+
+    // tx_a2 spends previous_output and conflicts with tx_a
+    let tx_a2 = Transaction {
+        input: vec![TxIn {
+            previous_output,
+            ..TxIn::default()
+        }],
+        output: vec![TxOut::default(), TxOut::default()],
+        ..common::new_tx(1)
+    };
+
+    // tx_b spends tx_a
+    let tx_b = Transaction {
+        input: vec![TxIn {
+            previous_output: OutPoint::new(tx_a.txid(), 0),
+            ..TxIn::default()
+        }],
+        output: vec![TxOut::default()],
+        ..common::new_tx(2)
+    };
+
+    let txid_a = tx_a.txid();
+    let txid_b = tx_b.txid();
+
+    let mut graph = TxGraph::default();
+    let _ = graph.insert_tx(tx_a);
+    let _ = graph.insert_tx(tx_b);
+
+    assert_eq!(
+        graph
+            .tx_conflicts(&tx_a2, tx_graph::no_filter)
+            .collect::<Vec<_>>(),
+        vec![(0_usize, txid_a), (1_usize, txid_b),],
+    );
+}
+
+#[test]
+fn test_descendants_no_repeat() {
+    let tx_a = Transaction {
+        output: vec![TxOut::default(), TxOut::default(), TxOut::default()],
+        ..common::new_tx(0)
+    };
+
+    let txs_b = (0..3)
+        .map(|vout| Transaction {
+            input: vec![TxIn {
+                previous_output: OutPoint::new(tx_a.txid(), vout),
+                ..TxIn::default()
+            }],
+            output: vec![TxOut::default()],
+            ..common::new_tx(1)
+        })
+        .collect::<Vec<_>>();
+
+    let txs_c = (0..2)
+        .map(|vout| Transaction {
+            input: vec![TxIn {
+                previous_output: OutPoint::new(txs_b[vout as usize].txid(), vout),
+                ..TxIn::default()
+            }],
+            output: vec![TxOut::default()],
+            ..common::new_tx(2)
+        })
+        .collect::<Vec<_>>();
+
+    let tx_d = Transaction {
+        input: vec![
+            TxIn {
+                previous_output: OutPoint::new(txs_c[0].txid(), 0),
+                ..TxIn::default()
+            },
+            TxIn {
+                previous_output: OutPoint::new(txs_c[1].txid(), 0),
+                ..TxIn::default()
+            },
+        ],
+        output: vec![TxOut::default()],
+        ..common::new_tx(3)
+    };
+
+    let tx_e = Transaction {
+        input: vec![TxIn {
+            previous_output: OutPoint::new(tx_d.txid(), 0),
+            ..TxIn::default()
+        }],
+        output: vec![TxOut::default()],
+        ..common::new_tx(4)
+    };
+
+    let txs_not_connected = (10..20)
+        .map(|v| Transaction {
+            input: vec![TxIn {
+                previous_output: OutPoint::new(h!("tx_does_not_exist"), v),
+                ..TxIn::default()
+            }],
+            output: vec![TxOut::default()],
+            ..common::new_tx(v)
+        })
+        .collect::<Vec<_>>();
+
+    let mut graph = TxGraph::default();
+    let mut expected_txids = BTreeSet::new();
+
+    for tx in core::iter::once(&tx_a)
+        .chain(&txs_b)
+        .chain(&txs_c)
+        .chain(core::iter::once(&tx_d))
+        .chain(core::iter::once(&tx_e))
+    {
+        let _ = graph.insert_tx(tx.clone());
+        assert!(expected_txids.insert(tx.txid()));
+    }
+    for tx in txs_not_connected {
+        let _ = graph.insert_tx(tx.clone());
+    }
+
+    let descendants = graph
+        .iter_tx_descendants(tx_a.txid(), tx_graph::no_filter)
+        .collect::<Vec<_>>();
+
+    assert_eq!(descendants.len(), expected_txids.len());
+
+    for (_, txid) in descendants {
+        assert!(expected_txids.remove(&txid));
+    }
+    assert!(expected_txids.is_empty());
 }

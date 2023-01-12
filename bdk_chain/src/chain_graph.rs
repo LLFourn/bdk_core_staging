@@ -174,16 +174,19 @@ impl<P: ChainPosition> ChainGraph<P> {
     }
 
     /// Given a transaction, return an iterator of in-chain [`Txid`]s that conflict with it (spends
-    /// at least one of the same inputs).
+    /// at least one of the same inputs). This includes all descendants of conflicting transactions.
     ///
-    /// This method is comparable to [`TxGraph::conflicting_txids()`] which returns all conflicting
-    /// transactions, whereas this method only returns conflicts that exist in the [`SparseChain`].
-    pub fn conflicting_txids_in_chain<'a>(
+    /// This method is comparable to [`TxGraph::tx_conflicts()`] which returns all conflicting
+    /// transactions (including descendants), whereas this method only returns conflicts that exist
+    /// in the [`SparseChain`].
+    pub fn tx_conflicts<'a>(
         &'a self,
         tx: &'a Transaction,
     ) -> impl Iterator<Item = (&'a P, Txid)> + 'a {
         self.graph
-            .conflicting_txids(tx)
+            // Using `tx_graph::no_filter` is less efficient than filtering out txs that aren't in
+            // chain. However, it can potentially be more reliable.
+            .tx_conflicts(tx, tx_graph::no_filter)
             .filter_map(|(_, conflicting_txid)| {
                 self.chain
                     .tx_position(conflicting_txid)
@@ -216,7 +219,7 @@ impl<P: ChainPosition> ChainGraph<P> {
                 full_tx
             })
             .flat_map(|(new_txid, new_tx, new_pos)| {
-                self.conflicting_txids_in_chain(new_tx)
+                self.tx_conflicts(new_tx)
                     .map(move |(conflict_pos, conflict_txid)| {
                         (new_pos.clone(), new_txid, conflict_pos, conflict_txid)
                     })
