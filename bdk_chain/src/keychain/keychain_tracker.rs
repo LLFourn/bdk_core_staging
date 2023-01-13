@@ -1,4 +1,4 @@
-use bitcoin::{Transaction, Txid};
+use bitcoin::Transaction;
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::{
@@ -83,22 +83,11 @@ where
     pub fn apply_changeset(
         &mut self,
         changeset: KeychainChangeSet<K, P>,
-    ) -> Result<(), (KeychainChangeSet<K, P>, HashSet<Txid>)> {
+    ) -> Result<(), chain_graph::InflateError<P>> {
         self.txout_index
             .store_all_up_to(&changeset.derivation_indices);
         self.txout_index.scan(&changeset);
-        let derivation_indices = changeset.derivation_indices;
-        self.chain_graph
-            .apply_changeset(changeset.chain_graph)
-            .map_err(|(cg_changeset, missing)| {
-                (
-                    KeychainChangeSet {
-                        derivation_indices,
-                        chain_graph: cg_changeset,
-                    },
-                    missing,
-                )
-            })
+        self.chain_graph.apply_changeset(changeset.chain_graph)
     }
 
     pub fn full_txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<P>)> + '_ {

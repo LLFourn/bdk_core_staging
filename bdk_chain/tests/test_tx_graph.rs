@@ -38,9 +38,7 @@ fn insert_txouts() {
         let mut graph = TxGraph::default();
         for (outpoint, txout) in &original_ops {
             assert_eq!(
-                graph
-                    .insert_txout(*outpoint, txout.clone())
-                    .expect("should not conflict"),
+                graph.insert_txout(*outpoint, txout.clone()),
                 Additions {
                     txout: [(*outpoint, txout.clone())].into(),
                     ..Default::default()
@@ -54,9 +52,7 @@ fn insert_txouts() {
         let mut graph = TxGraph::default();
         for (outpoint, txout) in &update_ops {
             assert_eq!(
-                graph
-                    .insert_txout(*outpoint, txout.clone())
-                    .expect("should not conflict"),
+                graph.insert_txout(*outpoint, txout.clone()),
                 Additions {
                     txout: [(*outpoint, txout.clone())].into(),
                     ..Default::default()
@@ -66,9 +62,7 @@ fn insert_txouts() {
         graph
     };
 
-    let additions = graph
-        .determine_additions(&update)
-        .expect("should not conflict");
+    let additions = graph.determine_additions(&update);
 
     assert_eq!(
         additions,
@@ -157,5 +151,117 @@ fn insert_tx_can_retrieve_full_tx_from_graph() {
 
     let mut graph = TxGraph::default();
     let _ = graph.insert_tx(tx.clone());
-    assert_eq!(graph.tx(tx.txid()), Some(&tx));
+    assert_eq!(graph.get_tx(tx.txid()), Some(&tx));
+}
+
+#[test]
+fn insert_tx_displaces_txouts() {
+    let mut tx_graph = TxGraph::default();
+    let tx = Transaction {
+        version: 0x01,
+        lock_time: PackedLockTime(0),
+        input: vec![],
+        output: vec![TxOut {
+            value: 42_000,
+            script_pubkey: Script::default(),
+        }],
+    };
+
+    let _ = tx_graph.insert_txout(
+        OutPoint {
+            txid: tx.txid(),
+            vout: 0,
+        },
+        TxOut {
+            value: 1337_000,
+            script_pubkey: Script::default(),
+        },
+    );
+
+    let _ = tx_graph.insert_txout(
+        OutPoint {
+            txid: tx.txid(),
+            vout: 0,
+        },
+        TxOut {
+            value: 1_000_000_000,
+            script_pubkey: Script::default(),
+        },
+    );
+
+    let _additions = tx_graph.insert_tx(tx.clone());
+
+    assert_eq!(
+        tx_graph
+            .get_txout(OutPoint {
+                txid: tx.txid(),
+                vout: 0
+            })
+            .unwrap()
+            .value,
+        42_000
+    );
+    assert_eq!(
+        tx_graph.get_txout(OutPoint {
+            txid: tx.txid(),
+            vout: 1
+        }),
+        None
+    );
+}
+
+#[test]
+fn insert_txout_does_not_displace_tx() {
+    let mut tx_graph = TxGraph::default();
+    let tx = Transaction {
+        version: 0x01,
+        lock_time: PackedLockTime(0),
+        input: vec![],
+        output: vec![TxOut {
+            value: 42_000,
+            script_pubkey: Script::default(),
+        }],
+    };
+
+    let _additions = tx_graph.insert_tx(tx.clone());
+
+    let _ = tx_graph.insert_txout(
+        OutPoint {
+            txid: tx.txid(),
+            vout: 0,
+        },
+        TxOut {
+            value: 1337_000,
+            script_pubkey: Script::default(),
+        },
+    );
+
+    let _ = tx_graph.insert_txout(
+        OutPoint {
+            txid: tx.txid(),
+            vout: 0,
+        },
+        TxOut {
+            value: 1_000_000_000,
+            script_pubkey: Script::default(),
+        },
+    );
+
+    assert_eq!(
+        tx_graph
+            .get_txout(OutPoint {
+                txid: tx.txid(),
+                vout: 0
+            })
+            .unwrap()
+            .value,
+        42_000
+    );
+    assert_eq!(
+        tx_graph.get_txout(OutPoint {
+            txid: tx.txid(),
+            vout: 1
+        }),
+        None
+    );
 }

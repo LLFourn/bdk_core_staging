@@ -2,7 +2,7 @@
 mod common;
 
 use bdk_chain::{
-    chain_graph::{ChainGraph, ChangeSet, InflateFailure, UnresolvableConflict, UpdateFailure},
+    chain_graph::{ChainGraph, ChangeSet, InflateError, UnresolvableConflict, UpdateFailure},
     collections::HashSet,
     sparse_chain,
     tx_graph::{self, Additions},
@@ -250,7 +250,7 @@ fn update_missing_full_tx_errors() {
     expected.insert(h!("a2"));
     assert_eq!(
         cg.apply_changeset(changeset.clone()),
-        Err((changeset, expected))
+        Err(InflateError::Missing(expected))
     );
 }
 
@@ -325,13 +325,27 @@ fn chain_graph_inflate_changeset() {
 
     assert_eq!(
         cg.inflate_changeset(chain_changeset.clone(), vec![]),
-        Err(InflateFailure::Missing(expected_missing.clone()))
+        Err(InflateError::Missing(expected_missing.clone()))
     );
 
     expected_missing.remove(&tx_b.txid());
     assert_eq!(
         cg.inflate_changeset(chain_changeset.clone(), vec![tx_b.clone()]),
-        Err(InflateFailure::Missing(expected_missing))
+        Err(InflateError::Missing(expected_missing.clone()))
+    );
+
+    let _ = cg.insert_txout(
+        OutPoint {
+            txid: tx_a.txid(),
+            vout: 0,
+        },
+        tx_a.output[0].clone(),
+    );
+
+    assert_eq!(
+        cg.inflate_changeset(chain_changeset.clone(), vec![tx_b.clone()]),
+        Err(InflateError::Missing(expected_missing)),
+        "inserting an output instead of full tx doesn't satisfy constraint"
     );
 
     let mut additions = tx_graph::Additions::default();

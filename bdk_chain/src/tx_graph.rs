@@ -54,20 +54,15 @@ impl TxGraph {
     }
 
     /// Get a transaction by txid. This only returns `Some` for full transactions.
-    pub fn tx(&self, txid: Txid) -> Option<&Transaction> {
+    pub fn get_tx(&self, txid: Txid) -> Option<&Transaction> {
         match self.txs.get(&txid)? {
             TxNode::Whole(tx) => Some(tx),
             TxNode::Partial(_) => None,
         }
     }
 
-    /// Returns true when graph contains given tx of txid (whether it be partial or full).
-    pub fn contains_txid(&self, txid: Txid) -> bool {
-        self.txs.contains_key(&txid)
-    }
-
     /// Obtains a single tx output (if any) at specified outpoint.
-    pub fn txout(&self, outpoint: OutPoint) -> Option<&TxOut> {
+    pub fn get_txout(&self, outpoint: OutPoint) -> Option<&TxOut> {
         match self.txs.get(&outpoint.txid)? {
             TxNode::Whole(tx) => tx.output.get(outpoint.vout as usize),
             TxNode::Partial(txouts) => txouts.get(&outpoint.vout),
@@ -92,12 +87,10 @@ impl TxGraph {
 
     /// Returns the resultant [`Additions`] if the given transaction is inserted. Does not actually
     /// mutate [`Self`].
-    pub fn insert_tx_preview(&mut self, tx: Transaction) -> Additions {
+    pub fn insert_tx_preview(&self, tx: Transaction) -> Additions {
         let mut update = Self::default();
         update.txs.insert(tx.txid(), TxNode::Whole(tx));
-
-        self.apply_update(update)
-            .expect("txout should be as expected")
+        self.determine_additions(&update)
     }
 
     /// Inserts the given transaction into [`Self`].
@@ -107,13 +100,9 @@ impl TxGraph {
         additions
     }
 
-    /// Returns the resultant [`Additions`] if the given [`TxOut`] is inserted at [`OutPoint`]. Does
-    /// not actually mutate [`Self`].
-    pub fn insert_txout_preview(
-        &self,
-        outpoint: OutPoint,
-        txout: TxOut,
-    ) -> Result<Additions, TxOutConflict> {
+    /// Returns the resultant [`Additions`] if the given `txout` is inserted at `outpoint`. Does not
+    /// mutate `self`.
+    pub fn insert_txout_preview(&self, outpoint: OutPoint, txout: TxOut) -> Additions {
         let mut update = Self::default();
         update.txs.insert(
             outpoint.txid,
@@ -123,14 +112,13 @@ impl TxGraph {
     }
 
     /// Inserts the given [`TxOut`] at [`OutPoint`].
-    pub fn insert_txout(
-        &mut self,
-        outpoint: OutPoint,
-        txout: TxOut,
-    ) -> Result<Additions, TxOutConflict> {
-        let additions = self.insert_txout_preview(outpoint, txout)?;
+    ///
+    /// Note this will ignore the action if we already have the full transaction that the txout is
+    /// alledged to be on (even if it doesn't match it!).
+    pub fn insert_txout(&mut self, outpoint: OutPoint, txout: TxOut) -> Additions {
+        let additions = self.insert_txout_preview(outpoint, txout);
         self.apply_additions(additions.clone());
-        Ok(additions)
+        additions
     }
 
     /// Calculates the fee of a given transaction (if we have all relevant data).
@@ -138,7 +126,10 @@ impl TxGraph {
         let inputs_sum = tx
             .input
             .iter()
-            .map(|txin| self.txout(txin.previous_output).map(|txout| txout.value))
+            .map(|txin| {
+                self.get_txout(txin.previous_output)
+                    .map(|txout| txout.value)
+            })
             .sum::<Option<u64>>()?;
 
         let outputs_sum = tx.output.iter().map(|txout| txout.value).sum::<u64>();
@@ -201,10 +192,14 @@ impl TxGraph {
     }
 
     /// Previews the resultant [`Additions`] when [`Self`] is updated against the `update` graph.
-    pub fn determine_additions(&self, update: &Self) -> Result<Additions, TxOutConflict> {
+    pub fn determine_additions(&self, update: &Self) -> Additions {
         let mut additions = Additions::default();
 
         for (&txid, update_tx) in &update.txs {
+            if self.get_tx(txid).is_some() {
+                continue;
+            }
+
             match update_tx {
                 TxNode::Whole(tx) => {
                     if matches!(self.txs.get(&txid), None | Some(TxNode::Partial(_))) {
@@ -215,40 +210,23 @@ impl TxGraph {
                     for (&vout, update_txout) in partial {
                         let outpoint = OutPoint::new(txid, vout);
 
-                        let insert = match self.txouts(txid) {
-                            Some(txouts) => match txouts.get(&vout) {
-                                Some(&original_txout) if original_txout != update_txout => {
-                                    return Err(TxOutConflict {
-                                        outpoint,
-                                        original_txout: original_txout.clone(),
-                                        update_txout: update_txout.clone(),
-                                    });
-                                }
-                                Some(_) => false,
-                                None => true,
-                            },
-                            None => true,
-                        };
-
-                        if insert {
-                            additions
-                                .txout
-                                .insert(OutPoint { txid, vout }, update_txout.clone());
+                        if self.get_txout(outpoint) != Some(&update_txout) {
+                            additions.txout.insert(outpoint, update_txout.clone());
                         }
                     }
                 }
             }
         }
 
-        Ok(additions)
+        additions
     }
 
     /// Extends this graph with another so that `self` becomes the union of the two sets of
     /// transactions.
-    pub fn apply_update(&mut self, update: TxGraph) -> Result<Additions, TxOutConflict> {
-        let additions = self.determine_additions(&update)?;
+    pub fn apply_update(&mut self, update: TxGraph) -> Additions {
+        let additions = self.determine_additions(&update);
         self.apply_additions(additions.clone());
-        Ok(additions)
+        additions
     }
 
     pub fn apply_additions(&mut self, additions: Additions) {
@@ -281,42 +259,14 @@ impl TxGraph {
                 .or_insert_with(TxNode::default);
 
             match tx_entry {
-                TxNode::Whole(_) => {
-                    debug_assert!(
-                        false,
-                        "graph additions must not replace whole tx with partial"
-                    );
-                }
+                TxNode::Whole(_) => { /* do nothing since we already have full tx */ }
                 TxNode::Partial(txouts) => {
-                    debug_assert!(
-                        !matches!(txouts.get(&outpoint.vout), Some(original_txout) if original_txout != &txout),
-                        "txout addition should not have different txout of same outpoint"
-                    );
                     txouts.insert(outpoint.vout, txout);
                 }
             }
         }
     }
 }
-
-/// Failure case that occurs when a [`TxOut`] is inserted at a given [`OutPoint`] in which a
-/// non-matching [`TxOut`] already exists.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TxOutConflict {
-    pub outpoint: OutPoint,
-    pub original_txout: TxOut,
-    pub update_txout: TxOut,
-}
-
-impl core::fmt::Display for TxOutConflict {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "cannot insert txout ({:?}) at outpoint ({}) as this replaces a non-matching txout ({:?})",
-            self.update_txout, self.outpoint, self.original_txout)
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for TxOutConflict {}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(

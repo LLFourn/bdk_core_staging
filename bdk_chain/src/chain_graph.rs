@@ -4,6 +4,7 @@ use crate::{
     tx_graph::{self, TxGraph},
     BlockId, ForEachTxout, FullTxOut, TxHeight,
 };
+use alloc::{string::ToString, vec::Vec};
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use core::fmt::Debug;
 
@@ -57,7 +58,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     /// unconfirmed transaction list within the [`SparseChain`].
     pub fn get_tx_in_chain(&self, txid: Txid) -> Option<(&P, &Transaction)> {
         let position = self.chain.tx_position(txid)?;
-        let full_tx = self.graph.tx(txid).expect("must exist");
+        let full_tx = self.graph.get_tx(txid).expect("must exist");
         Some((position, full_tx))
     }
 
@@ -77,8 +78,8 @@ impl<P: ChainPosition> ChainGraph<P> {
         Ok(self
             .inflate_changeset(chain_changeset, core::iter::once(tx))
             .map_err(|failure| match failure {
-                InflateFailure::Missing(_) => unreachable!("no transaction should be missing"),
-                InflateFailure::UnresolvableConflict(conflict) => {
+                InflateError::Missing(_) => unreachable!("only one tx added and we provided it"),
+                InflateError::UnresolvableConflict(conflict) => {
                     InsertTxFailure::UnresolvableConflict(conflict)
                 }
             })?)
@@ -98,30 +99,20 @@ impl<P: ChainPosition> ChainGraph<P> {
     }
 
     /// Determines the changes required to insert a [`TxOut`] into the internal [`TxGraph`].
-    pub fn insert_txout_preview(
-        &self,
-        outpoint: OutPoint,
-        txout: TxOut,
-    ) -> Result<ChangeSet<P>, tx_graph::TxOutConflict> {
-        self.graph
-            .insert_txout_preview(outpoint, txout)
-            .map(|additions| ChangeSet {
-                graph: additions,
-                ..Default::default()
-            })
+    pub fn insert_txout_preview(&self, outpoint: OutPoint, txout: TxOut) -> ChangeSet<P> {
+        ChangeSet {
+            chain: Default::default(),
+            graph: self.graph.insert_txout_preview(outpoint, txout),
+        }
     }
 
     /// Inserts a [`TxOut`] into the internal [`TxGraph`]. This is equivalent to calling
     /// [`Self::insert_txout_preview()`] and [`Self::apply_changeset`] in sequence.
-    pub fn insert_txout(
-        &mut self,
-        outpoint: OutPoint,
-        txout: TxOut,
-    ) -> Result<ChangeSet<P>, tx_graph::TxOutConflict> {
-        let changeset = self.insert_txout_preview(outpoint, txout)?;
+    pub fn insert_txout(&mut self, outpoint: OutPoint, txout: TxOut) -> ChangeSet<P> {
+        let changeset = self.insert_txout_preview(outpoint, txout);
         self.apply_changeset(changeset.clone())
             .expect("changeset should not have missing transactions");
-        Ok(changeset)
+        changeset
     }
 
     /// Determines the changes required to insert a `block_id` (a height and block hash) into the
@@ -162,7 +153,7 @@ impl<P: ChainPosition> ChainGraph<P> {
 
         let mut changeset = ChangeSet::<P> {
             chain: chain_changeset,
-            graph: self.graph.determine_additions(&update.graph)?,
+            graph: self.graph.determine_additions(&update.graph),
         };
 
         self.fix_conflicts(&mut changeset)?;
@@ -251,24 +242,21 @@ impl<P: ChainPosition> ChainGraph<P> {
     }
 
     /// Applies [`ChangeSet`] to [`Self`]. This fails if there are missing full transactions.
-    pub fn apply_changeset(
-        &mut self,
-        changeset: ChangeSet<P>,
-    ) -> Result<(), (ChangeSet<P>, HashSet<Txid>)> {
+    pub fn apply_changeset(&mut self, changeset: ChangeSet<P>) -> Result<(), InflateError<P>> {
         let mut missing: HashSet<Txid> = self.chain.changeset_additions(&changeset.chain).collect();
 
         for tx in &changeset.graph.tx {
             missing.remove(&tx.txid());
         }
 
-        missing.retain(|txid| !self.graph.contains_txid(*txid));
+        missing.retain(|txid| self.graph.get_tx(*txid).is_none());
 
         if missing.is_empty() {
             self.chain.apply_changeset(changeset.chain);
             self.graph.apply_additions(changeset.graph);
             Ok(())
         } else {
-            Err((changeset, missing))
+            Err(InflateError::Missing(missing))
         }
     }
 
@@ -278,12 +266,12 @@ impl<P: ChainPosition> ChainGraph<P> {
         &self,
         changeset: sparse_chain::ChangeSet<P>,
         full_txs: impl IntoIterator<Item = Transaction>,
-    ) -> Result<ChangeSet<P>, InflateFailure<P>> {
+    ) -> Result<ChangeSet<P>, InflateError<P>> {
         // need to wrap in a refcell because it's closed over twice below
         let missing = core::cell::RefCell::new(
             self.chain
                 .changeset_additions(&changeset)
-                .filter(|txid| !self.graph.contains_txid(*txid))
+                .filter(|txid| self.graph.get_tx(*txid).is_none())
                 .collect::<HashSet<_>>(),
         );
         let full_txs = full_txs
@@ -305,7 +293,7 @@ impl<P: ChainPosition> ChainGraph<P> {
             self.fix_conflicts(&mut changeset)?;
             Ok(changeset)
         } else {
-            Err(InflateFailure::Missing(missing))
+            Err(InflateError::Missing(missing))
         }
     }
 
@@ -328,7 +316,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     pub fn transactions_in_chain(&self) -> impl DoubleEndedIterator<Item = (&P, &Transaction)> {
         self.chain
             .txids()
-            .map(|(pos, txid)| (pos, self.graph.tx(*txid).expect("must exist")))
+            .map(|(pos, txid)| (pos, self.graph.get_tx(*txid).expect("must exist")))
     }
 
     /// Finds the transaction in the chain that spends `outpoint` given the input/output
@@ -416,8 +404,6 @@ pub type InsertCheckpointFailure = sparse_chain::InsertCheckpointFailure;
 pub enum UpdateFailure<P> {
     /// The update chain was inconsistent with the existing chain
     Chain(sparse_chain::UpdateFailure<P>),
-    /// The update graph was inconsistent with the existing graph
-    Graph(tx_graph::TxOutConflict),
     /// A transaction in the update spent the same input as an already confirmed transaction
     UnresolvableConflict(UnresolvableConflict<P>),
 }
@@ -426,7 +412,6 @@ impl<P: core::fmt::Debug> core::fmt::Display for UpdateFailure<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             UpdateFailure::Chain(inner) => core::fmt::Display::fmt(inner, f),
-            UpdateFailure::Graph(inner) => core::fmt::Display::fmt(inner, f),
             UpdateFailure::UnresolvableConflict(inner) => core::fmt::Display::fmt(inner, f),
         }
     }
@@ -438,42 +423,42 @@ impl<P> From<sparse_chain::UpdateFailure<P>> for UpdateFailure<P> {
     }
 }
 
-impl<P> From<tx_graph::TxOutConflict> for UpdateFailure<P> {
-    fn from(inner: tx_graph::TxOutConflict) -> Self {
-        Self::Graph(inner)
-    }
-}
-
 #[cfg(feature = "std")]
 impl<P: core::fmt::Debug> std::error::Error for UpdateFailure<P> {}
 
-/// Represents a failure that occured when attempting to inflate a [`sparse_chain::ChangeSet`]
-/// into a [`ChangeSet`].
+/// Represents a failure that occured when attempting to [apply] or [inflate] a [`ChangeSet`]
+///
+/// [inflate]: ChainGraph::inflate_changeset
+/// [apply]: ChainGraph::apply_changeset
 #[derive(Clone, Debug, PartialEq)]
-pub enum InflateFailure<P> {
+pub enum InflateError<P> {
     /// Missing full transactions
     Missing(HashSet<Txid>),
     /// A transaction in the update spent the same input as an already confirmed transaction
     UnresolvableConflict(UnresolvableConflict<P>),
 }
 
-impl<P: core::fmt::Debug> core::fmt::Display for InflateFailure<P> {
+impl<P: core::fmt::Debug> core::fmt::Display for InflateError<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            InflateFailure::Missing(missing) => write!(
+            InflateError::Missing(missing) => write!(
                 f,
-                "cannot inflate changeset as we are missing {} full transactions",
-                missing.len()
+                "missing full transactions for {}",
+                missing
+                    .into_iter()
+                    .map(|txid| txid.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
-            InflateFailure::UnresolvableConflict(inner) => {
-                write!(f, "cannot inflate changeset: {}", inner)
+            InflateError::UnresolvableConflict(inner) => {
+                write!(f, "{}", inner)
             }
         }
     }
 }
 
 #[cfg(feature = "std")]
-impl<P: core::fmt::Debug> std::error::Error for InflateFailure<P> {}
+impl<P: core::fmt::Debug> std::error::Error for InflateError<P> {}
 
 /// Represents an unresolvable conflict between an update's transaction and an
 /// already-confirmed transaction.
@@ -500,7 +485,7 @@ impl<P> From<UnresolvableConflict<P>> for UpdateFailure<P> {
     }
 }
 
-impl<P> From<UnresolvableConflict<P>> for InflateFailure<P> {
+impl<P> From<UnresolvableConflict<P>> for InflateError<P> {
     fn from(inner: UnresolvableConflict<P>) -> Self {
         Self::UnresolvableConflict(inner)
     }
