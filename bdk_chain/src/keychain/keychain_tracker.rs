@@ -57,7 +57,7 @@ where
     pub fn determine_changeset(
         &self,
         scan: &KeychainScan<K, P>,
-    ) -> Result<KeychainChangeSet<K, P>, chain_graph::UpdateFailure<P>> {
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::UpdateError<P>> {
         let mut new_derivation_indices = scan.last_active_indexes.clone();
         new_derivation_indices.retain(|keychain, index| {
             match self.txout_index.derivation_index(keychain) {
@@ -75,7 +75,7 @@ where
     pub fn apply_update(
         &mut self,
         scan: KeychainScan<K, P>,
-    ) -> Result<KeychainChangeSet<K, P>, chain_graph::UpdateFailure<P>> {
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::UpdateError<P>> {
         let changeset = self.determine_changeset(&scan)?;
         self.apply_changeset(changeset.clone())
             .expect("generated changeset should apply");
@@ -125,7 +125,7 @@ where
     pub fn insert_checkpoint_preview(
         &self,
         block_id: BlockId,
-    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertCheckpointFailure> {
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertCheckpointError> {
         Ok(KeychainChangeSet {
             chain_graph: self.chain_graph.insert_checkpoint_preview(block_id)?,
             ..Default::default()
@@ -135,7 +135,7 @@ where
     pub fn insert_checkpoint(
         &mut self,
         block_id: BlockId,
-    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertCheckpointFailure> {
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertCheckpointError> {
         let changeset = self.insert_checkpoint_preview(block_id)?;
         self.apply_changeset(changeset.clone())
             .expect("changeset should apply");
@@ -151,7 +151,7 @@ where
         &self,
         tx: Transaction,
         pos: P,
-    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertTxFailure<P>> {
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertTxError<P>> {
         Ok(KeychainChangeSet {
             chain_graph: self.chain_graph.insert_tx_preview(tx.clone(), pos)?,
             ..Default::default()
@@ -162,7 +162,7 @@ where
         &mut self,
         tx: Transaction,
         pos: P,
-    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertTxFailure<P>> {
+    ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertTxError<P>> {
         let changeset = self.insert_tx_preview(tx, pos)?;
         self.apply_changeset(changeset.clone())
             .expect("changeset should apply");

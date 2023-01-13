@@ -63,7 +63,7 @@ fn two_disjoint_chains_cannot_merge() {
     let chain2 = chain!([1, h!("B")]);
     assert_eq!(
         chain1.determine_changeset(&chain2),
-        Err(UpdateFailure::NotConnected(0))
+        Err(UpdateError::NotConnected(0))
     );
 }
 
@@ -145,7 +145,7 @@ fn invalidate_a_checkpoint_and_try_and_move_tx_when_it_wasnt_within_invalidation
     let chain2 = chain!(checkpoints: [[0, h!("A")], [1, h!("B'")]], txids: [(h!("tx0"), TxHeight::Confirmed(1))]);
     assert_eq!(
         chain1.determine_changeset(&chain2),
-        Err(UpdateFailure::TxInconsistent {
+        Err(UpdateError::TxInconsistent {
             txid: h!("tx0"),
             original_pos: TxHeight::Confirmed(0).into(),
             update_pos: TxHeight::Confirmed(1).into(),
@@ -243,7 +243,7 @@ fn cannot_insert_confirmed_tx_without_checkpoints() {
     let chain = SparseChain::default();
     assert_eq!(
         chain.insert_tx_preview(h!("A"), TxHeight::Confirmed(0)),
-        Err(InsertTxFailure::TxTooHigh {
+        Err(InsertTxError::TxTooHigh {
             txid: h!("A"),
             tx_height: 0,
             tip_height: None
@@ -323,7 +323,7 @@ fn cannot_change_ext_index_of_confirmed_tx() {
 
     assert_eq!(
         chain1.determine_changeset(&chain2),
-        Err(UpdateFailure::TxInconsistent {
+        Err(UpdateError::TxInconsistent {
             txid: h!("tx0"),
             original_pos: TestIndex(TxHeight::Confirmed(1), 10),
             update_pos: TestIndex(TxHeight::Confirmed(1), 20),
@@ -387,7 +387,7 @@ fn update_and_chain_does_not_connect() {
 
     assert_eq!(
         chain1.determine_changeset(&chain2),
-        Err(UpdateFailure::NotConnected(2)),
+        Err(UpdateError::NotConnected(2)),
     );
 }
 
@@ -477,7 +477,7 @@ fn invalidation_but_no_connection() {
 
     assert_eq!(
         chain1.determine_changeset(&chain2),
-        Err(UpdateFailure::NotConnected(0))
+        Err(UpdateError::NotConnected(0))
     )
 }
 

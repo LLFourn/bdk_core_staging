@@ -126,7 +126,7 @@ impl ElectrumClient {
         };
         if let Err(failure) = sparse_chain.insert_checkpoint(tip) {
             match failure {
-                sparse_chain::InsertCheckpointFailure::HashNotMatching { .. } => {
+                sparse_chain::InsertCheckpointError::HashNotMatching { .. } => {
                     // There has been a re-org before we even begin scanning addresses.
                     // Just recursively call (this should never happen).
                     return self.wallet_txid_scan(scripts, stop_gap, local_chain, batch_size);
@@ -182,10 +182,10 @@ impl ElectrumClient {
                     for (txid, pos) in txid_list {
                         if let Err(failure) = sparse_chain.insert_tx(txid, pos) {
                             match failure {
-                                sparse_chain::InsertTxFailure::TxTooHigh { .. } => {
+                                sparse_chain::InsertTxError::TxTooHigh { .. } => {
                                     unreachable!("We should not encounter this error as we ensured tx_height <= tip.height");
                                 }
-                                sparse_chain::InsertTxFailure::TxMovedUnexpectedly { .. } => {
+                                sparse_chain::InsertTxError::TxMovedUnexpectedly { .. } => {
                                     /* This means there is a reorg, we will handle this situation below */
                                 }
                             }

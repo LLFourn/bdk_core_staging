@@ -71,7 +71,7 @@ impl<P: ChainPosition> ChainGraph<P> {
         &self,
         tx: Transaction,
         pos: P,
-    ) -> Result<ChangeSet<P>, InsertTxFailure<P>> {
+    ) -> Result<ChangeSet<P>, InsertTxError<P>> {
         // only allow displacement of unconfirmed txs
         let chain_changeset = self.chain.insert_tx_preview(tx.txid(), pos)?;
 
@@ -80,18 +80,14 @@ impl<P: ChainPosition> ChainGraph<P> {
             .map_err(|failure| match failure {
                 InflateError::Missing(_) => unreachable!("only one tx added and we provided it"),
                 InflateError::UnresolvableConflict(conflict) => {
-                    InsertTxFailure::UnresolvableConflict(conflict)
+                    InsertTxError::UnresolvableConflict(conflict)
                 }
             })?)
     }
 
     /// Inserts [`Transaction`] at given chain position. This is equivalent to calling
     /// [`Self::insert_tx_preview()`] and [`Self::apply_changeset()`] in sequence.
-    pub fn insert_tx(
-        &mut self,
-        tx: Transaction,
-        pos: P,
-    ) -> Result<ChangeSet<P>, InsertTxFailure<P>> {
+    pub fn insert_tx(&mut self, tx: Transaction, pos: P) -> Result<ChangeSet<P>, InsertTxError<P>> {
         let changeset = self.insert_tx_preview(tx, pos)?;
         self.apply_changeset(changeset.clone())
             .expect("changeset should not have missing transactions");
@@ -123,7 +119,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     pub fn insert_checkpoint_preview(
         &self,
         block_id: BlockId,
-    ) -> Result<ChangeSet<P>, InsertCheckpointFailure> {
+    ) -> Result<ChangeSet<P>, InsertCheckpointError> {
         self.chain
             .insert_checkpoint_preview(block_id)
             .map(|chain_changeset| ChangeSet {
@@ -137,7 +133,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     pub fn insert_checkpoint(
         &mut self,
         block_id: BlockId,
-    ) -> Result<ChangeSet<P>, InsertCheckpointFailure> {
+    ) -> Result<ChangeSet<P>, InsertCheckpointError> {
         let changeset = self.insert_checkpoint_preview(block_id)?;
         self.apply_changeset(changeset.clone())
             .expect("changeset should not have missing transactions");
@@ -145,11 +141,11 @@ impl<P: ChainPosition> ChainGraph<P> {
     }
 
     /// Calculates the difference between self and `update` in the form of a [`ChangeSet`].
-    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<P>, UpdateFailure<P>> {
+    pub fn determine_changeset(&self, update: &Self) -> Result<ChangeSet<P>, UpdateError<P>> {
         let chain_changeset = self
             .chain
             .determine_changeset(&update.chain)
-            .map_err(UpdateFailure::Chain)?;
+            .map_err(UpdateError::Chain)?;
 
         let mut changeset = ChangeSet::<P> {
             chain: chain_changeset,
@@ -306,7 +302,7 @@ impl<P: ChainPosition> ChainGraph<P> {
 
     /// Applies the `update` chain graph. Note this is shorthand for calling
     /// [`Self::determine_changeset()`] and [`Self::apply_changeset()`] in sequence.
-    pub fn apply_update(&mut self, update: Self) -> Result<ChangeSet<P>, UpdateFailure<P>> {
+    pub fn apply_update(&mut self, update: Self) -> Result<ChangeSet<P>, UpdateError<P>> {
         let changeset = self.determine_changeset(&update)?;
         self.apply_changeset(changeset.clone())
             .expect("we correctly constructed this");
@@ -381,57 +377,57 @@ impl<P> ForEachTxout for ChangeSet<P> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum InsertTxFailure<P> {
-    Chain(sparse_chain::InsertTxFailure<P>),
+pub enum InsertTxError<P> {
+    Chain(sparse_chain::InsertTxError<P>),
     UnresolvableConflict(UnresolvableConflict<P>),
 }
 
-impl<P: core::fmt::Debug> core::fmt::Display for InsertTxFailure<P> {
+impl<P: core::fmt::Debug> core::fmt::Display for InsertTxError<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            InsertTxFailure::Chain(inner) => core::fmt::Display::fmt(inner, f),
-            InsertTxFailure::UnresolvableConflict(inner) => core::fmt::Display::fmt(inner, f),
+            InsertTxError::Chain(inner) => core::fmt::Display::fmt(inner, f),
+            InsertTxError::UnresolvableConflict(inner) => core::fmt::Display::fmt(inner, f),
         }
     }
 }
 
-impl<P> From<sparse_chain::InsertTxFailure<P>> for InsertTxFailure<P> {
-    fn from(inner: sparse_chain::InsertTxFailure<P>) -> Self {
+impl<P> From<sparse_chain::InsertTxError<P>> for InsertTxError<P> {
+    fn from(inner: sparse_chain::InsertTxError<P>) -> Self {
         Self::Chain(inner)
     }
 }
 
 #[cfg(feature = "std")]
-impl<P: core::fmt::Debug> std::error::Error for InsertTxFailure<P> {}
+impl<P: core::fmt::Debug> std::error::Error for InsertTxError<P> {}
 
-pub type InsertCheckpointFailure = sparse_chain::InsertCheckpointFailure;
+pub type InsertCheckpointError = sparse_chain::InsertCheckpointError;
 
 /// Represents an update failure.
 #[derive(Clone, Debug, PartialEq)]
-pub enum UpdateFailure<P> {
+pub enum UpdateError<P> {
     /// The update chain was inconsistent with the existing chain
-    Chain(sparse_chain::UpdateFailure<P>),
+    Chain(sparse_chain::UpdateError<P>),
     /// A transaction in the update spent the same input as an already confirmed transaction
     UnresolvableConflict(UnresolvableConflict<P>),
 }
 
-impl<P: core::fmt::Debug> core::fmt::Display for UpdateFailure<P> {
+impl<P: core::fmt::Debug> core::fmt::Display for UpdateError<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            UpdateFailure::Chain(inner) => core::fmt::Display::fmt(inner, f),
-            UpdateFailure::UnresolvableConflict(inner) => core::fmt::Display::fmt(inner, f),
+            UpdateError::Chain(inner) => core::fmt::Display::fmt(inner, f),
+            UpdateError::UnresolvableConflict(inner) => core::fmt::Display::fmt(inner, f),
         }
     }
 }
 
-impl<P> From<sparse_chain::UpdateFailure<P>> for UpdateFailure<P> {
-    fn from(inner: sparse_chain::UpdateFailure<P>) -> Self {
+impl<P> From<sparse_chain::UpdateError<P>> for UpdateError<P> {
+    fn from(inner: sparse_chain::UpdateError<P>) -> Self {
         Self::Chain(inner)
     }
 }
 
 #[cfg(feature = "std")]
-impl<P: core::fmt::Debug> std::error::Error for UpdateFailure<P> {}
+impl<P: core::fmt::Debug> std::error::Error for UpdateError<P> {}
 
 /// Represents a failure that occured when attempting to [apply] or [inflate] a [`ChangeSet`]
 ///
@@ -486,7 +482,7 @@ impl<P: core::fmt::Debug> core::fmt::Display for UnresolvableConflict<P> {
     }
 }
 
-impl<P> From<UnresolvableConflict<P>> for UpdateFailure<P> {
+impl<P> From<UnresolvableConflict<P>> for UpdateError<P> {
     fn from(inner: UnresolvableConflict<P>) -> Self {
         Self::UnresolvableConflict(inner)
     }
@@ -498,7 +494,7 @@ impl<P> From<UnresolvableConflict<P>> for InflateError<P> {
     }
 }
 
-impl<P> From<UnresolvableConflict<P>> for InsertTxFailure<P> {
+impl<P> From<UnresolvableConflict<P>> for InsertTxError<P> {
     fn from(inner: UnresolvableConflict<P>) -> Self {
         Self::UnresolvableConflict(inner)
     }
