@@ -8,9 +8,7 @@ use bdk_chain::{
     tx_graph::{self, Additions},
     BlockId, TxHeight,
 };
-use bitcoin::{
-    OutPoint, PackedLockTime, Script, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
-};
+use bitcoin::{OutPoint, PackedLockTime, Script, Sequence, Transaction, TxIn, TxOut, Witness};
 
 #[test]
 fn test_spent_by() {
@@ -146,7 +144,7 @@ fn update_evicts_conflicting_tx() {
             "tx should be evicted from mempool"
         );
 
-        cg1.apply_changeset(changeset).expect("should apply");
+        cg1.apply_changeset(changeset);
     }
 
     {
@@ -225,74 +223,8 @@ fn update_evicts_conflicting_tx() {
             "tx should be evicted from B",
         );
 
-        cg1.apply_changeset(changeset).expect("should apply");
+        cg1.apply_changeset(changeset);
     }
-}
-
-#[test]
-fn update_missing_full_tx_errors() {
-    let mut cg = ChainGraph::default();
-    let chain_changeset = changeset! {
-        checkpoints: [
-            (0, Some(h!("A")))
-        ],
-        txids: [
-            (h!("a1"), Some(TxHeight::Confirmed(0))),
-            (h!("a2"), Some(TxHeight::Unconfirmed))
-        ]
-    };
-    let changeset = ChangeSet {
-        chain: chain_changeset,
-        graph: tx_graph::Additions::default(),
-    };
-    let mut expected = HashSet::<Txid>::new();
-    expected.insert(h!("a1"));
-    expected.insert(h!("a2"));
-    assert_eq!(
-        cg.apply_changeset(changeset.clone()),
-        Err(InflateError::Missing(expected))
-    );
-}
-
-#[test]
-fn update_not_including_tx_already_in_graph_is_ok() {
-    let mut cg = ChainGraph::default();
-    let tx_a = Transaction {
-        version: 0x01,
-        lock_time: PackedLockTime(0),
-        input: vec![],
-        output: vec![TxOut::default()],
-    };
-    let chain_changeset = changeset! {
-        checkpoints: [ (0, Some(h!("A"))) ],
-        txids: [
-            (tx_a.txid(), Some(TxHeight::Confirmed(0)))
-        ]
-    };
-
-    let mut graph_additions = tx_graph::Additions::default();
-    graph_additions.tx.insert(tx_a.clone());
-    let changeset = ChangeSet {
-        chain: chain_changeset,
-        graph: graph_additions,
-    };
-
-    assert_eq!(cg.apply_changeset(changeset), Ok(()));
-
-    // reorg the tx to a different height and provide changeset without the full tx.
-    let chain_changeset = changeset! {
-        checkpoints: [(0, Some(h!("A'")))],
-        txids: [
-            (tx_a.txid(), Some(TxHeight::Unconfirmed))
-        ]
-    };
-
-    let changeset = ChangeSet {
-        chain: chain_changeset,
-        graph: tx_graph::Additions::default(),
-    };
-
-    assert_eq!(cg.apply_changeset(changeset), Ok(()));
 }
 
 #[test]
@@ -360,7 +292,7 @@ fn chain_graph_inflate_changeset() {
         })
     );
 
-    assert_eq!(cg.apply_changeset(changeset.unwrap()), Ok(()))
+    cg.apply_changeset(changeset.unwrap());
 }
 
 #[test]

@@ -141,10 +141,8 @@ fn main() -> anyhow::Result<()> {
                 .determine_changeset(&scan)?
                 .into();
             db.append_changeset(&changeset)?;
-            keychain_tracker
-                .apply_changeset(changeset)
-                .expect("it was just generated");
-        } // For everything else run handler
+            keychain_tracker.apply_changeset(changeset);
+        }
     }
 
     Ok(())

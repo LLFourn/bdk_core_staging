@@ -6,6 +6,7 @@
 use crate::{
     chain_graph::{self, ChainGraph},
     collections::BTreeMap,
+    sparse_chain::ChainPosition,
     tx_graph::TxGraph,
     ForEachTxout,
 };
@@ -69,6 +70,27 @@ impl<K, P> Default for KeychainChangeSet<K, P> {
 impl<K, P> KeychainChangeSet<K, P> {
     pub fn is_empty(&self) -> bool {
         self.chain_graph.is_empty() && self.derivation_indices.is_empty()
+    }
+
+    /// Appends the changes in `other` into `self` such that applying `self` afterwards has the same
+    /// effect as sequentially applying the original `self` and `other`.
+    ///
+    /// Note the derivation indices cannot be decreased so `other` will only change the derivation
+    /// index for a keychain if its entry is higher than the one in `self`.
+    pub fn append(&mut self, mut other: KeychainChangeSet<K, P>)
+    where
+        K: Ord,
+        P: ChainPosition,
+    {
+        for (keychain, derivation_index) in &mut self.derivation_indices {
+            *derivation_index =
+                (*derivation_index).max(other.derivation_indices.remove(keychain).unwrap_or(0));
+        }
+
+        self.derivation_indices
+            .append(&mut other.derivation_indices);
+
+        self.chain_graph.append(other.chain_graph);
     }
 }
 
@@ -146,5 +168,46 @@ impl core::ops::Add for Balance {
             untrusted_pending: self.untrusted_pending + other.untrusted_pending,
             confirmed: self.confirmed + other.confirmed,
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::TxHeight;
+
+    use super::*;
+    #[test]
+    fn append_keychain_derivation_indices() {
+        #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Debug)]
+        enum Keychain {
+            One,
+            Two,
+            Three,
+            Four,
+        }
+        let mut lhs_di = BTreeMap::<Keychain, u32>::default();
+        let mut rhs_di = BTreeMap::<Keychain, u32>::default();
+        lhs_di.insert(Keychain::One, 7);
+        lhs_di.insert(Keychain::Two, 0);
+        rhs_di.insert(Keychain::One, 3);
+        rhs_di.insert(Keychain::Two, 5);
+        lhs_di.insert(Keychain::Three, 3);
+        rhs_di.insert(Keychain::Four, 4);
+        let mut lhs = KeychainChangeSet {
+            derivation_indices: lhs_di,
+            chain_graph: chain_graph::ChangeSet::<TxHeight>::default(),
+        };
+
+        let rhs = KeychainChangeSet {
+            derivation_indices: rhs_di,
+            chain_graph: chain_graph::ChangeSet::<TxHeight>::default(),
+        };
+
+        lhs.append(rhs);
+
+        assert_eq!(lhs.derivation_indices.get(&Keychain::One), Some(&7));
+        assert_eq!(lhs.derivation_indices.get(&Keychain::Two), Some(&5));
+        assert_eq!(lhs.derivation_indices.get(&Keychain::Three), Some(&3));
+        assert_eq!(lhs.derivation_indices.get(&Keychain::Four), Some(&4));
     }
 }
