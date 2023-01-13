@@ -157,7 +157,6 @@ impl<P: ChainPosition> ChainGraph<P> {
         };
 
         self.fix_conflicts(&mut changeset)?;
-
         Ok(changeset)
     }
 
@@ -179,29 +178,36 @@ impl<P: ChainPosition> ChainGraph<P> {
             })
     }
 
+    /// Fix changeset conflicts.
+    ///
+    /// **WARNING:** If there are any missing full txs, conflict resolution will not be complete. In
+    /// debug mode, this will result in panic.
     fn fix_conflicts(&self, changeset: &mut ChangeSet<P>) -> Result<(), UnresolvableConflict<P>> {
         let chain_conflicts = changeset
-            .graph
-            .tx
+            .chain
+            .txids
             .iter()
-            .map(|tx| (tx, tx.txid()))
-            // we care about transactions that are not already in the chain
-            .filter(|(_, txid)| self.chain.tx_position(*txid).is_none())
-            // and are going to be added to the chain
-            .filter_map(|(tx, txid)| Some((changeset.chain.txids.get(&txid)?.as_ref()?, txid, tx)))
-            .flat_map(|(update_pos, update_txid, update_tx)| {
-                self.conflicting_txids_in_chain(update_tx).map(
-                    move |(conflicting_pos, conflicting_txid)| {
-                        (
-                            update_pos.clone(),
-                            update_txid,
-                            conflicting_pos,
-                            conflicting_txid,
-                        )
-                    },
-                )
+            // txid is not already in chain
+            .filter(|(&txid, _)| self.chain.tx_position(txid).is_none())
+            // change is add to pos
+            .filter_map(|(&txid, pos_change)| pos_change.as_ref().map(|pos| (txid, pos)))
+            // ensure full tx exists (either in graph, or additions)
+            .filter_map(|(txid, pos)| {
+                let full_tx = self
+                    .graph
+                    .get_tx(txid)
+                    .or_else(|| changeset.graph.tx.iter().find(|tx| tx.txid() == txid))
+                    .map(|tx| (txid, tx, pos));
+                debug_assert!(full_tx.is_some(), "should have full tx at this point");
+                full_tx
             })
-            .collect::<alloc::vec::Vec<_>>();
+            .flat_map(|(new_txid, new_tx, new_pos)| {
+                self.conflicting_txids_in_chain(new_tx)
+                    .map(move |(conflict_pos, conflict_txid)| {
+                        (new_pos.clone(), new_txid, conflict_pos, conflict_txid)
+                    })
+            })
+            .collect::<Vec<_>>();
 
         for (update_pos, update_txid, conflicting_pos, conflicting_txid) in chain_conflicts {
             // We have found a tx that conflicts with our update txid. Only allow this when the
