@@ -4,6 +4,7 @@ use crate::{
     tx_graph::{self, TxGraph},
     BlockId, ForEachTxout, FullTxOut, TxHeight,
 };
+use alloc::{string::ToString, vec::Vec};
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use core::fmt::Debug;
 
@@ -77,8 +78,8 @@ impl<P: ChainPosition> ChainGraph<P> {
         Ok(self
             .inflate_changeset(chain_changeset, core::iter::once(tx))
             .map_err(|failure| match failure {
-                InflateFailure::Missing(_) => unreachable!("only one tx added and we provided it"),
-                InflateFailure::UnresolvableConflict(conflict) => {
+                InflateError::Missing(_) => unreachable!("only one tx added and we provided it"),
+                InflateError::UnresolvableConflict(conflict) => {
                     InsertTxFailure::UnresolvableConflict(conflict)
                 }
             })?)
@@ -241,10 +242,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     }
 
     /// Applies [`ChangeSet`] to [`Self`]. This fails if there are missing full transactions.
-    pub fn apply_changeset(
-        &mut self,
-        changeset: ChangeSet<P>,
-    ) -> Result<(), (ChangeSet<P>, HashSet<Txid>)> {
+    pub fn apply_changeset(&mut self, changeset: ChangeSet<P>) -> Result<(), InflateError<P>> {
         let mut missing: HashSet<Txid> = self.chain.changeset_additions(&changeset.chain).collect();
 
         for tx in &changeset.graph.tx {
@@ -258,7 +256,7 @@ impl<P: ChainPosition> ChainGraph<P> {
             self.graph.apply_additions(changeset.graph);
             Ok(())
         } else {
-            Err((changeset, missing))
+            Err(InflateError::Missing(missing))
         }
     }
 
@@ -268,7 +266,7 @@ impl<P: ChainPosition> ChainGraph<P> {
         &self,
         changeset: sparse_chain::ChangeSet<P>,
         full_txs: impl IntoIterator<Item = Transaction>,
-    ) -> Result<ChangeSet<P>, InflateFailure<P>> {
+    ) -> Result<ChangeSet<P>, InflateError<P>> {
         // need to wrap in a refcell because it's closed over twice below
         let missing = core::cell::RefCell::new(
             self.chain
@@ -295,7 +293,7 @@ impl<P: ChainPosition> ChainGraph<P> {
             self.fix_conflicts(&mut changeset)?;
             Ok(changeset)
         } else {
-            Err(InflateFailure::Missing(missing))
+            Err(InflateError::Missing(missing))
         }
     }
 
@@ -428,33 +426,39 @@ impl<P> From<sparse_chain::UpdateFailure<P>> for UpdateFailure<P> {
 #[cfg(feature = "std")]
 impl<P: core::fmt::Debug> std::error::Error for UpdateFailure<P> {}
 
-/// Represents a failure that occured when attempting to inflate a [`sparse_chain::ChangeSet`]
-/// into a [`ChangeSet`].
+/// Represents a failure that occured when attempting to [apply] or [inflate] a [`ChangeSet`]
+///
+/// [inflate]: ChainGraph::inflate_changeset
+/// [apply]: ChainGraph::apply_changeset
 #[derive(Clone, Debug, PartialEq)]
-pub enum InflateFailure<P> {
+pub enum InflateError<P> {
     /// Missing full transactions
     Missing(HashSet<Txid>),
     /// A transaction in the update spent the same input as an already confirmed transaction
     UnresolvableConflict(UnresolvableConflict<P>),
 }
 
-impl<P: core::fmt::Debug> core::fmt::Display for InflateFailure<P> {
+impl<P: core::fmt::Debug> core::fmt::Display for InflateError<P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            InflateFailure::Missing(missing) => write!(
+            InflateError::Missing(missing) => write!(
                 f,
-                "cannot inflate changeset as we are missing {} full transactions",
-                missing.len()
+                "missing full transactions for {}",
+                missing
+                    .into_iter()
+                    .map(|txid| txid.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
-            InflateFailure::UnresolvableConflict(inner) => {
-                write!(f, "cannot inflate changeset: {}", inner)
+            InflateError::UnresolvableConflict(inner) => {
+                write!(f, "{}", inner)
             }
         }
     }
 }
 
 #[cfg(feature = "std")]
-impl<P: core::fmt::Debug> std::error::Error for InflateFailure<P> {}
+impl<P: core::fmt::Debug> std::error::Error for InflateError<P> {}
 
 /// Represents an unresolvable conflict between an update's transaction and an
 /// already-confirmed transaction.
@@ -481,7 +485,7 @@ impl<P> From<UnresolvableConflict<P>> for UpdateFailure<P> {
     }
 }
 
-impl<P> From<UnresolvableConflict<P>> for InflateFailure<P> {
+impl<P> From<UnresolvableConflict<P>> for InflateError<P> {
     fn from(inner: UnresolvableConflict<P>) -> Self {
         Self::UnresolvableConflict(inner)
     }
