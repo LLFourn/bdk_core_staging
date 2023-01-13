@@ -33,7 +33,7 @@ fn test_insert_tx() {
     let changeset = tracker
         .insert_tx_preview(tx.clone(), ConfirmationTime::Unconfirmed)
         .unwrap();
-    tracker.apply_changeset(changeset).unwrap();
+    tracker.apply_changeset(changeset);
     assert_eq!(
         tracker
             .chain_graph()
