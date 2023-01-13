@@ -53,6 +53,27 @@ impl<P: ChainPosition> ChainGraph<P> {
         self.chain.set_checkpoint_limit(limit)
     }
 
+    /// Determines the changes required to invalidate checkpoints `from_height` (inclusive) and
+    /// above. Displaced transactions will have their positions moved to [`TxHeight::Unconfirmed`].
+    pub fn invalidate_checkpoints_preview(&self, from_height: u32) -> ChangeSet<P> {
+        ChangeSet {
+            chain: self.chain.invalidate_checkpoints_preview(from_height),
+            ..Default::default()
+        }
+    }
+
+    /// Invalidate checkpoints `from_height` (inclusive) and above. Displaced transactions will be
+    /// repositioned to [`TxHeight::Unconfirmed`].
+    ///
+    /// This is equivalent to calling [`Self::invalidate_checkpoints_preview()`] and
+    /// [`Self::apply_changeset()`] in sequence.
+    pub fn invalidate_checkpoints(&mut self, from_height: u32) -> ChangeSet<P> {
+        let changeset = self.invalidate_checkpoints_preview(from_height);
+        self.apply_changeset(changeset.clone())
+            .expect("should apply generated changeset");
+        changeset
+    }
+
     /// Get a transaction that is currently in the underlying [`SparseChain`]. This doesn't
     /// necessarily mean that it is *confirmed* in the blockchain, it might just be in the
     /// unconfirmed transaction list within the [`SparseChain`].
