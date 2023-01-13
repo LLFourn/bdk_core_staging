@@ -414,3 +414,112 @@ fn test_iterate_transactions() {
         ]
     );
 }
+
+/// Start with: block1, block2a, tx1, tx2a
+///   Update 1: block2a -> block2b , tx2a -> tx2b
+///   Update 2: block2b -> block2c , tx2b -> tx2a
+#[test]
+fn test_apply_changes_reintroduce_tx() {
+    let block1 = BlockId {
+        height: 1,
+        hash: h!("block 1"),
+    };
+    let block2a = BlockId {
+        height: 2,
+        hash: h!("block 2a"),
+    };
+    let block2b = BlockId {
+        height: 2,
+        hash: h!("block 2b"),
+    };
+    let block2c = BlockId {
+        height: 2,
+        hash: h!("block 2c"),
+    };
+
+    let tx1 = Transaction {
+        version: 0,
+        lock_time: PackedLockTime(1),
+        input: Vec::new(),
+        output: [TxOut {
+            value: 1,
+            script_pubkey: Script::new(),
+        }]
+        .into(),
+    };
+
+    let tx2a = Transaction {
+        version: 0,
+        lock_time: PackedLockTime('a'.into()),
+        input: [TxIn {
+            previous_output: OutPoint::new(tx1.txid(), 0),
+            ..Default::default()
+        }]
+        .into(),
+        output: [TxOut {
+            value: 0,
+            ..Default::default()
+        }]
+        .into(),
+    };
+
+    let tx2b = Transaction {
+        lock_time: PackedLockTime('b'.into()),
+        ..tx2a.clone()
+    };
+
+    // block1, block2a, tx1, tx2a
+    let mut cg = {
+        let mut cg = ChainGraph::default();
+        let _ = cg.insert_checkpoint(block1).unwrap();
+        let _ = cg.insert_checkpoint(block2a).unwrap();
+        let _ = cg.insert_tx(tx1.clone(), TxHeight::Confirmed(1)).unwrap();
+        let _ = cg.insert_tx(tx2a.clone(), TxHeight::Confirmed(2)).unwrap();
+        cg
+    };
+
+    // block2a -> block2b , tx2a -> tx2b
+    let update = {
+        let mut update = ChainGraph::default();
+        let _ = update.insert_checkpoint(block1).unwrap();
+        let _ = update.insert_checkpoint(block2b).unwrap();
+        let _ = update
+            .insert_tx(tx2b.clone(), TxHeight::Confirmed(2))
+            .unwrap();
+        update
+    };
+    assert_eq!(
+        cg.apply_update(update).expect("should update"),
+        ChangeSet {
+            chain: changeset! {
+                checkpoints: [(2, Some(block2b.hash))],
+                txids: [(tx2a.txid(), None), (tx2b.txid(), Some(TxHeight::Confirmed(2)))]
+            },
+            graph: Additions {
+                tx: [tx2b.clone()].into(),
+                ..Default::default()
+            },
+        }
+    );
+
+    // block2b -> block2c , tx2b -> tx2a
+    let update = {
+        let mut update = ChainGraph::default();
+        let _ = update.insert_checkpoint(block1).unwrap();
+        let _ = update.insert_checkpoint(block2c).unwrap();
+        let _ = update
+            .insert_tx(tx2a.clone(), TxHeight::Confirmed(2))
+            .unwrap();
+        update
+    };
+    assert_eq!(
+        cg.apply_update(update).expect("should update"),
+        ChangeSet {
+            chain: changeset! {
+                checkpoints: [(2, Some(block2c.hash))],
+                txids: [(tx2b.txid(), None), (tx2a.txid(), Some(TxHeight::Confirmed(2)))]
+            },
+            ..Default::default()
+        }
+    );
+}
