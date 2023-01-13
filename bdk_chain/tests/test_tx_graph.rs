@@ -265,3 +265,94 @@ fn insert_txout_does_not_displace_tx() {
         None
     );
 }
+
+#[test]
+fn test_calculate_fee() {
+    let mut graph = TxGraph::default();
+    let intx1 = Transaction {
+        version: 0x01,
+        lock_time: PackedLockTime(0),
+        input: vec![],
+        output: vec![TxOut {
+            value: 100,
+            ..Default::default()
+        }],
+    };
+    let intx2 = Transaction {
+        version: 0x02,
+        lock_time: PackedLockTime(0),
+        input: vec![],
+        output: vec![TxOut {
+            value: 200,
+            ..Default::default()
+        }],
+    };
+
+    let intxout1 = (
+        OutPoint {
+            txid: h!("dangling output"),
+            vout: 0,
+        },
+        TxOut {
+            value: 300,
+            ..Default::default()
+        },
+    );
+
+    let _ = graph.insert_tx(intx1.clone());
+    let _ = graph.insert_tx(intx2.clone());
+    let _ = graph.insert_txout(intxout1.0, intxout1.1);
+
+    let mut tx = Transaction {
+        version: 0x01,
+        lock_time: PackedLockTime(0),
+        input: vec![
+            TxIn {
+                previous_output: OutPoint {
+                    txid: intx1.txid(),
+                    vout: 0,
+                },
+                ..Default::default()
+            },
+            TxIn {
+                previous_output: OutPoint {
+                    txid: intx2.txid(),
+                    vout: 0,
+                },
+                ..Default::default()
+            },
+            TxIn {
+                previous_output: intxout1.0,
+                ..Default::default()
+            },
+        ],
+        output: vec![TxOut {
+            value: 500,
+            ..Default::default()
+        }],
+    };
+
+    assert_eq!(graph.calculate_fee(&tx), Some(100));
+
+    tx.input.remove(2);
+
+    // fee would be negative
+    assert_eq!(graph.calculate_fee(&tx), Some(-200));
+}
+
+#[test]
+fn test_calculate_fee_on_coinbase() {
+    let tx = Transaction {
+        version: 0x01,
+        lock_time: PackedLockTime(0),
+        input: vec![TxIn {
+            previous_output: OutPoint::null(),
+            ..Default::default()
+        }],
+        output: vec![TxOut::default()],
+    };
+
+    let graph = TxGraph::default();
+
+    assert_eq!(graph.calculate_fee(&tx), Some(0));
+}

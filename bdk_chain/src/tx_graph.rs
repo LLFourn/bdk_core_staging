@@ -121,24 +121,34 @@ impl TxGraph {
         additions
     }
 
-    /// Calculates the fee of a given transaction (if we have all relevant data).
-    pub fn calculate_fee(&self, tx: &Transaction) -> Option<u64> {
+    /// Calculates the fee of a given transaction. Returns 0 if `tx` is a coinbase transaction.
+    /// Returns `Some(_)` if we have all the `TxOut`s being spent by `tx` in the graph (either as
+    /// the full transactions or individual txouts). If the returned value is negative then the
+    /// transaction is invalid according to the graph.
+    ///
+    /// Returns `None` if we're missing an input for the tx in the graph.
+    ///
+    /// Note `tx` does not have to be in the graph for this to work.
+    pub fn calculate_fee(&self, tx: &Transaction) -> Option<i64> {
+        if tx.is_coin_base() {
+            return Some(0);
+        }
         let inputs_sum = tx
             .input
             .iter()
             .map(|txin| {
                 self.get_txout(txin.previous_output)
-                    .map(|txout| txout.value)
+                    .map(|txout| txout.value as i64)
             })
-            .sum::<Option<u64>>()?;
+            .sum::<Option<i64>>()?;
 
-        let outputs_sum = tx.output.iter().map(|txout| txout.value).sum::<u64>();
+        let outputs_sum = tx
+            .output
+            .iter()
+            .map(|txout| txout.value as i64)
+            .sum::<i64>();
 
-        Some(
-            inputs_sum
-                .checked_sub(outputs_sum)
-                .expect("tx graph has invalid data"),
-        )
+        Some(inputs_sum - outputs_sum)
     }
 
     /// Iterate over all tx outputs known by [`TxGraph`].
