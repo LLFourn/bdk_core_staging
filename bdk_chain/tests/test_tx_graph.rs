@@ -338,6 +338,16 @@ fn test_calculate_fee() {
 
     // fee would be negative
     assert_eq!(graph.calculate_fee(&tx), Some(-200));
+
+    // If we have an unknown outpoint, fee should return None.
+    tx.input.push(TxIn {
+        previous_output: OutPoint {
+            txid: h!("unknown_txid"),
+            vout: 0,
+        },
+        ..Default::default()
+    });
+    assert_eq!(graph.calculate_fee(&tx), None);
 }
 
 #[test]
