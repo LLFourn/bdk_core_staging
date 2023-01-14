@@ -270,7 +270,7 @@ impl<'a> CoinSelector<'a> {
         self.selected = (0..self.candidates.len()).collect();
     }
 
-    pub fn select_until_finished(&mut self) -> Result<Selection, SelectionFailure> {
+    pub fn select_until_finished(&mut self) -> Result<Selection, SelectionError> {
         let mut selection = self.finish();
 
         if selection.is_ok() {
@@ -291,7 +291,7 @@ impl<'a> CoinSelector<'a> {
         selection
     }
 
-    pub fn finish(&self) -> Result<Selection, SelectionFailure> {
+    pub fn finish(&self) -> Result<Selection, SelectionError> {
         let weight_without_drain = self.current_weight();
         let weight_with_drain = weight_without_drain + self.opts.drain_weight;
 
@@ -334,7 +334,7 @@ impl<'a> CoinSelector<'a> {
             .filter(|&(_, v)| v > &0)
             .max_by_key(|&(_, v)| v)
             .map_or(Ok(()), |(constraint, missing)| {
-                Err(SelectionFailure {
+                Err(SelectionError {
                     selected,
                     missing: *missing,
                     constraint: *constraint,
@@ -419,16 +419,16 @@ impl<'a> CoinSelector<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct SelectionFailure {
+pub struct SelectionError {
     selected: u64,
     missing: u64,
     constraint: SelectionConstraint,
 }
 
-impl core::fmt::Display for SelectionFailure {
+impl core::fmt::Display for SelectionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            SelectionFailure {
+            SelectionError {
                 selected,
                 missing,
                 constraint,
@@ -442,7 +442,7 @@ impl core::fmt::Display for SelectionFailure {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for SelectionFailure {}
+impl std::error::Error for SelectionError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionConstraint {

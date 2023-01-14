@@ -2,7 +2,7 @@
 mod common;
 
 use bdk_chain::{
-    chain_graph::{ChainGraph, ChangeSet, InflateError, UnresolvableConflict, UpdateFailure},
+    chain_graph::{ChainGraph, ChangeSet, InflateError, UnresolvableConflict, UpdateError},
     collections::HashSet,
     sparse_chain,
     tx_graph::{self, Additions},
@@ -171,7 +171,7 @@ fn update_evicts_conflicting_tx() {
         };
         assert_eq!(
             cg1.determine_changeset(&cg2),
-            Err(UpdateFailure::UnresolvableConflict(UnresolvableConflict {
+            Err(UpdateError::UnresolvableConflict(UnresolvableConflict {
                 already_confirmed_tx: (TxHeight::Confirmed(1), tx_b.txid()),
                 update_tx: (TxHeight::Unconfirmed, tx_b2.txid()),
             })),

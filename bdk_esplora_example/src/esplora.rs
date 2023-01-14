@@ -97,7 +97,7 @@ impl Client {
         };
         if let Err(failure) = update.insert_checkpoint(tip_at_start) {
             match failure {
-                sparse_chain::InsertCheckpointFailure::HashNotMatching { .. } => {
+                sparse_chain::InsertCheckpointError::HashNotMatching { .. } => {
                     /* There has been a reorg since the line of code above, we will catch this later on */
                 }
             }
@@ -163,16 +163,16 @@ impl Client {
                         };
                         if let Err(failure) = update.insert_tx(tx.to_tx(), confirmation_time) {
                             use bdk_chain::{
-                                chain_graph::InsertTxFailure, sparse_chain::InsertTxFailure::*,
+                                chain_graph::InsertTxError, sparse_chain::InsertTxError::*,
                             };
                             match failure {
-                                InsertTxFailure::Chain(TxTooHigh { .. }) => {
+                                InsertTxError::Chain(TxTooHigh { .. }) => {
                                     /* Chain tip has increased, ignore tx for now */
                                 }
-                                InsertTxFailure::Chain(TxMovedUnexpectedly { .. }) => {
+                                InsertTxError::Chain(TxMovedUnexpectedly { .. }) => {
                                     /* Reorg occured (catch error below), ignore tx for now */
                                 }
-                                InsertTxFailure::UnresolvableConflict(_) => {
+                                InsertTxError::UnresolvableConflict(_) => {
                                     /* Reorg occured (catch error below), ignore tx for now */
                                 }
                             }

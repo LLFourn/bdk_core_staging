@@ -319,7 +319,7 @@ mod test {
 
     use super::{
         coin_select_bnb,
-        evaluate_cs::{Evaluation, EvaluationFailure},
+        evaluate_cs::{Evaluation, EvaluationError},
         tester::Tester,
         CoinSelector, CoinSelectorOpt, Vec, WeightedValue,
     };
@@ -332,7 +332,7 @@ mod test {
     fn evaluate_bnb(
         initial_selector: CoinSelector,
         max_tries: usize,
-    ) -> Result<Evaluation, EvaluationFailure> {
+    ) -> Result<Evaluation, EvaluationError> {
         evaluate(initial_selector, |cs| {
             coin_select_bnb(max_tries, cs.clone()).map_or(false, |new_cs| {
                 *cs = new_cs;
