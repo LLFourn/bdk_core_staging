@@ -69,8 +69,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     /// [`Self::apply_changeset()`] in sequence.
     pub fn invalidate_checkpoints(&mut self, from_height: u32) -> ChangeSet<P> {
         let changeset = self.invalidate_checkpoints_preview(from_height);
-        self.apply_changeset(changeset.clone())
-            .expect("should apply generated changeset");
+        self.apply_changeset(changeset.clone());
         changeset
     }
 
@@ -110,8 +109,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     /// [`Self::insert_tx_preview()`] and [`Self::apply_changeset()`] in sequence.
     pub fn insert_tx(&mut self, tx: Transaction, pos: P) -> Result<ChangeSet<P>, InsertTxError<P>> {
         let changeset = self.insert_tx_preview(tx, pos)?;
-        self.apply_changeset(changeset.clone())
-            .expect("changeset should not have missing transactions");
+        self.apply_changeset(changeset.clone());
         Ok(changeset)
     }
 
@@ -127,8 +125,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     /// [`Self::insert_txout_preview()`] and [`Self::apply_changeset`] in sequence.
     pub fn insert_txout(&mut self, outpoint: OutPoint, txout: TxOut) -> ChangeSet<P> {
         let changeset = self.insert_txout_preview(outpoint, txout);
-        self.apply_changeset(changeset.clone())
-            .expect("changeset should not have missing transactions");
+        self.apply_changeset(changeset.clone());
         changeset
     }
 
@@ -156,8 +153,7 @@ impl<P: ChainPosition> ChainGraph<P> {
         block_id: BlockId,
     ) -> Result<ChangeSet<P>, InsertCheckpointError> {
         let changeset = self.insert_checkpoint_preview(block_id)?;
-        self.apply_changeset(changeset.clone())
-            .expect("changeset should not have missing transactions");
+        self.apply_changeset(changeset.clone());
         Ok(changeset)
     }
 
@@ -265,23 +261,13 @@ impl<P: ChainPosition> ChainGraph<P> {
         Ok(())
     }
 
-    /// Applies [`ChangeSet`] to [`Self`]. This fails if there are missing full transactions.
-    pub fn apply_changeset(&mut self, changeset: ChangeSet<P>) -> Result<(), InflateError<P>> {
-        let mut missing: HashSet<Txid> = self.chain.changeset_additions(&changeset.chain).collect();
-
-        for tx in &changeset.graph.tx {
-            missing.remove(&tx.txid());
-        }
-
-        missing.retain(|txid| self.graph.get_tx(*txid).is_none());
-
-        if missing.is_empty() {
-            self.chain.apply_changeset(changeset.chain);
-            self.graph.apply_additions(changeset.graph);
-            Ok(())
-        } else {
-            Err(InflateError::Missing(missing))
-        }
+    /// Applies `changeset` to `self`.
+    ///
+    /// **Warning** this method assumes the changeset is assumed to be correctly formed. If it isn't
+    /// then the chain graph may not behave correctly in the future and may panic unexpectedly.
+    pub fn apply_changeset(&mut self, changeset: ChangeSet<P>) {
+        self.chain.apply_changeset(changeset.chain);
+        self.graph.apply_additions(changeset.graph);
     }
 
     /// Convets a [`sparse_chain::ChangeSet`] to a valid [`ChangeSet`] by providing
@@ -325,8 +311,7 @@ impl<P: ChainPosition> ChainGraph<P> {
     /// [`Self::determine_changeset()`] and [`Self::apply_changeset()`] in sequence.
     pub fn apply_update(&mut self, update: Self) -> Result<ChangeSet<P>, UpdateError<P>> {
         let changeset = self.determine_changeset(&update)?;
-        self.apply_changeset(changeset.clone())
-            .expect("we correctly constructed this");
+        self.apply_changeset(changeset.clone());
         Ok(changeset)
     }
 
@@ -348,6 +333,11 @@ impl<P: ChainPosition> ChainGraph<P> {
     /// in the `graph` or the `chain` for this to return `Some(_)`.
     pub fn spent_by(&self, outpoint: OutPoint) -> Option<(&P, Txid)> {
         self.chain.spent_by(&self.graph, outpoint)
+    }
+
+    /// Whether the chain graph contains any data whatsoever.
+    pub fn is_empty(&self) -> bool {
+        self.chain.is_empty() && self.graph.is_empty()
     }
 }
 
@@ -373,6 +363,16 @@ impl<P> ChangeSet<P> {
             .txids
             .iter()
             .any(|(_, new_pos)| new_pos.is_none())
+    }
+
+    /// Appends the changes in `other` into self such that applying `self` afterwards has the same
+    /// effect as sequentially applying the original `self` and `other`.
+    pub fn append(&mut self, other: ChangeSet<P>)
+    where
+        P: ChainPosition,
+    {
+        self.chain.append(other.chain);
+        self.graph.append(other.graph);
     }
 }
 
@@ -450,7 +450,7 @@ impl<P> From<sparse_chain::UpdateError<P>> for UpdateError<P> {
 #[cfg(feature = "std")]
 impl<P: core::fmt::Debug> std::error::Error for UpdateError<P> {}
 
-/// Represents a failure that occured when attempting to [apply] or [inflate] a [`ChangeSet`]
+/// Represents a failure that occured when attempting to [inflate] a [`ChangeSet`]
 ///
 /// [inflate]: ChainGraph::inflate_changeset
 /// [apply]: ChainGraph::apply_changeset

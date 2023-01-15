@@ -183,8 +183,6 @@ fn main() -> anyhow::Result<()> {
     keychain_changeset.chain_graph = chaingraph_changeset;
 
     db.append_changeset(&keychain_changeset)?;
-    tracker
-        .apply_changeset(keychain_changeset)
-        .expect("cannot happen as tracker produced this changeset");
+    tracker.apply_changeset(keychain_changeset);
     Ok(())
 }

@@ -33,8 +33,8 @@ pub struct Args<C: clap::Subcommand> {
     #[clap(env = "BITCOIN_NETWORK", long, default_value = "signet")]
     pub network: Network,
 
-    #[clap(env = "BDK_DB_DIR", long, default_value = ".bdk_example_db")]
-    pub db_dir: PathBuf,
+    #[clap(env = "BDK_DB_PATH", long, default_value = ".bdk_example_db")]
+    pub db_path: PathBuf,
 
     #[clap(env = "BDK_CP_LIMIT", long, default_value = "20")]
     pub cp_limit: usize,
@@ -493,7 +493,12 @@ where
             coin_select,
         } => {
             let transaction = create_tx(value, address, coin_select, tracker, &keymap)?;
+            let changeset = tracker.insert_tx(transaction.clone(), P::unconfirmed())?;
             client.broadcast(&transaction)?;
+            // We only want to store the changeset if we actually successfully broadcasted because
+            // it will increase the derivation index of the internal keychain.
+            store.set_derivation_indices(tracker.txout_index.derivation_indices())?;
+            store.append_changeset(&changeset)?;
             println!("Broadcasted Tx : {}", transaction.txid());
         }
         Commands::ChainSpecific(_) => {
@@ -519,27 +524,37 @@ where
     let (descriptor, mut keymap) =
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
 
-    let mut keychain_tracker = KeychainTracker::default();
-    keychain_tracker.set_checkpoint_limit(Some(args.cp_limit));
+    let mut tracker = KeychainTracker::default();
+    tracker.set_checkpoint_limit(Some(args.cp_limit));
 
-    keychain_tracker
+    tracker
         .txout_index
         .add_keychain(Keychain::External, descriptor);
 
     let internal = args
         .change_descriptor
+        .clone()
         .map(|descriptor| Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &descriptor))
         .transpose()?;
     if let Some((internal_descriptor, internal_keymap)) = internal {
         keymap.extend(internal_keymap);
-        keychain_tracker
+        tracker
             .txout_index
             .add_keychain(Keychain::Internal, internal_descriptor);
     };
 
-    let db = KeychainStore::<Keychain, P>::load(args.db_dir.as_path(), &mut keychain_tracker)?;
+    let mut db = KeychainStore::<Keychain, P>::new_from_path(args.db_path.as_path())?;
 
-    Ok((Args::parse(), keymap, keychain_tracker, db))
+    if let Err(e) = db.load_into_keychain_tracker(&mut tracker) {
+        match tracker.chain().latest_checkpoint()  {
+            Some(checkpoint) => eprintln!("Failed to load all changesets from {}. Last checkpoint was at height {}. Error: {}", args.db_path.display(), checkpoint.height, e),
+            None => eprintln!("Failed to load any checkpoints from {}: {}", args.db_path.display(), e),
+
+        }
+        eprintln!("⚠ Consider running a rescan of chain data.");
+    }
+
+    Ok((args, keymap, tracker, db))
 }
 
 pub fn planned_utxos<'a, AK: bdk_tmp_plan::CanDerive + Clone, P: ChainPosition>(

@@ -276,6 +276,11 @@ impl TxGraph {
             }
         }
     }
+
+    /// Whether the graph has any transactions or outputs in it.
+    pub fn is_empty(&self) -> bool {
+        self.txs.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -316,6 +321,13 @@ impl Additions {
                     .map(|(vout, txout)| (OutPoint::new(tx.txid(), vout as _), txout))
             })
             .chain(self.txout.iter().map(|(op, txout)| (*op, txout)))
+    }
+
+    /// Appends the changes in `other` into self such that applying `self` afterwards has the same
+    /// effect as sequentially applying the original `self` and `other`.
+    pub fn append(&mut self, mut other: Additions) {
+        self.tx.append(&mut other.tx);
+        self.txout.append(&mut other.txout);
     }
 }
 

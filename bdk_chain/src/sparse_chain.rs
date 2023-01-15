@@ -615,6 +615,11 @@ impl<P: ChainPosition> SparseChain<P> {
             .iter()
             .find_map(|&txid| Some((self.tx_position(txid)?, txid)))
     }
+
+    /// Whether the sparse chain contains any checkpoints or transactions
+    pub fn is_empty(&self) -> bool {
+        self.checkpoints.is_empty() && self.txid_to_pos.is_empty()
+    }
 }
 
 /// The return value of [`determine_changeset`].
@@ -641,27 +646,18 @@ impl<I> Default for ChangeSet<I> {
     }
 }
 
-impl<P: ChainPosition> ChangeSet<P> {
-    pub fn merge(mut self, new_set: Self) -> Self {
-        for (height, new_change) in new_set.checkpoints {
-            self.checkpoints
-                .entry(height)
-                .and_modify(|change| *change = new_change)
-                .or_insert_with(|| new_change.clone());
-        }
-
-        for (txid, new_change) in new_set.txids {
-            self.txids
-                .entry(txid)
-                .and_modify(|change| *change = new_change.clone())
-                .or_insert_with(|| new_change);
-        }
-
-        self
+impl<P> ChangeSet<P> {
+    /// Appends the changes in `other` into self such that applying `self` afterwards has the same
+    /// effect as sequentially applying the original `self` and `other`.
+    pub fn append(&mut self, mut other: Self)
+    where
+        P: ChainPosition,
+    {
+        self.checkpoints.append(&mut other.checkpoints);
+        self.txids.append(&mut other.txids);
     }
-}
 
-impl<I> ChangeSet<I> {
+    /// Whether this changeset contains no changes.
     pub fn is_empty(&self) -> bool {
         self.checkpoints.is_empty() && self.txids.is_empty()
     }
@@ -679,16 +675,21 @@ fn max_txid() -> Txid {
 ///
 /// [`ChainPosition`] implementations must be [`Ord`] by [`TxHeight`] first.
 pub trait ChainPosition:
-    core::fmt::Debug + Clone + Eq + PartialOrd + Ord + core::hash::Hash
+    core::fmt::Debug + Clone + Eq + PartialOrd + Ord + core::hash::Hash + Send + Sync + 'static
 {
-    /// Obtain the transaction height of the positon.
+    /// Get the transaction height of the positon.
     fn height(&self) -> TxHeight;
 
-    /// Obtain the positon's upper bound of a given height.
+    /// Get the positon's upper bound of a given height.
     fn max_ord_of_height(height: TxHeight) -> Self;
 
-    /// Obtain the position's lower bound of a given height.
+    /// Get the position's lower bound of a given height.
     fn min_ord_of_height(height: TxHeight) -> Self;
+
+    /// Get the unconfirmed position.
+    fn unconfirmed() -> Self {
+        Self::max_ord_of_height(TxHeight::Unconfirmed)
+    }
 }
 
 #[cfg(test)]

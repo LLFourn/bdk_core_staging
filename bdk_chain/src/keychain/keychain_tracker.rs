@@ -77,15 +77,11 @@ where
         scan: KeychainScan<K, P>,
     ) -> Result<KeychainChangeSet<K, P>, chain_graph::UpdateError<P>> {
         let changeset = self.determine_changeset(&scan)?;
-        self.apply_changeset(changeset.clone())
-            .expect("generated changeset should apply");
+        self.apply_changeset(changeset.clone());
         Ok(changeset)
     }
 
-    pub fn apply_changeset(
-        &mut self,
-        changeset: KeychainChangeSet<K, P>,
-    ) -> Result<(), chain_graph::InflateError<P>> {
+    pub fn apply_changeset(&mut self, changeset: KeychainChangeSet<K, P>) {
         self.txout_index
             .store_all_up_to(&changeset.derivation_indices);
         self.txout_index.scan(&changeset);
@@ -137,8 +133,7 @@ where
         block_id: BlockId,
     ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertCheckpointError> {
         let changeset = self.insert_checkpoint_preview(block_id)?;
-        self.apply_changeset(changeset.clone())
-            .expect("changeset should apply");
+        self.apply_changeset(changeset.clone());
         Ok(changeset)
     }
 
@@ -164,8 +159,7 @@ where
         pos: P,
     ) -> Result<KeychainChangeSet<K, P>, chain_graph::InsertTxError<P>> {
         let changeset = self.insert_tx_preview(tx, pos)?;
-        self.apply_changeset(changeset.clone())
-            .expect("changeset should apply");
+        self.apply_changeset(changeset.clone());
         Ok(changeset)
     }
 
