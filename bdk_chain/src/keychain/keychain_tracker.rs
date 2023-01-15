@@ -59,7 +59,7 @@ where
         scan: &KeychainScan<K, P>,
     ) -> Result<KeychainChangeSet<K, P>, chain_graph::UpdateError<P>> {
         let mut new_derivation_indices = scan.last_active_indexes.clone();
-        new_derivation_indices.retain(|keychain, index| {
+        new_derivation_indices.as_mut().retain(|keychain, index| {
             match self.txout_index.derivation_index(keychain) {
                 Some(existing) => *index > existing,
                 None => true,
@@ -83,7 +83,7 @@ where
 
     pub fn apply_changeset(&mut self, changeset: KeychainChangeSet<K, P>) {
         self.txout_index
-            .store_all_up_to(&changeset.derivation_indices);
+            .store_all_up_to(changeset.derivation_indices.as_ref());
         self.txout_index.scan(&changeset);
         self.chain_graph.apply_changeset(changeset.chain_graph)
     }

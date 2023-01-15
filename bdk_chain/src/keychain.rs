@@ -21,12 +21,68 @@ mod keychain_txout_index;
 pub use keychain_txout_index::*;
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(
+        crate = "serde_crate",
+        bound(
+            deserialize = "K: Ord + serde::Deserialize<'de>",
+            serialize = "K: Ord + serde::Serialize"
+        )
+    )
+)]
+pub struct DerivationIndices<K>(BTreeMap<K, u32>);
+
+impl<K> DerivationIndices<K> {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<K: Ord> DerivationIndices<K> {
+    pub fn append(&mut self, mut other: Self) {
+        self.0.iter_mut().for_each(|(key, index)| {
+            if let Some(other_index) = other.0.remove(key) {
+                *index = other_index.max(*index);
+            }
+        });
+
+        self.0.append(&mut other.0);
+    }
+}
+
+impl<K> Default for DerivationIndices<K> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<K> From<BTreeMap<K, u32>> for DerivationIndices<K> {
+    fn from(value: BTreeMap<K, u32>) -> Self {
+        Self(value)
+    }
+}
+
+impl<K> AsRef<BTreeMap<K, u32>> for DerivationIndices<K> {
+    fn as_ref(&self) -> &BTreeMap<K, u32> {
+        &self.0
+    }
+}
+
+impl<K> AsMut<BTreeMap<K, u32>> for DerivationIndices<K> {
+    fn as_mut(&mut self) -> &mut BTreeMap<K, u32> {
+        &mut self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 /// An update that includes the last active indexes of each keychain.
 pub struct KeychainScan<K, P> {
     /// The update data in the form of a chain that could be applied
     pub update: ChainGraph<P>,
     /// The last active indexes of each keychain
-    pub last_active_indexes: BTreeMap<K, u32>,
+    pub last_active_indexes: DerivationIndices<K>,
 }
 
 impl<K, I> Default for KeychainScan<K, I> {
@@ -53,7 +109,7 @@ impl<K, I> Default for KeychainScan<K, I> {
 #[must_use]
 pub struct KeychainChangeSet<K, P> {
     /// The changes in local keychain derivation indices
-    pub derivation_indices: BTreeMap<K, u32>,
+    pub derivation_indices: DerivationIndices<K>,
     /// The changes that have occurred in the blockchain
     pub chain_graph: chain_graph::ChangeSet<P>,
 }
@@ -77,19 +133,12 @@ impl<K, P> KeychainChangeSet<K, P> {
     ///
     /// Note the derivation indices cannot be decreased so `other` will only change the derivation
     /// index for a keychain if its entry is higher than the one in `self`.
-    pub fn append(&mut self, mut other: KeychainChangeSet<K, P>)
+    pub fn append(&mut self, other: KeychainChangeSet<K, P>)
     where
         K: Ord,
         P: ChainPosition,
     {
-        for (keychain, derivation_index) in &mut self.derivation_indices {
-            *derivation_index =
-                (*derivation_index).max(other.derivation_indices.remove(keychain).unwrap_or(0));
-        }
-
-        self.derivation_indices
-            .append(&mut other.derivation_indices);
-
+        self.derivation_indices.append(other.derivation_indices);
         self.chain_graph.append(other.chain_graph);
     }
 }
@@ -194,20 +243,32 @@ mod test {
         lhs_di.insert(Keychain::Three, 3);
         rhs_di.insert(Keychain::Four, 4);
         let mut lhs = KeychainChangeSet {
-            derivation_indices: lhs_di,
+            derivation_indices: lhs_di.into(),
             chain_graph: chain_graph::ChangeSet::<TxHeight>::default(),
         };
 
         let rhs = KeychainChangeSet {
-            derivation_indices: rhs_di,
+            derivation_indices: rhs_di.into(),
             chain_graph: chain_graph::ChangeSet::<TxHeight>::default(),
         };
 
         lhs.append(rhs);
 
-        assert_eq!(lhs.derivation_indices.get(&Keychain::One), Some(&7));
-        assert_eq!(lhs.derivation_indices.get(&Keychain::Two), Some(&5));
-        assert_eq!(lhs.derivation_indices.get(&Keychain::Three), Some(&3));
-        assert_eq!(lhs.derivation_indices.get(&Keychain::Four), Some(&4));
+        assert_eq!(
+            lhs.derivation_indices.as_ref().get(&Keychain::One),
+            Some(&7)
+        );
+        assert_eq!(
+            lhs.derivation_indices.as_ref().get(&Keychain::Two),
+            Some(&5)
+        );
+        assert_eq!(
+            lhs.derivation_indices.as_ref().get(&Keychain::Three),
+            Some(&3)
+        );
+        assert_eq!(
+            lhs.derivation_indices.as_ref().get(&Keychain::Four),
+            Some(&4)
+        );
     }
 }

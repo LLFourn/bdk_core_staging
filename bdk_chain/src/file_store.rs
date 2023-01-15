@@ -132,7 +132,7 @@ where
     pub fn set_derivation_indices(&mut self, indices: BTreeMap<K, u32>) -> Result<(), io::Error> {
         let keychain_changeset = KeychainChangeSet {
             chain_graph: Default::default(),
-            derivation_indices: indices,
+            derivation_indices: indices.into(),
         };
         self.append_changeset(&keychain_changeset)?;
 

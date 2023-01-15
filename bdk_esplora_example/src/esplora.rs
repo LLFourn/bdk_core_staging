@@ -188,6 +188,7 @@ impl Client {
             if let Some(last_active_index) = last_active_index {
                 wallet_scan
                     .last_active_indexes
+                    .as_mut()
                     .insert(keychain, last_active_index);
             }
         }
