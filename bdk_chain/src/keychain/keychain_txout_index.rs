@@ -6,6 +6,8 @@ use crate::{
 use bitcoin::{secp256k1::Secp256k1, OutPoint, Script, TxOut};
 use core::{fmt::Debug, ops::Deref};
 
+use super::DerivationAdditions;
+
 /// A convenient wrapper around [`SpkTxOutIndex`] that sets the script pubkeys basaed on a miniscript
 /// [`Descriptor<DescriptorPublicKey>`][`Descriptor`]s.
 ///
@@ -156,11 +158,19 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .map(|((_, derivation_index), spk)| (*derivation_index, spk))
     }
 
-    /// Get the derivation index after the current one
-    pub fn next_derivation_index(&self, keychain: &K) -> u32 {
-        self.derivation_index(keychain)
-            .map(|index| index + 1)
-            .unwrap_or(0)
+    /// Get the derivation index after the current one, unless the descriptor has no wildcards.
+    pub fn next_derivation_index(&self, keychain: &K) -> Option<u32> {
+        // we can only get the next index if descriptor exists
+        let has_wildcard = self.keychains.get(keychain)?.has_wildcard();
+
+        match self.derivation_index(keychain) {
+            // for all descriptors, if there is no index, next index is always 0
+            None => Some(0),
+            // if index already exists, and descriptor is not derivable, we cannot get next index
+            Some(_) if !has_wildcard => None,
+            // for derivable descriptors, we get the next index (without overflow)
+            Some(index) => index.checked_add(1),
+        }
     }
 
     /// Get the current derivation index. This is the highest index in the keychain we have stored.
@@ -186,12 +196,12 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// stored).
     ///
     /// [`derive_spks_up_to`]: Self::store_up_to
-    pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> bool {
-        let mut changed = false;
+    pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> DerivationAdditions<K> {
+        let mut additions = DerivationAdditions::default();
         for (keychain, &index) in keychains {
-            changed |= self.store_up_to(keychain, index);
+            additions.append(self.store_up_to(keychain, index));
         }
-        changed
+        additions
     }
 
     /// Derives script pubkeys from the descriptor **up to and including** `up_to` and stores them
@@ -199,10 +209,12 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// Returns whether any new script pubkeys were derived. This will be false when they had already all been
     /// stored or wheen the `keychain` itself was never added to the index.
-    pub fn store_up_to(&mut self, keychain: &K, up_to: u32) -> bool {
+    pub fn store_up_to(&mut self, keychain: &K, up_to: u32) -> DerivationAdditions<K> {
+        let mut additions = DerivationAdditions::default();
+
         let descriptor = match self.keychains.get(&keychain) {
             Some(descriptor) => descriptor,
-            None => return false,
+            None => return additions,
         };
 
         let secp = Secp256k1::verification_only();
@@ -210,9 +222,12 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             false => 0,
             true => up_to,
         };
-        let next_to_derive = self.next_derivation_index(keychain);
+        let next_to_derive = match self.next_derivation_index(keychain) {
+            Some(index) => index,
+            None => return additions,
+        };
         if next_to_derive > end {
-            return false;
+            return additions;
         }
 
         for index in next_to_derive..=end {
@@ -225,7 +240,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 .insert_script_pubkey((keychain.clone(), index), spk);
         }
 
-        true
+        additions.as_mut().insert(keychain.clone(), end);
+        additions
     }
 
     /// Derives a new script pubkey for a keychain.
@@ -236,28 +252,16 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// ## Panics
     ///
     /// Panics if the `keychain` has not been added to the index.
-    pub fn derive_new(&mut self, keychain: &K) -> (u32, &Script) {
-        let secp = Secp256k1::verification_only();
-        let next_derivation_index = self.next_derivation_index(keychain);
-        let descriptor = self
-            .keychains
-            .get(&keychain)
-            .expect(&format!("no descriptor for keychain {:?}", keychain));
-
-        let new_spk = descriptor
-            .at_derivation_index(next_derivation_index as u32)
-            .derived_descriptor(&secp)
-            .expect("the descriptor cannot need hardened derivation")
-            .script_pubkey();
+    pub fn derive_new(&mut self, keychain: &K) -> (Option<(u32, &Script)>, DerivationAdditions<K>) {
+        let next_derivation_index = match self.next_derivation_index(keychain) {
+            Some(index) => index,
+            None => return (None, DerivationAdditions::default()),
+        };
+        let additions = self.store_up_to(keychain, next_derivation_index);
 
         let index = (keychain.clone(), next_derivation_index);
-        self.inner.insert_script_pubkey(index.clone(), new_spk);
-        let new_spk = self
-            .inner
-            .script_pubkeys()
-            .get(&index)
-            .expect("we just added it");
-        (next_derivation_index, new_spk)
+        let script = self.inner.spk_at_index(&index).expect("we just stored it");
+        (Some((next_derivation_index, script)), additions)
     }
 
     /// Gets the next usued script pubkey in the keychain i.e. the script pubkey with the lowest index that has not been used yet.
@@ -265,13 +269,20 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// ## Panics
     ///
     /// Panics if `keychain` has never been added to the index
-    pub fn next_unused(&mut self, keychain: &K) -> (u32, &Script) {
+    pub fn next_unused(
+        &mut self,
+        keychain: &K,
+    ) -> (Option<(u32, &Script)>, DerivationAdditions<K>) {
         let need_new = self.keychain_unused(keychain).next().is_none();
+
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
             self.derive_new(keychain)
         } else {
-            self.keychain_unused(keychain).next().unwrap()
+            (
+                self.keychain_unused(keychain).next(),
+                DerivationAdditions::default(),
+            )
         }
     }
 
@@ -280,17 +291,17 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Returns whether any new scripts were derived.
     ///
     /// [`pad_with_unused`]: Self::pad_with_unused
-    pub fn pad_all_with_unused(&mut self, pad_len: u32) -> bool {
-        let mut changed = false;
+    pub fn pad_all_with_unused(&mut self, pad_len: u32) -> DerivationAdditions<K> {
+        let mut additions = DerivationAdditions::default();
         let keychains = self
             .keychains
             .keys()
             .cloned()
             .collect::<alloc::vec::Vec<_>>();
         for keychain in keychains {
-            changed |= self.pad_with_unused(&keychain, pad_len);
+            additions.append(self.pad_with_unused(&keychain, pad_len));
         }
-        changed
+        additions
     }
 
     /// Derives and stores `pad_len` new script pubkeys after the last active index of `keychain`.
@@ -298,14 +309,14 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// This is useful when scanning blockchain data for transaction outputs belonging to the
     /// keychain since the derivation index of new transactions is likely to be higher than the
     /// current last active index.
-    pub fn pad_with_unused(&mut self, keychain: &K, pad_len: u32) -> bool {
+    pub fn pad_with_unused(&mut self, keychain: &K, pad_len: u32) -> DerivationAdditions<K> {
         let up_to = self
             .last_active_index(keychain)
             .map(|i| i.saturating_add(pad_len))
             .or(pad_len.checked_sub(1));
         match up_to {
             Some(up_to) => self.store_up_to(keychain, up_to),
-            None => false,
+            None => Default::default(),
         }
     }
 

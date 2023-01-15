@@ -82,7 +82,8 @@ where
     }
 
     pub fn apply_changeset(&mut self, changeset: KeychainChangeSet<K, P>) {
-        self.txout_index
+        let _ = self
+            .txout_index
             .store_all_up_to(changeset.derivation_indices.as_ref());
         self.txout_index.scan(&changeset);
         self.chain_graph.apply_changeset(changeset.chain_graph)

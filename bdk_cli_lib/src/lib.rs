@@ -8,7 +8,7 @@ use bdk_chain::{
     },
     descriptor_ext::DescriptorExt,
     file_store::KeychainStore,
-    keychain::{KeychainChangeSet, KeychainTracker},
+    keychain::{DerivationAdditions, KeychainChangeSet, KeychainTracker},
     miniscript::{
         descriptor::{DescriptorSecretKey, KeyMap},
         Descriptor, DescriptorPublicKey,
@@ -174,16 +174,16 @@ where
 {
     let txout_index = &mut keychain_tracker.txout_index;
 
-    let new_address = match addr_cmd {
-        AddressCmd::Next => Some(txout_index.next_unused(&Keychain::External)),
-        AddressCmd::New => Some(txout_index.derive_new(&Keychain::External)),
-        _ => None,
+    let (new_address, additions) = match addr_cmd {
+        AddressCmd::Next => txout_index.next_unused(&Keychain::External),
+        AddressCmd::New => txout_index.derive_new(&Keychain::External),
+        _ => (None, Default::default()),
     };
+    // update database since we're about to give out a new address
+    db.append_changeset(&additions.into())?;
 
     if let Some((index, spk)) = new_address {
         let spk = spk.clone();
-        // update database since we're about to give out a new address
-        db.set_derivation_indices(txout_index.derivation_indices())?;
         let address =
             Address::from_script(&spk, network).expect("should always be able to derive address");
         eprintln!("This is the address at index {}", index);
@@ -267,7 +267,9 @@ pub fn create_tx<P: ChainPosition>(
     coin_select: CoinSelectionAlgo,
     keychain_tracker: &mut KeychainTracker<Keychain, P>,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
-) -> Result<Transaction> {
+) -> Result<(Transaction, DerivationAdditions<Keychain>)> {
+    let mut additions = DerivationAdditions::default();
+
     let assets = bdk_tmp_plan::Assets {
         keys: keymap.iter().map(|(pk, _)| pk.clone()).collect(),
         ..Default::default()
@@ -319,10 +321,25 @@ pub fn create_tx<P: ChainPosition>(
         Keychain::External
     };
 
-    let (change_index, change_script) = {
-        let (index, script) = keychain_tracker.txout_index.next_unused(&internal_keychain);
-        (index, script.clone())
-    };
+    let (change_derivation, change_additions) =
+        keychain_tracker.txout_index.next_unused(&internal_keychain);
+    additions.append(change_additions);
+
+    let (change_index, change_script) = change_derivation
+        .map(|(index, script)| (index, script.clone()))
+        // assume the descriptor has no wildcard
+        .unwrap_or_else(|| {
+            (
+                0,
+                keychain_tracker
+                    .keychains()
+                    .get(&internal_keychain)
+                    .expect("keychain should exist")
+                    .at_derivation_index(0)
+                    .script_pubkey(),
+            )
+        });
+
     let change_plan = bdk_tmp_plan::plan_satisfaction(
         &keychain_tracker
             .txout_index
@@ -456,7 +473,7 @@ pub fn create_tx<P: ChainPosition>(
         }
     }
 
-    Ok(transaction)
+    Ok((transaction, additions))
 }
 
 pub trait Broadcast {
@@ -492,12 +509,15 @@ where
             address,
             coin_select,
         } => {
-            let transaction = create_tx(value, address, coin_select, tracker, &keymap)?;
-            let changeset = tracker.insert_tx(transaction.clone(), P::unconfirmed())?;
+            let (transaction, additions) =
+                create_tx(value, address, coin_select, tracker, &keymap)?;
+            let mut changeset = tracker.insert_tx(transaction.clone(), P::unconfirmed())?;
+            changeset.derivation_indices.append(additions);
+
             client.broadcast(&transaction)?;
+
             // We only want to store the changeset if we actually successfully broadcasted because
             // it will increase the derivation index of the internal keychain.
-            store.set_derivation_indices(tracker.txout_index.derivation_indices())?;
             store.append_changeset(&changeset)?;
             println!("Broadcasted Tx : {}", transaction.txid());
         }

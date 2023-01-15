@@ -29,7 +29,7 @@ fn test_insert_tx() {
         output: vec![txout],
     };
 
-    assert!(tracker.txout_index.store_up_to(&(), 5));
+    assert_eq!(tracker.txout_index.store_up_to(&(), 5), [((), 5)].into(),);
     let changeset = tracker
         .insert_tx_preview(tx.clone(), ConfirmationTime::Unconfirmed)
         .unwrap();
@@ -74,7 +74,13 @@ fn test_balance() {
         input: vec![],
         output: vec![TxOut {
             value: 13_000,
-            script_pubkey: tracker.txout_index.derive_new(&Keychain::One).1.clone(),
+            script_pubkey: tracker
+                .txout_index
+                .derive_new(&Keychain::One)
+                .0
+                .unwrap()
+                .1
+                .clone(),
         }],
     };
 
@@ -84,7 +90,13 @@ fn test_balance() {
         input: vec![],
         output: vec![TxOut {
             value: 7_000,
-            script_pubkey: tracker.txout_index.derive_new(&Keychain::Two).1.clone(),
+            script_pubkey: tracker
+                .txout_index
+                .derive_new(&Keychain::Two)
+                .0
+                .unwrap()
+                .1
+                .clone(),
         }],
     };
 
@@ -94,7 +106,13 @@ fn test_balance() {
         input: vec![TxIn::default()],
         output: vec![TxOut {
             value: 11_000,
-            script_pubkey: tracker.txout_index.derive_new(&Keychain::Two).1.clone(),
+            script_pubkey: tracker
+                .txout_index
+                .derive_new(&Keychain::Two)
+                .0
+                .unwrap()
+                .1
+                .clone(),
         }],
     };
 

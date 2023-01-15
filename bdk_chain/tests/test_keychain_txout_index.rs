@@ -29,7 +29,10 @@ fn test_store_all_up_to() {
     let mut txout_index = init_txout_index();
     let derive_to: BTreeMap<_, _> =
         [(TestKeychain::External, 12), (TestKeychain::Internal, 24)].into();
-    assert!(txout_index.store_all_up_to(&derive_to));
+    assert_eq!(
+        txout_index.store_all_up_to(&derive_to),
+        [(TestKeychain::External, 12), (TestKeychain::Internal, 24)].into()
+    );
     assert_eq!(txout_index.derivation_indices(), derive_to);
 }
 
@@ -44,7 +47,10 @@ fn test_pad_all_with_unused() {
         .at_derivation_index(3)
         .script_pubkey();
 
-    assert!(txout_index.store_up_to(&TestKeychain::External, 3));
+    assert_eq!(
+        txout_index.store_up_to(&TestKeychain::External, 3),
+        [(TestKeychain::External, 3)].into(),
+    );
     txout_index.scan_txout(
         OutPoint::default(),
         &TxOut {
@@ -53,7 +59,10 @@ fn test_pad_all_with_unused() {
         },
     );
 
-    assert!(txout_index.pad_all_with_unused(5));
+    assert_eq!(
+        txout_index.pad_all_with_unused(5),
+        [(TestKeychain::External, 8), (TestKeychain::Internal, 4)].into(),
+    );
     assert_eq!(
         txout_index.derivation_indices(),
         [(TestKeychain::External, 8), (TestKeychain::Internal, 4)].into()

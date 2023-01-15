@@ -32,15 +32,16 @@ pub use keychain_txout_index::*;
         )
     )
 )]
-pub struct DerivationIndices<K>(BTreeMap<K, u32>);
+#[must_use]
+pub struct DerivationAdditions<K>(BTreeMap<K, u32>);
 
-impl<K> DerivationIndices<K> {
+impl<K> DerivationAdditions<K> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }
 
-impl<K: Ord> DerivationIndices<K> {
+impl<K: Ord> DerivationAdditions<K> {
     pub fn append(&mut self, mut other: Self) {
         self.0.iter_mut().for_each(|(key, index)| {
             if let Some(other_index) = other.0.remove(key) {
@@ -52,25 +53,34 @@ impl<K: Ord> DerivationIndices<K> {
     }
 }
 
-impl<K> Default for DerivationIndices<K> {
+impl<K> Default for DerivationAdditions<K> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
 
-impl<K> From<BTreeMap<K, u32>> for DerivationIndices<K> {
-    fn from(value: BTreeMap<K, u32>) -> Self {
-        Self(value)
+// impl<K> From<BTreeMap<K, u32>> for DerivationAdditions<K> {
+//     fn from(value: BTreeMap<K, u32>) -> Self {
+//         Self(value)
+//     }
+// }
+
+impl<K: Ord, I> From<I> for DerivationAdditions<K>
+where
+    I: IntoIterator<Item = (K, u32)>,
+{
+    fn from(value: I) -> Self {
+        Self(value.into_iter().collect())
     }
 }
 
-impl<K> AsRef<BTreeMap<K, u32>> for DerivationIndices<K> {
+impl<K> AsRef<BTreeMap<K, u32>> for DerivationAdditions<K> {
     fn as_ref(&self) -> &BTreeMap<K, u32> {
         &self.0
     }
 }
 
-impl<K> AsMut<BTreeMap<K, u32>> for DerivationIndices<K> {
+impl<K> AsMut<BTreeMap<K, u32>> for DerivationAdditions<K> {
     fn as_mut(&mut self) -> &mut BTreeMap<K, u32> {
         &mut self.0
     }
@@ -82,7 +92,7 @@ pub struct KeychainScan<K, P> {
     /// The update data in the form of a chain that could be applied
     pub update: ChainGraph<P>,
     /// The last active indexes of each keychain
-    pub last_active_indexes: DerivationIndices<K>,
+    pub last_active_indexes: DerivationAdditions<K>,
 }
 
 impl<K, I> Default for KeychainScan<K, I> {
@@ -109,7 +119,7 @@ impl<K, I> Default for KeychainScan<K, I> {
 #[must_use]
 pub struct KeychainChangeSet<K, P> {
     /// The changes in local keychain derivation indices
-    pub derivation_indices: DerivationIndices<K>,
+    pub derivation_indices: DerivationAdditions<K>,
     /// The changes that have occurred in the blockchain
     pub chain_graph: chain_graph::ChangeSet<P>,
 }
@@ -147,6 +157,15 @@ impl<K, P> From<chain_graph::ChangeSet<P>> for KeychainChangeSet<K, P> {
     fn from(changeset: chain_graph::ChangeSet<P>) -> Self {
         Self {
             chain_graph: changeset,
+            ..Default::default()
+        }
+    }
+}
+
+impl<K, P> From<DerivationAdditions<K>> for KeychainChangeSet<K, P> {
+    fn from(additions: DerivationAdditions<K>) -> Self {
+        Self {
+            derivation_indices: additions,
             ..Default::default()
         }
     }
