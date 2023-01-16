@@ -160,7 +160,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 
     /// Get the derivation index after the current one, unless the descriptor has no wildcards.
     pub fn next_derivation_index(&self, keychain: &K) -> Option<u32> {
-        // we can only get the next index if descriptor exists
+        // we can only get the next index if wildcard exists
         let has_wildcard = self.keychains.get(keychain)?.has_wildcard();
 
         match self.derivation_index(keychain) {
@@ -264,7 +264,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         (Some((next_derivation_index, script)), additions)
     }
 
-    /// Gets the next usued script pubkey in the keychain i.e. the script pubkey with the lowest index that has not been used yet.
+    /// Gets the next unused script pubkey in the keychain i.e. the script pubkey with the lowest index that has not been used yet.
     ///
     /// ## Panics
     ///
@@ -376,4 +376,91 @@ fn descriptor_into_script_iter(
                 .script_pubkey(),
         )
     })
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use bitcoin::{hashes::Hash, Txid};
+
+    /// Tests for KeychainTxOutIndex
+
+    /// For a no-wildcard descriptor with no stored scripts:
+    /// - next_derivation_index should return Some(0).
+    /// - derive_new should return (Some(_), _).
+    /// - next_unused should return (Some(_), _).
+    #[test]
+    fn no_wildcard_descriptor_no_stored_scripts() {
+        let mut txout_index = KeychainTxOutIndex::<u32>::default();
+
+        let secp = bitcoin::secp256k1::Secp256k1::signing_only();
+        let (no_wildcard_descriptor, _) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "wpkh([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/0)").unwrap();
+
+        txout_index.add_keychain(0, no_wildcard_descriptor);
+
+        let next_derivation_index = txout_index.next_derivation_index(&0);
+        assert!(matches!(next_derivation_index, Some(0)));
+
+        let derive_new = txout_index.derive_new(&0);
+        assert!(matches!(derive_new, (Some(_), _)));
+
+        let next_unused = txout_index.next_unused(&0);
+        assert!(matches!(next_unused, (Some(_), _)));
+    }
+
+    /// For a no-wildcard descriptor with a stored unused script:
+    /// - next_derivation_index should return None.
+    /// - derive_new should return (None, _).
+    /// - next_unused should return (Some(_), _).
+    #[test]
+    fn no_wildcard_descriptor_with_stored_script() {
+        let mut txout_index = KeychainTxOutIndex::<u32>::default();
+
+        let secp = bitcoin::secp256k1::Secp256k1::signing_only();
+        let (no_wildcard_descriptor, _) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "wpkh([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/0)").unwrap();
+
+        txout_index.add_keychain(0, no_wildcard_descriptor);
+        let (_script, _derivation_addition) = txout_index.derive_new(&0);
+
+        let next_derivation_index = txout_index.next_derivation_index(&0);
+        assert!(matches!(next_derivation_index, None));
+
+        let derive_new = txout_index.derive_new(&0);
+        assert!(matches!(derive_new, (None, _)));
+
+        let next_unused = txout_index.next_unused(&0);
+        assert!(matches!(next_unused, (Some(_), _)));
+    }
+
+    /// For a no-wildcard descriptor with a stored USED script:
+    /// - next_unused should return (None, _).
+    #[test]
+    fn no_wildcard_descriptor_with_stored_used_script() {
+        let mut txout_index = KeychainTxOutIndex::<u32>::default();
+
+        let secp = bitcoin::secp256k1::Secp256k1::signing_only();
+        let (no_wildcard_descriptor, _) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "wpkh([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/0)").unwrap();
+
+        txout_index.add_keychain(0, no_wildcard_descriptor);
+        let (some_script, _derivation_addition) = txout_index.derive_new(&0);
+        let (_index, script) = some_script.unwrap();
+        let op = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+        let txout = TxOut {
+            value: 21000000,
+            script_pubkey: script.clone(),
+        };
+        txout_index.scan_txout(op, &txout);
+
+        let next_derivation_index = txout_index.next_derivation_index(&0);
+        assert!(matches!(next_derivation_index, None));
+
+        let derive_new = txout_index.derive_new(&0);
+        assert!(matches!(derive_new, (None, _)));
+
+        let next_unused = txout_index.next_unused(&0);
+        assert!(matches!(next_unused, (None, _)));
+    }
 }
