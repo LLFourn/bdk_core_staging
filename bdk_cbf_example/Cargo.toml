@@ -1,0 +1,16 @@
+[package]
+name = "bdk_cbf_example"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# BDK Core
+bdk_chain = { path = "../bdk_chain", features = ["serde", "miniscript"] }
+bdk_cli = { path = "../bdk_cli_lib"}
+log = "^0.4"
+env_logger = "0.7"
+
+# CBF
+nakamoto = { git = "https://github.com/cloudhead/nakamoto"  }

@@ -7,5 +7,6 @@ members = [
     "bdk_electrum_example",
     "bdk_rpc_example",
     "bdk_tmp_plan",
-    "bdk_coin_select"
+    "bdk_coin_select",
+    "bdk_cbf_example"
 ]
