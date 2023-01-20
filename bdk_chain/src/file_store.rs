@@ -6,9 +6,15 @@ use crate::{
 use core::marker::PhantomData;
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Seek},
+    io::{self, Read, Seek, Write},
     path::Path,
 };
+
+/// BDK File Store magic bytes length.
+pub const MAGIC_BYTES_LEN: usize = 12;
+
+/// BDK File Store magic bytes.
+pub const MAGIC_BYTES: [u8; MAGIC_BYTES_LEN] = [98, 100, 107, 102, 115, 48, 48, 48, 48, 48, 48, 48];
 
 /// Persists an append only list of `KeychainChangeSet<K,P>` to a single file.
 /// [`KeychainChangeSet<K,P>`] record the changes made to a [`KeychainTracker<K,P>`].
@@ -29,22 +35,37 @@ where
     /// The file must have been opened with read, write permissions.
     ///
     /// [`File`]: std::fs::File
-    pub fn new(file: File) -> Self {
-        Self {
+    pub fn new(mut file: File) -> Result<Self, FileError> {
+        file.rewind()?;
+
+        let mut magic_bytes = [0_u8; MAGIC_BYTES_LEN];
+        file.read_exact(&mut magic_bytes)?;
+
+        if magic_bytes != MAGIC_BYTES {
+            return Err(FileError::InvalidMagicBytes(magic_bytes));
+        }
+
+        Ok(Self {
             db_file: file,
             chain_index: Default::default(),
-        }
+        })
     }
 
     /// Creates or loads a a store from `db_path`. If no file exists there it will be created.
-    pub fn new_from_path(db_path: &Path) -> Result<Self, io::Error> {
-        let db_file = OpenOptions::new()
+    pub fn new_from_path<D: AsRef<Path>>(db_path: D) -> Result<Self, FileError> {
+        let already_exists = db_path.as_ref().try_exists()?;
+
+        let mut db_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(db_path.clone())?;
+            .open(db_path)?;
 
-        Ok(Self::new(db_file))
+        if !already_exists {
+            db_file.write_all(&MAGIC_BYTES)?;
+        }
+
+        Self::new(db_file)
     }
 
     /// Iterates over the stored changeset from first to last changing the seek position at each
@@ -57,7 +78,8 @@ where
     /// always iterate over all entries until `None` is returned if you want your next write to go
     /// at the end, otherwise you writing over existing enties.
     pub fn iter_changesets(&mut self) -> Result<EntryIter<'_, KeychainChangeSet<K, P>>, io::Error> {
-        self.db_file.rewind()?;
+        self.db_file
+            .seek(io::SeekFrom::Start(MAGIC_BYTES_LEN as _))?;
 
         Ok(EntryIter::new(&mut self.db_file))
     }
@@ -102,27 +124,38 @@ where
         Ok(())
     }
 
-    /// Append a new changeset to the file.
+    /// Append a new changeset to the file and truncate file to the end of the appended changeset.
+    ///
+    /// The truncation is to avoid the possibility of having a valid, but inconsistent changeset
+    /// directly after the appended changeset.
     pub fn append_changeset(
         &mut self,
         changeset: &KeychainChangeSet<K, P>,
     ) -> Result<(), io::Error> {
-        if !changeset.is_empty() {
-            bincode::encode_into_std_write(
-                bincode::serde::Compat(changeset),
-                &mut self.db_file,
-                bincode::config::standard(),
-            )
-            .map_err(|e| match e {
-                bincode::error::EncodeError::Io { inner, .. } => inner,
-                unexpected_err => panic!("unexpected bincode error: {}", unexpected_err),
-            })?;
+        if changeset.is_empty() {
+            return Ok(());
+        }
 
-            // We want to make sure that derivation indexe changes are written to disk as soon as
-            // possible so you know about the write failure before you give ou the address in the application.
-            if !changeset.derivation_indices.is_empty() {
-                self.db_file.sync_data()?;
-            }
+        bincode::encode_into_std_write(
+            bincode::serde::Compat(changeset),
+            &mut self.db_file,
+            bincode::config::standard(),
+        )
+        .map_err(|e| match e {
+            bincode::error::EncodeError::Io { inner, .. } => inner,
+            unexpected_err => panic!("unexpected bincode error: {}", unexpected_err),
+        })?;
+
+        // truncate file after this changeset addition
+        // if this is not done, data after this changeset may represent valid changesets, however
+        // applying those changesets on top of this one may result in inconsistent state
+        let pos = self.db_file.stream_position()?;
+        self.db_file.set_len(pos)?;
+
+        // We want to make sure that derivation indexe changes are written to disk as soon as
+        // possible so you know about the write failure before you give ou the address in the application.
+        if !changeset.derivation_indices.is_empty() {
+            self.db_file.sync_data()?;
         }
 
         Ok(())
@@ -139,6 +172,35 @@ where
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub enum FileError {
+    /// IO error, this may mean that the file is too short.
+    Io(io::Error),
+    /// Magic bytes do not match expected.
+    InvalidMagicBytes([u8; MAGIC_BYTES_LEN]),
+}
+
+impl core::fmt::Display for FileError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "io error trying to read file: {}", e),
+            Self::InvalidMagicBytes(b) => write!(
+                f,
+                "file has invalid magic bytes: expected={:?} got={:?}",
+                MAGIC_BYTES, b
+            ),
+        }
+    }
+}
+
+impl From<io::Error> for FileError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl std::error::Error for FileError {}
 
 #[derive(Debug)]
 pub enum IterError {

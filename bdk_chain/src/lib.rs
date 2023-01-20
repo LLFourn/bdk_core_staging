@@ -23,7 +23,7 @@ pub mod file_store;
 extern crate alloc;
 
 #[cfg(feature = "serde")]
-extern crate serde_crate as serde;
+pub extern crate serde_crate as serde;
 
 #[cfg(feature = "bincode")]
 extern crate bincode;
