@@ -124,7 +124,10 @@ where
         Ok(())
     }
 
-    /// Append a new changeset to the file.
+    /// Append a new changeset to the file and truncate file to the end of the appended changeset.
+    ///
+    /// The truncation is to avoid the possibility of having a valid, but inconsistent changeset
+    /// directly after the appended changeset.
     pub fn append_changeset(
         &mut self,
         changeset: &KeychainChangeSet<K, P>,
