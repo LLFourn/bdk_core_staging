@@ -6,6 +6,8 @@ use crate::{
 use bitcoin::{secp256k1::Secp256k1, OutPoint, Script, TxOut};
 use core::{fmt::Debug, ops::Deref};
 
+use super::DerivationAdditions;
+
 /// A convenient wrapper around [`SpkTxOutIndex`] that sets the script pubkeys basaed on a miniscript
 /// [`Descriptor<DescriptorPublicKey>`][`Descriptor`]s.
 ///
@@ -156,11 +158,40 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .map(|((_, derivation_index), spk)| (*derivation_index, spk))
     }
 
-    /// Get the derivation index after the current one
-    pub fn next_derivation_index(&self, keychain: &K) -> u32 {
-        self.derivation_index(keychain)
-            .map(|index| index + 1)
-            .unwrap_or(0)
+    /// Get the derivation index after the current one, unless the descriptor has no wildcards.
+    ///
+    /// Return `true` if the `next_index` needs to be derived.
+    /// Return `false` if the `next_index` is already derived and cannot be increased further.
+    /// for example, in cases of:
+    ///  - non derivable descriptor that already has one `script_pubkey` stored in the tracker.
+    ///  - derivable descriptor when `script_pubkey` index hits numeric limit.
+    ///
+    /// Note that, using `scripts_pubkey`s from such cases can lead to address reuse.
+    pub fn next_derivation_index(&self, keychain: &K) -> (u32, bool) {
+        // we can only get the next index if wildcard exists
+        let has_wildcard = self
+            .keychains
+            .get(keychain)
+            .expect("Invalid keychain: keychain doesn't exist in tracker")
+            .has_wildcard();
+
+        match self.derivation_index(keychain) {
+            // for all descriptors, if there is no index, next_index is always 0
+            None => (0, true),
+            // for derivable descriptors, we get the next index (without overflow)
+            // for un-derivable descriptors we always get next_index = 0
+            Some(index) => {
+                if !has_wildcard {
+                    (0, false)
+                } else {
+                    if let Some(new_index) = index.checked_add(1) {
+                        (new_index, true)
+                    } else {
+                        (index, false)
+                    }
+                }
+            }
+        }
     }
 
     /// Get the current derivation index. This is the highest index in the keychain we have stored.
@@ -186,23 +217,27 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// stored).
     ///
     /// [`derive_spks_up_to`]: Self::store_up_to
-    pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> bool {
-        let mut changed = false;
+    pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> DerivationAdditions<K> {
+        let mut additions = DerivationAdditions::default();
         for (keychain, &index) in keychains {
-            changed |= self.store_up_to(keychain, index);
+            additions.append(self.store_up_to(keychain, index));
         }
-        changed
+        additions
     }
 
     /// Derives script pubkeys from the descriptor **up to and including** `up_to` and stores them
     /// unless a script already exists in that index.
     ///
-    /// Returns whether any new script pubkeys were derived. This will be false when they had already all been
-    /// stored or wheen the `keychain` itself was never added to the index.
-    pub fn store_up_to(&mut self, keychain: &K, up_to: u32) -> bool {
+    /// Returns the [`DerivationAdditions`] for any new `script_pubkey`s that has been added.
+    /// returned [`DerivationAdditions`] will be empty incase of no new `script_pubkey` additions.
+    ///
+    /// Empty [`DerivationAdditions`] is also returned if `keychain` isn't in the [`KeychainTxOutIndex`].
+    pub fn store_up_to(&mut self, keychain: &K, up_to: u32) -> DerivationAdditions<K> {
+        let mut additions = DerivationAdditions::default();
+
         let descriptor = match self.keychains.get(&keychain) {
             Some(descriptor) => descriptor,
-            None => return false,
+            None => return additions,
         };
 
         let secp = Secp256k1::verification_only();
@@ -210,9 +245,10 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             false => 0,
             true => up_to,
         };
-        let next_to_derive = self.next_derivation_index(keychain);
-        if next_to_derive > end {
-            return false;
+        let (next_to_derive, can_derive) = self.next_derivation_index(keychain);
+
+        if !can_derive || next_to_derive > end {
+            return additions;
         }
 
         for index in next_to_derive..=end {
@@ -225,53 +261,62 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 .insert_script_pubkey((keychain.clone(), index), spk);
         }
 
-        true
+        additions.as_mut().insert(keychain.clone(), end);
+        additions
     }
 
     /// Derives a new script pubkey for a keychain.
     ///
-    /// The index returns a new script pubkey for each call to this method and stores it internally
-    /// so it will be able to find transactions related to it.
+    /// Returns the index and the new `script_pubkey` and a [`DerivationAdditions`] for the
+    /// corresponding change in the script index.
+    ///
+    /// In case the script index limit is reached:
+    ///  - non derivable descriptor with already one derived script in the index.
+    ///  - derivable descriptor with script index at numeric bound.
+    /// This will return the last derivable index and script, with empty [`DerivationAdditions`]
+    ///
+    /// Note: An empty [`DerivationAdditions`] is a potential indication of address reuse.
+    /// Note: It is user's responsibility to record the [`DerivationAdditions`] to disk.
     ///
     /// ## Panics
     ///
     /// Panics if the `keychain` has not been added to the index.
-    pub fn derive_new(&mut self, keychain: &K) -> (u32, &Script) {
-        let secp = Secp256k1::verification_only();
-        let next_derivation_index = self.next_derivation_index(keychain);
-        let descriptor = self
-            .keychains
-            .get(&keychain)
-            .expect(&format!("no descriptor for keychain {:?}", keychain));
-
-        let new_spk = descriptor
-            .at_derivation_index(next_derivation_index as u32)
-            .derived_descriptor(&secp)
-            .expect("the descriptor cannot need hardened derivation")
-            .script_pubkey();
-
+    pub fn derive_new(&mut self, keychain: &K) -> ((u32, &Script), DerivationAdditions<K>) {
+        let (next_derivation_index, can_derive) = self.next_derivation_index(keychain);
+        let additions = if can_derive {
+            self.store_up_to(keychain, next_derivation_index)
+        } else {
+            DerivationAdditions::default()
+        };
         let index = (keychain.clone(), next_derivation_index);
-        self.inner.insert_script_pubkey(index.clone(), new_spk);
-        let new_spk = self
-            .inner
-            .script_pubkeys()
-            .get(&index)
-            .expect("we just added it");
-        (next_derivation_index, new_spk)
+        let script = self.inner.spk_at_index(&index).expect(
+            format!("Invalid Keychain {keychain:?}: Keychain doesn't exist in tracker").as_str(),
+        );
+        ((next_derivation_index, script), additions)
     }
 
-    /// Gets the next usued script pubkey in the keychain i.e. the script pubkey with the lowest index that has not been used yet.
+    /// Gets the next unused script pubkey in the keychain i.e. the script pubkey with the lowest index that has not been used yet.
+    /// If all derived script pubkey is used, derives a new one and returns the corresponding [`DerivationAdditions`].
+    ///
+    /// In case of non-derivable descriptor with spk already derived and used, or derivable descriptor with `used count` at numeric bound, this will
+    /// return the last derivable script, with an empty [`DerivationAdditions`]. Such situations can lead to
+    /// address reuse.
     ///
     /// ## Panics
     ///
     /// Panics if `keychain` has never been added to the index
-    pub fn next_unused(&mut self, keychain: &K) -> (u32, &Script) {
+    pub fn next_unused(&mut self, keychain: &K) -> ((u32, &Script), DerivationAdditions<K>) {
         let need_new = self.keychain_unused(keychain).next().is_none();
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
             self.derive_new(keychain)
         } else {
-            self.keychain_unused(keychain).next().unwrap()
+            (
+                self.keychain_unused(keychain)
+                    .next()
+                    .expect("we already know next is not None"),
+                DerivationAdditions::default(),
+            )
         }
     }
 
@@ -279,18 +324,18 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// Returns whether any new scripts were derived.
     ///
-    /// [`pad_with_unused`]: Self::pad_with_unused
-    pub fn pad_all_with_unused(&mut self, pad_len: u32) -> bool {
-        let mut changed = false;
+    /// [`pad_with_unused`]: Self::pad_keychain_with_unused
+    pub fn pad_all_with_unused(&mut self, pad_len: u32) -> DerivationAdditions<K> {
+        let mut additions = DerivationAdditions::default();
         let keychains = self
             .keychains
             .keys()
             .cloned()
             .collect::<alloc::vec::Vec<_>>();
         for keychain in keychains {
-            changed |= self.pad_with_unused(&keychain, pad_len);
+            additions.append(self.pad_keychain_with_unused(&keychain, pad_len));
         }
-        changed
+        additions
     }
 
     /// Derives and stores `pad_len` new script pubkeys after the last active index of `keychain`.
@@ -298,14 +343,18 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// This is useful when scanning blockchain data for transaction outputs belonging to the
     /// keychain since the derivation index of new transactions is likely to be higher than the
     /// current last active index.
-    pub fn pad_with_unused(&mut self, keychain: &K, pad_len: u32) -> bool {
+    pub fn pad_keychain_with_unused(
+        &mut self,
+        keychain: &K,
+        pad_len: u32,
+    ) -> DerivationAdditions<K> {
         let up_to = self
             .last_active_index(keychain)
             .map(|i| i.saturating_add(pad_len))
             .or(pad_len.checked_sub(1));
         match up_to {
             Some(up_to) => self.store_up_to(keychain, up_to),
-            None => false,
+            None => Default::default(),
         }
     }
 
