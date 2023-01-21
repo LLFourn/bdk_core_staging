@@ -1,5 +1,4 @@
 use crate::{
-    collections::BTreeMap,
     keychain::{KeychainChangeSet, KeychainTracker},
     sparse_chain,
 };
@@ -157,17 +156,6 @@ where
         if !changeset.derivation_indices.is_empty() {
             self.db_file.sync_data()?;
         }
-
-        Ok(())
-    }
-
-    /// Appends a new changeset setting the derivation indicies
-    pub fn set_derivation_indices(&mut self, indices: BTreeMap<K, u32>) -> Result<(), io::Error> {
-        let keychain_changeset = KeychainChangeSet {
-            chain_graph: Default::default(),
-            derivation_indices: indices,
-        };
-        self.append_changeset(&keychain_changeset)?;
 
         Ok(())
     }

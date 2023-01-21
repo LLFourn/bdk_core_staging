@@ -21,12 +21,82 @@ mod keychain_txout_index;
 pub use keychain_txout_index::*;
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(
+        crate = "serde_crate",
+        bound(
+            deserialize = "K: Ord + serde::Deserialize<'de>",
+            serialize = "K: Ord + serde::Serialize"
+        )
+    )
+)]
+#[must_use]
+pub struct DerivationAdditions<K>(BTreeMap<K, u32>);
+
+impl<K> DerivationAdditions<K> {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<K: Ord> DerivationAdditions<K> {
+    /// Append another [`DerivationAdditions`] into self.
+    ///
+    /// If keychain already exists, increases the index, if other's index > self's index
+    /// If keychain didn't exist, appends the new keychain
+    pub fn append(&mut self, mut other: Self) {
+        self.0.iter_mut().for_each(|(key, index)| {
+            if let Some(other_index) = other.0.remove(key) {
+                *index = other_index.max(*index);
+            }
+        });
+
+        self.0.append(&mut other.0);
+    }
+}
+
+impl<K> Default for DerivationAdditions<K> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+// impl<K> From<BTreeMap<K, u32>> for DerivationAdditions<K> {
+//     fn from(value: BTreeMap<K, u32>) -> Self {
+//         Self(value)
+//     }
+// }
+
+impl<K: Ord, I> From<I> for DerivationAdditions<K>
+where
+    I: IntoIterator<Item = (K, u32)>,
+{
+    fn from(value: I) -> Self {
+        Self(value.into_iter().collect())
+    }
+}
+
+impl<K> AsRef<BTreeMap<K, u32>> for DerivationAdditions<K> {
+    fn as_ref(&self) -> &BTreeMap<K, u32> {
+        &self.0
+    }
+}
+
+impl<K> AsMut<BTreeMap<K, u32>> for DerivationAdditions<K> {
+    fn as_mut(&mut self) -> &mut BTreeMap<K, u32> {
+        &mut self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 /// An update that includes the last active indexes of each keychain.
 pub struct KeychainScan<K, P> {
     /// The update data in the form of a chain that could be applied
     pub update: ChainGraph<P>,
     /// The last active indexes of each keychain
-    pub last_active_indexes: BTreeMap<K, u32>,
+    pub last_active_indexes: DerivationAdditions<K>,
 }
 
 impl<K, I> Default for KeychainScan<K, I> {
@@ -53,7 +123,7 @@ impl<K, I> Default for KeychainScan<K, I> {
 #[must_use]
 pub struct KeychainChangeSet<K, P> {
     /// The changes in local keychain derivation indices
-    pub derivation_indices: BTreeMap<K, u32>,
+    pub derivation_indices: DerivationAdditions<K>,
     /// The changes that have occurred in the blockchain
     pub chain_graph: chain_graph::ChangeSet<P>,
 }
@@ -76,20 +146,13 @@ impl<K, P> KeychainChangeSet<K, P> {
     /// effect as sequentially applying the original `self` and `other`.
     ///
     /// Note the derivation indices cannot be decreased so `other` will only change the derivation
-    /// index for a keychain if its entry is higher than the one in `self`.
-    pub fn append(&mut self, mut other: KeychainChangeSet<K, P>)
+    /// index for a keychain if it's entry is higher than the one in `self`.
+    pub fn append(&mut self, other: KeychainChangeSet<K, P>)
     where
         K: Ord,
         P: ChainPosition,
     {
-        for (keychain, derivation_index) in &mut self.derivation_indices {
-            *derivation_index =
-                (*derivation_index).max(other.derivation_indices.remove(keychain).unwrap_or(0));
-        }
-
-        self.derivation_indices
-            .append(&mut other.derivation_indices);
-
+        self.derivation_indices.append(other.derivation_indices);
         self.chain_graph.append(other.chain_graph);
     }
 }
@@ -98,6 +161,15 @@ impl<K, P> From<chain_graph::ChangeSet<P>> for KeychainChangeSet<K, P> {
     fn from(changeset: chain_graph::ChangeSet<P>) -> Self {
         Self {
             chain_graph: changeset,
+            ..Default::default()
+        }
+    }
+}
+
+impl<K, P> From<DerivationAdditions<K>> for KeychainChangeSet<K, P> {
+    fn from(additions: DerivationAdditions<K>) -> Self {
+        Self {
+            derivation_indices: additions,
             ..Default::default()
         }
     }
@@ -194,20 +266,36 @@ mod test {
         lhs_di.insert(Keychain::Three, 3);
         rhs_di.insert(Keychain::Four, 4);
         let mut lhs = KeychainChangeSet {
-            derivation_indices: lhs_di,
+            derivation_indices: lhs_di.into(),
             chain_graph: chain_graph::ChangeSet::<TxHeight>::default(),
         };
 
         let rhs = KeychainChangeSet {
-            derivation_indices: rhs_di,
+            derivation_indices: rhs_di.into(),
             chain_graph: chain_graph::ChangeSet::<TxHeight>::default(),
         };
 
         lhs.append(rhs);
 
-        assert_eq!(lhs.derivation_indices.get(&Keychain::One), Some(&7));
-        assert_eq!(lhs.derivation_indices.get(&Keychain::Two), Some(&5));
-        assert_eq!(lhs.derivation_indices.get(&Keychain::Three), Some(&3));
-        assert_eq!(lhs.derivation_indices.get(&Keychain::Four), Some(&4));
+        // Exiting index doesn't update if new index in `other` is lower than `self`
+        assert_eq!(
+            lhs.derivation_indices.as_ref().get(&Keychain::One),
+            Some(&7)
+        );
+        // Existing index updates if new index in `other` is higher than `self.
+        assert_eq!(
+            lhs.derivation_indices.as_ref().get(&Keychain::Two),
+            Some(&5)
+        );
+        // Existing index unchanged, if keychain doesn't exist in `other`
+        assert_eq!(
+            lhs.derivation_indices.as_ref().get(&Keychain::Three),
+            Some(&3)
+        );
+        // New keychain gets added if keychain is in `other`, but not in `self`.
+        assert_eq!(
+            lhs.derivation_indices.as_ref().get(&Keychain::Four),
+            Some(&4)
+        );
     }
 }

@@ -111,7 +111,7 @@ fn main() -> anyhow::Result<()> {
 
             eprintln!();
 
-            keychain_changeset.derivation_indices = keychain_index_update;
+            keychain_changeset.derivation_indices = keychain_index_update.into();
 
             new_sparsechain
         }
