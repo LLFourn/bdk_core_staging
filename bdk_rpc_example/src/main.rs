@@ -10,12 +10,12 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use bdk_chain::keychain::KeychainChangeSet;
+use bdk_chain::{chain_graph::ChainGraph, BlockId, TxHeight};
 use bdk_cli::{
     anyhow,
     clap::{self, Args, Subcommand},
 };
-use bdk_chain::{chain_graph::ChainGraph, BlockId, TxHeight};
-use bdk_chain::keychain::KeychainScan;
 use bitcoincore_rpc::Auth;
 use rpc::{Client, RpcData, RpcError};
 
@@ -165,7 +165,7 @@ fn main() -> anyhow::Result<()> {
                             .map(|(h, b)| (*h, b.block_hash()))
                             .chain(last_cp);
                         for (height, hash) in checkpoints {
-                            update.insert_checkpoint(BlockId { height, hash })?;
+                            let _ = update.insert_checkpoint(BlockId { height, hash })?;
                         }
 
                         blocks
@@ -192,7 +192,7 @@ fn main() -> anyhow::Result<()> {
                         .derive_until_unused_gap(lookahead);
                     if keychain_tracker.txout_index.is_relevant(&tx) {
                         println!("* adding tx to update: {} @ {}", tx.txid(), height);
-                        update.insert_tx(tx.clone(), height)?;
+                        let _ = update.insert_tx(tx.clone(), height)?;
                     }
                     keychain_tracker.txout_index.scan(&tx);
                 }
