@@ -19,12 +19,13 @@ use bdk_chain::{
 use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
 pub use clap;
 use clap::{Parser, Subcommand};
+pub use log;
 use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::Duration};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 #[clap(propagate_version = true)]
-pub struct Args<C: clap::Subcommand> {
+pub struct Args<A: clap::Args, C: clap::Subcommand> {
     #[clap(env = "DESCRIPTOR")]
     pub descriptor: String,
     #[clap(env = "CHANGE_DESCRIPTOR")]
@@ -38,6 +39,9 @@ pub struct Args<C: clap::Subcommand> {
 
     #[clap(env = "BDK_CP_LIMIT", long, default_value = "20")]
     pub cp_limit: usize,
+
+    #[clap(flatten)]
+    pub chain_args: A,
 
     #[clap(subcommand)]
     pub command: Commands<C>,
@@ -509,8 +513,8 @@ where
     Ok(())
 }
 
-pub fn init<C: clap::Subcommand, P>() -> anyhow::Result<(
-    Args<C>,
+pub fn init<A: clap::Args, C: clap::Subcommand, P>() -> anyhow::Result<(
+    Args<A, C>,
     KeyMap,
     KeychainTracker<Keychain, P>,
     KeychainStore<Keychain, P>,
@@ -519,7 +523,7 @@ where
     P: sparse_chain::ChainPosition,
     KeychainChangeSet<Keychain, P>: serde::Serialize + serde::de::DeserializeOwned,
 {
-    let args = Args::<C>::parse();
+    let args = Args::<A, C>::parse();
     let secp = Secp256k1::default();
     let (descriptor, mut keymap) =
         Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, &args.descriptor)?;
