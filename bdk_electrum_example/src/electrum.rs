@@ -2,11 +2,13 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use bdk_chain::{
     bitcoin::{BlockHash, Script, Txid},
-    sparse_chain::{self, SparseChain},
+    sparse_chain::{self, ChainPosition, SparseChain},
     BlockId, TxHeight,
 };
 use bdk_cli::Broadcast;
 use electrum_client::{Client, ElectrumApi};
+
+use bdk_chain::BlockPosition;
 
 #[derive(Debug)]
 pub enum ElectrumError {
@@ -85,6 +87,134 @@ impl ElectrumClient {
         Ok(self
             .wallet_txid_scan(dummy_keychains, None, local_chain, batch_size)?
             .0)
+    }
+
+    #[allow(unused)]
+    pub fn wallet_scan_block_position<K: Ord + Clone, P: ChainPosition>(
+        &self,
+        scripts: BTreeMap<K, impl Iterator<Item = (u32, Script)>>,
+        stop_gap: Option<usize>,
+        local_chain: &BTreeMap<u32, BlockHash>,
+        batch_size: usize,
+    ) -> Result<(SparseChain<BlockPosition>, BTreeMap<K, u32>), ElectrumError> {
+        let mut sparse_chain = SparseChain::default();
+
+        // Check for reorgs.
+        // In case of reorg, new checkpoints until the last common checkpoint is added to the structure
+        for (&existing_height, &existing_hash) in local_chain.iter().rev() {
+            let current_hash = self
+                .inner
+                .block_header(existing_height as usize)?
+                .block_hash();
+            sparse_chain
+                .insert_checkpoint(BlockId {
+                    height: existing_height,
+                    hash: current_hash,
+                })
+                .expect("This never errors because we are working with a fresh chain");
+
+            if current_hash == existing_hash {
+                break;
+            }
+        }
+
+        // Insert the new tip
+        let (tip_height, tip_hash) = self.get_tip()?;
+        if sparse_chain
+            .insert_checkpoint(BlockId {
+                height: tip_height,
+                hash: tip_hash,
+            })
+            .is_err()
+        {
+            // There has been an reorg since the last call to `block_header` in the loop above at the current tip.
+            return Err(ElectrumError::Reorg);
+        }
+
+        let mut keychain_index_update = BTreeMap::new();
+
+        // Fetch Keychain's last_active_index and all related txids.
+        // Add them into the SparseChain
+        for (keychain, mut scripts) in scripts {
+            let mut last_active_index = 0;
+            let mut unused_script_count = 0usize;
+
+            loop {
+                let batch_scripts = (0..batch_size)
+                    .map(|_| scripts.next())
+                    .filter_map(|item| item)
+                    .collect::<Vec<_>>();
+
+                if batch_scripts.is_empty() {
+                    // We reached the end of the script list
+                    break;
+                }
+
+                for (history, index) in self
+                    .batch_script_get_history(batch_scripts.iter().map(|(_, script)| script))?
+                    .iter()
+                    .zip(batch_scripts.iter().map(|(index, _)| index))
+                {
+                    let txid_list = history
+                        .iter()
+                        .map(|history_result| {
+                            if history_result.height > 0
+                                && (history_result.height as u32) <= tip_height
+                            {
+                                let block_position = self
+                                    .transaction_get_merkle(
+                                        &history_result.tx_hash,
+                                        history_result.height as usize,
+                                    )
+                                    .unwrap()
+                                    .pos;
+                                let pos = BlockPosition::Confirmed {
+                                    height: history_result.height as u32,
+                                    position: block_position,
+                                };
+                                return (history_result.tx_hash, pos);
+                            } else {
+                                return (history_result.tx_hash, BlockPosition::Unconfirmed);
+                            };
+                        })
+                        .collect::<Vec<(Txid, BlockPosition)>>();
+
+                    if txid_list.is_empty() {
+                        unused_script_count += 1;
+                    } else {
+                        last_active_index = *index;
+                        unused_script_count = 0;
+                    }
+
+                    for (txid, index) in txid_list {
+                        if let Err(err) = sparse_chain.insert_tx(txid, index) {
+                            match err {
+                                sparse_chain::InsertTxFailure::TxTooHigh { .. } => {
+                                    unreachable!("We should not encounter this error as we ensured TxHeight <= tip_height");
+                                }
+                                sparse_chain::InsertTxFailure::TxMovedUnexpectedly { .. } => {
+                                    /* This means there is a reorg, we will handle this situation below */
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if unused_script_count >= stop_gap.unwrap_or(usize::MAX) {
+                break;
+            }
+
+            keychain_index_update.insert(keychain, last_active_index);
+        }
+
+        // Check for Reorg during the above sync process
+        let our_latest = sparse_chain.latest_checkpoint().expect("must exist");
+        if our_latest.hash != self.block_header(our_latest.height as usize)?.block_hash() {
+            return Err(ElectrumError::Reorg);
+        }
+
+        Ok((sparse_chain, keychain_index_update))
     }
 
     /// Scan for a keychain tracker, and create an initial [`bdk_chain::sparse_chain::SparseChain`] update candidate.
