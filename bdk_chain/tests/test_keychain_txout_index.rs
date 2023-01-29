@@ -3,7 +3,7 @@
 #[macro_use]
 mod common;
 use bdk_chain::{collections::BTreeMap, keychain::KeychainTxOutIndex};
-use bitcoin::{hashes::hex::FromHex, OutPoint, Script, TxOut};
+use bitcoin::{OutPoint, TxOut};
 
 use miniscript::{Descriptor, DescriptorPublicKey};
 
@@ -13,17 +13,21 @@ enum TestKeychain {
     Internal,
 }
 
-fn init_txout_index() -> bdk_chain::keychain::KeychainTxOutIndex<TestKeychain> {
+fn init_txout_index() -> (
+    bdk_chain::keychain::KeychainTxOutIndex<TestKeychain>,
+    Descriptor<DescriptorPublicKey>,
+    Descriptor<DescriptorPublicKey>,
+) {
     let mut txout_index = bdk_chain::keychain::KeychainTxOutIndex::<TestKeychain>::default();
 
     let secp = bdk_chain::bitcoin::secp256k1::Secp256k1::signing_only();
     let (external_descriptor,_) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)").unwrap();
     let (internal_descriptor,_) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/*)").unwrap();
 
-    txout_index.add_keychain(TestKeychain::External, external_descriptor);
-    txout_index.add_keychain(TestKeychain::Internal, internal_descriptor);
+    txout_index.add_keychain(TestKeychain::External, external_descriptor.clone());
+    txout_index.add_keychain(TestKeychain::Internal, internal_descriptor.clone());
 
-    txout_index
+    (txout_index, external_descriptor, internal_descriptor)
 }
 
 fn mark_used(tracker: &mut KeychainTxOutIndex<TestKeychain>, index: &(TestKeychain, u32)) {
@@ -44,7 +48,7 @@ fn mark_used(tracker: &mut KeychainTxOutIndex<TestKeychain>, index: &(TestKeycha
 
 #[test]
 fn test_store_all_up_to() {
-    let mut txout_index = init_txout_index();
+    let (mut txout_index, _, _) = init_txout_index();
     let derive_to: BTreeMap<_, _> =
         [(TestKeychain::External, 12), (TestKeychain::Internal, 24)].into();
     assert_eq!(
@@ -56,14 +60,9 @@ fn test_store_all_up_to() {
 
 #[test]
 fn test_pad_all_with_unused() {
-    let mut txout_index = init_txout_index();
+    let (mut txout_index, external_desc, _) = init_txout_index();
 
-    let external_spk3 = txout_index
-        .keychains()
-        .get(&TestKeychain::External)
-        .unwrap()
-        .at_derivation_index(3)
-        .script_pubkey();
+    let external_spk3 = external_desc.at_derivation_index(3).script_pubkey();
 
     assert_eq!(
         txout_index.store_up_to(&TestKeychain::External, 3),
@@ -89,9 +88,12 @@ fn test_pad_all_with_unused() {
 
 #[test]
 fn test_wildcard_derivations() {
-    let mut txout_index = init_txout_index();
+    let (mut txout_index, external_desc, _) = init_txout_index();
+    let external_spk_0 = external_desc.at_derivation_index(0).script_pubkey();
+    let external_spk_16 = external_desc.at_derivation_index(16).script_pubkey();
+    let external_spk_26 = external_desc.at_derivation_index(26).script_pubkey();
+    let external_spk_27 = external_desc.at_derivation_index(27).script_pubkey();
 
-    // Stage 1
     // - nothing is derived
     // - unused list is also empty
     //
@@ -105,31 +107,15 @@ fn test_wildcard_derivations() {
     assert_eq!(
         txout_index.derive_new(&TestKeychain::External),
         (
-            (
-                0,
-                &Script::from_hex(
-                    "5120a60869f0dbcf1dc659c9cecbaf8050135ea9e8cdc487053f1dc6880949dc684c"
-                )
-                .unwrap()
-            ),
+            (0_u32, &external_spk_0),
             [(TestKeychain::External, 0)].into()
         )
     );
     assert_eq!(
         txout_index.next_unused(&TestKeychain::External),
-        (
-            (
-                0,
-                &Script::from_hex(
-                    "5120a60869f0dbcf1dc659c9cecbaf8050135ea9e8cdc487053f1dc6880949dc684c"
-                )
-                .unwrap()
-            ),
-            [].into()
-        )
+        ((0_u32, &external_spk_0), [].into())
     );
 
-    // Stage - 2
     // - derived till 25
     // - used all spks till 15.
     // - used list : [0..=15, 17, 20, 23]
@@ -152,31 +138,15 @@ fn test_wildcard_derivations() {
     assert_eq!(
         txout_index.derive_new(&TestKeychain::External),
         (
-            (
-                26,
-                &Script::from_hex(
-                    "512017561301dafcfe66d9a757d9907b05646c9c1fcab57069f7917d0af3116661ee"
-                )
-                .unwrap()
-            ),
+            (26, &external_spk_26),
             [(TestKeychain::External, 26)].into()
         )
     );
     assert_eq!(
         txout_index.next_unused(&TestKeychain::External),
-        (
-            (
-                16,
-                &Script::from_hex(
-                    "5120c0926db156acc59de0a5685b47ff6663edc37df9bbde9cf504ebe39568cb4644"
-                )
-                .unwrap()
-            ),
-            [].into()
-        )
+        ((16, &external_spk_16), [].into())
     );
 
-    // Stage -3
     // - Use all the derived till 26.
     // - next_unused() = ((27, <spk>), DerivationAdditions)
     (0..=26)
@@ -186,13 +156,7 @@ fn test_wildcard_derivations() {
     assert_eq!(
         txout_index.next_unused(&TestKeychain::External),
         (
-            (
-                27,
-                &Script::from_hex(
-                    "512090f6ddcb6c1bd1482166b941a86e9663b44d889ab7e5ffce1c5185658d894bf3"
-                )
-                .unwrap()
-            ),
+            (27, &external_spk_27),
             [(TestKeychain::External, 27)].into()
         )
     );
@@ -239,72 +203,51 @@ fn test_non_wildcard_derivations() {
 
     let secp = bitcoin::secp256k1::Secp256k1::signing_only();
     let (no_wildcard_descriptor, _) = Descriptor::<DescriptorPublicKey>::parse_descriptor(&secp, "wpkh([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/0)").unwrap();
+    let external_spk = no_wildcard_descriptor
+        .at_derivation_index(0)
+        .script_pubkey();
 
     txout_index.add_keychain(TestKeychain::External, no_wildcard_descriptor);
 
-    // Stage 1
-    // nothing derived
-    // no unused scripts
-    //
-    // - next_derivation_index() = (0, true)
-    // - derive_new() = ((0, <spk>), DerivationAdditions)
-    // - next_unused() = ((0, <spk>), DerivationAdditions::is_empty())
+    // given:
+    // - `txout_index` with no stored scripts
+    // expect:
+    // - next derivation index should be new
+    // - when we derive a new script, script @ index 0
+    // - when we get the next unused script, script @ index 0
     assert_eq!(
         txout_index.next_derivation_index(&TestKeychain::External),
         (0, true)
     );
     assert_eq!(
         txout_index.derive_new(&TestKeychain::External),
-        (
-            (
-                0,
-                &Script::from_hex("0014dd494ba8f622f9ae256d2d58bc48214a6d4819f7").unwrap()
-            ),
-            [(TestKeychain::External, 0)].into()
-        )
+        ((0, &external_spk), [(TestKeychain::External, 0)].into())
     );
     assert_eq!(
         txout_index.next_unused(&TestKeychain::External),
-        (
-            (
-                0,
-                &Script::from_hex("0014dd494ba8f622f9ae256d2d58bc48214a6d4819f7").unwrap()
-            ),
-            [].into()
-        )
+        ((0, &external_spk), [].into())
     );
 
-    // Stage 2
-    // Mark the single spk as used
-    //
-    // - next_derivation_index() == (0, false)
-    // - derive_new() = ((0, <spk>), DerivationAdditions::is_empty())
-    // - next_unused() = ((0, <spk>), DerivationAdditions::is_empty())
-
+    // given:
+    // - the non-wildcard descriptor already has a stored and used script
+    // expect:
+    // - next derivation index should not be new
+    // - derive new and next unused should return the old script
+    // - store_up_to should not panic and return empty additions
     mark_used(&mut txout_index, &(TestKeychain::External, 0));
-
     assert_eq!(
         txout_index.next_derivation_index(&TestKeychain::External),
         (0, false)
     );
     assert_eq!(
         txout_index.derive_new(&TestKeychain::External),
-        (
-            (
-                0,
-                &Script::from_hex("0014dd494ba8f622f9ae256d2d58bc48214a6d4819f7").unwrap()
-            ),
-            [].into()
-        )
+        ((0, &external_spk), [].into())
     );
     assert_eq!(
         txout_index.next_unused(&TestKeychain::External),
-        (
-            (
-                0,
-                &Script::from_hex("0014dd494ba8f622f9ae256d2d58bc48214a6d4819f7").unwrap()
-            ),
-            [].into()
-        )
+        ((0, &external_spk), [].into())
     );
+    assert!(txout_index
+        .store_up_to(&TestKeychain::External, 200)
+        .is_empty())
 }

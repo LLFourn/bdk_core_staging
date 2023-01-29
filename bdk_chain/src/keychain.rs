@@ -63,12 +63,6 @@ impl<K> Default for DerivationAdditions<K> {
     }
 }
 
-// impl<K> From<BTreeMap<K, u32>> for DerivationAdditions<K> {
-//     fn from(value: BTreeMap<K, u32>) -> Self {
-//         Self(value)
-//     }
-// }
-
 impl<K: Ord, I> From<I> for DerivationAdditions<K>
 where
     I: IntoIterator<Item = (K, u32)>,
