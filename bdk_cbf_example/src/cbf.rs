@@ -9,7 +9,6 @@ use nakamoto::net::poll;
 
 use bdk_cli::{anyhow, Keychain};
 
-use bdk_chain::bitcoin::blockdata::script::Script;
 use bdk_chain::bitcoin::Transaction;
 use bdk_chain::chain_graph::ChainGraph;
 use bdk_chain::keychain::KeychainChangeSet;
@@ -25,7 +24,6 @@ type Reactor = poll::Reactor<net::TcpStream>;
 
 pub struct CbfClient {
     pub handle: ClientHandle<poll::reactor::Waker>,
-    pub client_recv: chan::Receiver<Event>,
 }
 
 impl CbfClient {
@@ -34,7 +32,6 @@ impl CbfClient {
         cfg.domains = vec![Domain::IPV4];
         let client = Client::<Reactor>::new()?;
         let handle = client.handle();
-        let client_recv = handle.events();
 
         // Run the client on a different thread, to not block the main thread.
         thread::spawn(|| client.run(cfg).unwrap());
@@ -44,34 +41,45 @@ impl CbfClient {
         handle.wait_for_peers(1, Services::default())?;
         println!("Connected to at least one peer");
 
-        Ok(CbfClient {
-            handle,
-            client_recv,
-        })
+        Ok(CbfClient { handle })
     }
 
     pub fn sync(
         &mut self,
         keychain_tracker: &mut KeychainTracker<Keychain, TxHeight>,
-        scripts: impl Iterator<Item = Script>,
         stop_gap: u32,
     ) -> anyhow::Result<KeychainChangeSet<Keychain, TxHeight>> {
-        let mut processed_height = keychain_tracker
-            .chain_graph()
-            .chain()
-            .latest_checkpoint()
-            .map(|c| c.height)
-            .unwrap_or(63000) as u64; // TODO
-        println!("Rescanning chain from {:?}", processed_height);
-        self.handle.rescan(processed_height.., scripts)?;
+        let client_recv = self.handle.events();
+
         let mut blocks_matched = HashSet::new();
         let mut peer_height = 0;
         let mut update = ChainGraph::<TxHeight>::default();
         let mut txs = vec![];
 
+        // indexing logic!
+        let old_indexes = keychain_tracker.txout_index.derivation_indices();
+        keychain_tracker.txout_index.pad_all_with_unused(stop_gap);
+
+        // find scripts!
+        let scripts = keychain_tracker
+            .txout_index
+            .stored_scripts_of_all_keychains()
+            .into_values()
+            .flatten()
+            .map(|(_, spk)| spk.clone());
+
+        let mut processed_height = keychain_tracker
+            .chain_graph()
+            .chain()
+            .latest_checkpoint()
+            .map(|c| c.height)
+            .unwrap_or(63000) as u64; // TODO: We should check point of last agreeement
+        self.handle.rescan(processed_height.., scripts)?;
+        println!("Rescanning chain from {:?}", processed_height);
+
         loop {
             chan::select! {
-                recv(self.client_recv) -> event => {
+                recv(client_recv) -> event => {
                     let event = event?;
                     match event {
                         Event::PeerNegotiated { height, .. } => {
@@ -92,7 +100,9 @@ impl CbfClient {
                             }
                         }
                         Event::BlockConnected { height, .. } => {
-                            println!("Connected block with height {:?}", height);
+                            if height % 1000 == 0 {
+                                println!("Connected block with height {:?}", height);
+                            }
                         }
                         Event::BlockDisconnected { height, hash, .. } => {
                             println!("Disconnected block with height {:?}", height);
@@ -103,11 +113,15 @@ impl CbfClient {
                         }
                         Event::BlockMatched { height, hash, transactions, .. } => {
                             println!("Block matched {:?}", height);
+
+                            let _ = update.insert_checkpoint(BlockId { height: height as u32, hash })?;
+
                             for tx in transactions {
                                 txs.push((tx, TxHeight::Confirmed(height as u32)));
-
                             }
+
                             blocks_matched.remove(&hash);
+
                             if processed_height >= peer_height && blocks_matched.is_empty() {
                                 break;
                             }
@@ -117,14 +131,16 @@ impl CbfClient {
                         }
                         Event::FilterProcessed { matched, height, block, .. } => {
                             let _ = update.insert_checkpoint(BlockId { height: height as u32, hash: block })?;
-                            if height % 1000 == 0 {
-                                println!("Filter processed {}", height);
-                            }
+                            // if height % 1000 == 0 {
+                            //     println!("Filter processed {}", height);
+                            // }
+
                             processed_height = height;
                             if matched {
-                                println!("Filter matched {:?}", &event);
+                                println!("Filter matched @ height {} : {:?}", height, &event);
                                 blocks_matched.insert(block);
                             }
+
                             if processed_height == peer_height && blocks_matched.is_empty() {
                                 break;
                             }
@@ -134,8 +150,6 @@ impl CbfClient {
                 }
             }
         }
-
-        let old_indexes = keychain_tracker.txout_index.derivation_indices();
 
         for (tx, height) in txs {
             keychain_tracker.txout_index.pad_all_with_unused(stop_gap);
@@ -147,6 +161,7 @@ impl CbfClient {
         }
 
         let new_indexes = keychain_tracker.txout_index.last_active_indicies();
+        println!("new indexes: {:#?}", new_indexes);
 
         let changeset = KeychainChangeSet {
             derivation_indices: keychain_tracker
@@ -156,6 +171,10 @@ impl CbfClient {
                 .filter_map(|keychain| {
                     let old_index = old_indexes.get(keychain);
                     let new_index = new_indexes.get(keychain);
+                    println!(
+                        "getting derivation_indices: old={:?}, new={:?}",
+                        old_index, new_index
+                    );
 
                     match new_index {
                         Some(new_ind) if new_index > old_index => {

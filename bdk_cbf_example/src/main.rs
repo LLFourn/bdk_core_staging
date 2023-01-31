@@ -53,19 +53,17 @@ fn main() -> anyhow::Result<()> {
             // the database, but stop_gap + 1 scripts used on the blockchain: here
             // we derive until stop_gap, and you'll have to scan again before being
             // able to see the txs sent to the `stop_gap + 1`th script
-            keychain_tracker.txout_index.pad_all_with_unused(stop_gap);
+            // keychain_tracker.txout_index.pad_all_with_unused(stop_gap);
 
             //dbg!("Keychain tracker before everything: {:?}", &keychain_tracker);
             // TODO: too many collects here!
-            let spk_iterators = keychain_tracker
-                .txout_index
-                .stored_scripts_of_all_keychains()
-                .into_values()
-                .flat_map(|s| s.map(|(_, s)| s.clone()).collect::<Vec<_>>())
-                .collect::<Vec<_>>();
-            let ch = client
-                .sync(&mut keychain_tracker, spk_iterators.into_iter(), stop_gap)
-                .unwrap();
+            // let spk_iterators = keychain_tracker
+            //     .txout_index
+            //     .stored_scripts_of_all_keychains()
+            //     .into_values()
+            //     .flat_map(|s| s.map(|(_, s)| s.clone()).collect::<Vec<_>>())
+            //     .collect::<Vec<_>>();
+            let ch = client.sync(&mut keychain_tracker, stop_gap).unwrap();
             //dbg!("Keychain tracker after sync: {:?}", &keychain_tracker);
             //dbg!(&ch);
             db.append_changeset(&ch)?;
@@ -82,6 +80,4 @@ fn main() -> anyhow::Result<()> {
             );
         }
     }
-
-    Ok(())
 }
