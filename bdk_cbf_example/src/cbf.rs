@@ -28,18 +28,17 @@ pub struct CbfClient {
 
 impl CbfClient {
     pub fn new(network: Network) -> anyhow::Result<Self> {
-        let mut cfg = Config::new(network);
-        cfg.domains = vec![Domain::IPV4];
+        let config = Config {
+            network,
+            domains: vec![Domain::IPV4],
+            ..Config::default()
+        };
+
         let client = Client::<Reactor>::new()?;
         let handle = client.handle();
 
         // Run the client on a different thread, to not block the main thread.
-        thread::spawn(|| client.run(cfg).unwrap());
-
-        println!("Looking for peers...");
-        // Wait for the client to be connected to a peer.
-        handle.wait_for_peers(1, Services::default())?;
-        println!("Connected to at least one peer");
+        thread::spawn(|| client.run(config).unwrap());
 
         Ok(CbfClient { handle })
     }
@@ -49,6 +48,10 @@ impl CbfClient {
         keychain_tracker: &mut KeychainTracker<Keychain, TxHeight>,
         stop_gap: u32,
     ) -> anyhow::Result<KeychainChangeSet<Keychain, TxHeight>> {
+        println!("Looking for peers...");
+        self.handle.wait_for_peers(1, Services::default())?;
+        println!("Connected to at least one peer");
+
         let client_recv = self.handle.events();
 
         let mut blocks_matched = HashSet::new();
@@ -197,6 +200,10 @@ impl CbfClient {
 impl bdk_cli::Broadcast for CbfClient {
     type Error = nakamoto::client::handle::Error;
     fn broadcast(&self, tx: &Transaction) -> Result<(), Self::Error> {
+        println!("Looking for peers...");
+        self.handle.wait_for_peers(1, Services::default())?;
+        println!("Connected to at least one peer");
+
         self.handle.submit_transaction(tx.clone())?;
         Ok(())
     }
