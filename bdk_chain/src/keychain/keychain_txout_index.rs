@@ -77,8 +77,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// 1. After loading transaction data from disk you may scan over all the txouts to restore all
     /// your txouts.
-    /// 2. When getting new data from the chain you usually scan it before incoporating it into your
-    /// chain state.
+    /// 2. When getting new data from the chain you usually scan it before incorporating it into
+    /// your chain state (i.e. `SparseChain`, `ChainGraph`).
     ///
     /// See [`ForEachTxout`] for the types that support this.
     ///
@@ -163,8 +163,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 
     /// Get the next derivation index for `keychain`.
     ///
-    /// The second field in the tuple represents whether the next derivation index is new. There are
-    /// two scenarios where the next derivation index is reused (not new):
+    /// The second field in the returned tuple represents whether the next derivation index is new.
+    /// There are two scenarios where the next derivation index is reused (not new):
     ///
     /// 1. The keychain's descriptor has no wildcard, and a script has already been derived.
     /// 2. The number of derived scripts has already reached 2^31 (refer to BIP-32).
@@ -197,7 +197,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 
     /// Get the current derivation index for `keychain`.
     ///
-    /// This is the highest index in the keychain we have stored for `keychain`.
+    /// This is the highest index we have stored for `keychain`.
     pub fn derivation_index(&self, keychain: &K) -> Option<u32> {
         self.inner
             .script_pubkeys()
@@ -206,7 +206,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .map(|((_, index), _)| *index)
     }
 
-    /// Get the current derivation index for each keychain in the index.
+    /// Get the current derivation index for each keychain.
     ///
     /// Keychains with no indicies derived will not be included in the returned [`BTreeMap`].
     pub fn derivation_indices(&self) -> BTreeMap<K, u32> {
@@ -216,9 +216,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .collect()
     }
 
-    /// Convenience method to call [`derive_spks_up_to`] on several keychains.
-    ///
-    /// [`derive_spks_up_to`]: Self::store_up_to
+    /// Convenience method to call [`Self::store_up_to`] on several keychains.
     pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> DerivationAdditions<K> {
         let mut additions = DerivationAdditions::default();
         for (keychain, &index) in keychains {
@@ -318,11 +316,9 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         }
     }
 
-    /// Convenience method to call [`pad_with_unused`] on all keychains.
+    /// Convenience method to call [`Self::pad_keychain_with_unused`] on all keychains.
     ///
     /// Returns whether any new scripts were derived.
-    ///
-    /// [`pad_with_unused`]: Self::pad_keychain_with_unused
     pub fn pad_all_with_unused(&mut self, pad_len: u32) -> DerivationAdditions<K> {
         let keychains = self.keychains.clone().into_keys();
 
