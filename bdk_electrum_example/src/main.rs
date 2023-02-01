@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     let electrum_url = match args.network {
         Network::Bitcoin => "ssl://electrum.blockstream.info:50002",
         Network::Testnet => "ssl://electrum.blockstream.info:60002",
-        Network::Regtest => "ssl://localhost:60401",
+        Network::Regtest => "tcp://localhost:60401",
         Network::Signet => "tcp://signet-electrumx.wakiyamap.dev:50001",
     };
     let config = ConfigBuilder::new()
