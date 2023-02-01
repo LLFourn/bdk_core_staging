@@ -173,25 +173,20 @@ impl<P: ChainPosition> ChainGraph<P> {
         Ok(changeset)
     }
 
-    /// Given a transaction, return an iterator of in-chain [`Txid`]s that conflict with it (spends
-    /// at least one of the same inputs). This includes all descendants of conflicting transactions.
+    /// Given a transaction, return an iterator of `txid`s that conflict with it (spends at least
+    /// one of the same inputs). This includes all descendants of conflicting transactions.
     ///
-    /// This method is comparable to [`TxGraph::tx_conflicts()`] which returns all conflicting
-    /// transactions (including descendants), whereas this method only returns conflicts that exist
-    /// in the [`SparseChain`].
-    pub fn tx_conflicts<'a>(
+    /// This method only returns conflicts that exist in the [`SparseChain`] as transactions that
+    /// are not included in [`SparseChain`] are already considered as evicted.
+    pub fn tx_conflicts_in_chain<'a>(
         &'a self,
         tx: &'a Transaction,
     ) -> impl Iterator<Item = (&'a P, Txid)> + 'a {
-        self.graph
-            // Using `tx_graph::no_filter` is less efficient than filtering out txs that aren't in
-            // chain. However, it can potentially be more reliable.
-            .tx_conflicts(tx, tx_graph::no_filter)
-            .filter_map(|(_, conflicting_txid)| {
-                self.chain
-                    .tx_position(conflicting_txid)
-                    .map(|conflicting_pos| (conflicting_pos, conflicting_txid))
-            })
+        self.graph.walk_conflicts(tx, |_, conflict_txid| {
+            self.chain
+                .tx_position(conflict_txid)
+                .map(|conflict_pos| (conflict_pos, conflict_txid))
+        })
     }
 
     /// Fix changeset conflicts.
@@ -219,7 +214,7 @@ impl<P: ChainPosition> ChainGraph<P> {
                 full_tx
             })
             .flat_map(|(new_txid, new_tx, new_pos)| {
-                self.tx_conflicts(new_tx)
+                self.tx_conflicts_in_chain(new_tx)
                     .map(move |(conflict_pos, conflict_txid)| {
                         (new_pos.clone(), new_txid, conflict_pos, conflict_txid)
                     })
@@ -501,7 +496,7 @@ impl<P: core::fmt::Debug> core::fmt::Display for UnresolvableConflict<P> {
             already_confirmed_tx,
             update_tx,
         } = self;
-        write!(f, "update transaction {} at height {:?} conflicts with an already confirmed transaction {} at height {:?}", 
+        write!(f, "update transaction {} at height {:?} conflicts with an already confirmed transaction {} at height {:?}",
             update_tx.1, update_tx.0, already_confirmed_tx.1, already_confirmed_tx.0)
     }
 }

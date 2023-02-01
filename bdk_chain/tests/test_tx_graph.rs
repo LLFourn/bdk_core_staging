@@ -2,7 +2,7 @@
 mod common;
 use bdk_chain::{
     collections::*,
-    tx_graph::{self, Additions, TxGraph},
+    tx_graph::{Additions, TxGraph},
 };
 use bitcoin::{hashes::Hash, OutPoint, PackedLockTime, Script, Transaction, TxIn, TxOut, Txid};
 use core::iter;
@@ -410,7 +410,7 @@ fn test_conflicting_descendants() {
 
     assert_eq!(
         graph
-            .tx_conflicts(&tx_a2, tx_graph::no_filter)
+            .walk_conflicts(&tx_a2, |depth, txid| Some((depth, txid)))
             .collect::<Vec<_>>(),
         vec![(0_usize, txid_a), (1_usize, txid_b),],
     );
@@ -483,8 +483,14 @@ fn test_descendants_no_repeat() {
     let mut graph = TxGraph::default();
     let mut expected_txids = BTreeSet::new();
 
-    for tx in core::iter::once(&tx_a)
-        .chain(&txs_b)
+    // these are NOT descendants of `tx_a`
+    for tx in txs_not_connected {
+        let _ = graph.insert_tx(tx.clone());
+    }
+
+    // these are the expected descendants of `tx_a`
+    for tx in txs_b
+        .iter()
         .chain(&txs_c)
         .chain(core::iter::once(&tx_d))
         .chain(core::iter::once(&tx_e))
@@ -492,17 +498,14 @@ fn test_descendants_no_repeat() {
         let _ = graph.insert_tx(tx.clone());
         assert!(expected_txids.insert(tx.txid()));
     }
-    for tx in txs_not_connected {
-        let _ = graph.insert_tx(tx.clone());
-    }
 
     let descendants = graph
-        .iter_tx_descendants(tx_a.txid(), tx_graph::no_filter)
+        .walk_descendants(tx_a.txid(), |_, txid| Some(txid))
         .collect::<Vec<_>>();
 
     assert_eq!(descendants.len(), expected_txids.len());
 
-    for (_, txid) in descendants {
+    for txid in descendants {
         assert!(expected_txids.remove(&txid));
     }
     assert!(expected_txids.is_empty());
