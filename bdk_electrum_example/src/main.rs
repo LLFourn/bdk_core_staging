@@ -81,31 +81,40 @@ fn main() -> anyhow::Result<()> {
             stop_gap,
             scan_option,
         } => {
-            let scripts = tracker
-                .txout_index
-                .scripts_of_all_keychains()
-                .into_iter()
-                .map(|(keychain, iter)| {
-                    let mut first = true;
-                    (
-                        keychain,
-                        iter.inspect(move |(i, _)| {
-                            if first {
-                                eprint!("\nscanning {}: ", keychain);
-                                first = false;
-                            }
+            let (spk_iterators, local_chain) = {
+                // Get a short lock on the tracker to get the spks iterators
+                // and local chain state
+                let tracker = &*tracker.lock().unwrap();
+                let spk_iterators = tracker
+                    .txout_index
+                    .scripts_of_all_keychains()
+                    .into_iter()
+                    .map(|(keychain, iter)| {
+                        let mut first = true;
+                        (
+                            keychain,
+                            iter.inspect(move |(i, _)| {
+                                if first {
+                                    eprint!("\nscanning {}: ", keychain);
+                                    first = false;
+                                }
 
-                            eprint!("{} ", i);
-                            let _ = io::stdout().flush();
-                        }),
-                    )
-                })
-                .collect();
+                                eprint!("{} ", i);
+                                let _ = io::stdout().flush();
+                            }),
+                        )
+                    })
+                    .collect();
 
+                let local_chain = tracker.chain().checkpoints().clone();
+                (spk_iterators, local_chain)
+            };
+
+            // we scan the spks **wihtout** a lock on the tracker
             let (new_sparsechain, keychain_index_update) = client.wallet_txid_scan(
-                scripts,
+                spk_iterators,
                 Some(stop_gap),
-                tracker.chain().checkpoints(),
+                &local_chain,
                 scan_option.batch_size,
             )?;
 
@@ -121,68 +130,98 @@ fn main() -> anyhow::Result<()> {
             all,
             scan_option,
         } => {
-            let txout_index = &tracker.txout_index;
-            if !(all || unused || unspent) {
-                unused = true;
-                unspent = true;
-            } else if all {
-                unused = false;
-                unspent = false
-            }
-            let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
-                Box::new(core::iter::empty());
-            if unused {
-                spks = Box::new(spks.chain(txout_index.inner().unused(..).map(
-                    |(index, script)| {
-                        eprintln!("Checking if address at {:?} has been used", index);
-                        script.clone()
-                    },
-                )));
-            }
+            let (spks, local_chain) = {
+                // Get a short lock on the tracker to get the spks we're interested in
+                let tracker = &*tracker.lock().unwrap();
+                let txout_index = &tracker.txout_index;
+                if !(all || unused || unspent) {
+                    unused = true;
+                    unspent = true;
+                } else if all {
+                    unused = false;
+                    unspent = false
+                }
+                let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
+                    Box::new(core::iter::empty());
 
-            if all {
-                spks = Box::new(spks.chain(txout_index.script_pubkeys().iter().map(
-                    |(index, script)| {
+                if all {
+                    let all_spks = txout_index
+                        .script_pubkeys()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<Vec<_>>();
+                    spks = Box::new(spks.chain(all_spks.into_iter().map(|(index, script)| {
                         eprintln!("scanning {:?}", index);
-                        script.clone()
-                    },
-                )));
-            }
+                        script
+                    })));
+                }
 
-            if unspent {
-                spks = Box::new(spks.chain(tracker.full_utxos().map(|(_index, ftxout)| {
-                    eprintln!("checking if {} has been spent", ftxout.outpoint);
-                    ftxout.txout.script_pubkey
-                })));
-            }
+                if unused {
+                    let unused_spks = txout_index
+                        .unused(..)
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<Vec<_>>();
+                    spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {
+                        eprintln!("Checking if address at {:?} has been used", index);
+                        script
+                    })));
+                }
 
+                if unspent {
+                    let unspent_txouts = tracker
+                        .full_utxos()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<Vec<_>>();
+                    spks = Box::new(spks.chain(unspent_txouts.into_iter().map(
+                        |(_index, ftxout)| {
+                            eprintln!("checking if {} has been spent", ftxout.outpoint);
+                            ftxout.txout.script_pubkey
+                        },
+                    )));
+                }
+                let local_chain = tracker.chain().checkpoints().clone();
+
+                (spks, local_chain)
+            };
+
+            // we scan the spks **without** a lock on the tracker
             let new_sparsechain = client
-                .spk_txid_scan(spks, tracker.chain().checkpoints(), scan_option.batch_size)
+                .spk_txid_scan(spks, &local_chain, scan_option.batch_size)
                 .context("scanning the blockchain")?;
 
             new_sparsechain
         }
     };
 
-    let sparsechain_changeset = tracker.chain().determine_changeset(&chain_update)?;
+    let (sparsechain_changeset, new_txids) = {
+        // get another short lock to figure out which txids are missing full transactions
+        let tracker = &*tracker.lock().unwrap();
+        let sparsechain_changeset = tracker.chain().determine_changeset(&chain_update)?;
 
-    let new_txids = tracker
-        .chain()
-        .changeset_additions(&sparsechain_changeset)
-        .collect::<Vec<_>>();
+        let new_txids = tracker
+            .chain()
+            .changeset_additions(&sparsechain_changeset)
+            .collect::<Vec<_>>();
 
+        (sparsechain_changeset, new_txids)
+    };
+
+    // fetch the full transactions **without** a lock on the tracker
     let new_txs = client
         .batch_transaction_get(new_txids.iter())
         .context("fetching full transactions")?;
 
-    let chaingraph_changeset = tracker
-        .chain_graph()
-        .inflate_changeset(sparsechain_changeset, new_txs)
-        .context("inflating changeset")?;
-
-    keychain_changeset.chain_graph = chaingraph_changeset;
-
-    db.append_changeset(&keychain_changeset)?;
-    tracker.apply_changeset(keychain_changeset);
+    {
+        // Get a final short lock to apply the changes
+        let tracker = &mut *tracker.lock().unwrap();
+        let chaingraph_changeset = tracker
+            .chain_graph()
+            .inflate_changeset(sparsechain_changeset, new_txs)
+            .context("inflating changeset")?;
+        keychain_changeset.chain_graph = chaingraph_changeset;
+        let db = &mut *db.lock().unwrap();
+        db.append_changeset(&keychain_changeset)?;
+        tracker.apply_changeset(keychain_changeset);
+    }
     Ok(())
 }

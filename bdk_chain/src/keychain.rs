@@ -102,6 +102,15 @@ impl<K, I> Default for KeychainScan<K, I> {
     }
 }
 
+impl<K, P> From<ChainGraph<P>> for KeychainScan<K, P> {
+    fn from(update: ChainGraph<P>) -> Self {
+        KeychainScan {
+            update,
+            last_active_indexes: Default::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 #[cfg_attr(
     feature = "serde",
