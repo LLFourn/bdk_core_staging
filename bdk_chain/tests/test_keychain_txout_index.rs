@@ -30,22 +30,6 @@ fn init_txout_index() -> (
     (txout_index, external_descriptor, internal_descriptor)
 }
 
-fn mark_used(tracker: &mut KeychainTxOutIndex<TestKeychain>, index: &(TestKeychain, u32)) {
-    let op = OutPoint {
-        txid: h!("dangling"),
-        vout: 0,
-    };
-    let txout = TxOut {
-        value: 1,
-        script_pubkey: tracker
-            .spk_at_index(index)
-            .expect("bad keychain, or script not derived")
-            .clone(),
-    };
-    tracker.scan_txout(op, &txout);
-    assert!(tracker.is_used(index));
-}
-
 #[test]
 fn test_store_all_up_to() {
     let (mut txout_index, _, _) = init_txout_index();
@@ -129,7 +113,7 @@ fn test_wildcard_derivations() {
     (0..=15)
         .into_iter()
         .chain([17, 20, 23].into_iter())
-        .for_each(|index| mark_used(&mut txout_index, &(TestKeychain::External, index)));
+        .for_each(|index| txout_index.mark_used(&TestKeychain::External, index));
 
     assert_eq!(
         txout_index.next_derivation_index(&TestKeychain::External),
@@ -151,7 +135,7 @@ fn test_wildcard_derivations() {
     // - next_unused() = ((27, <spk>), DerivationAdditions)
     (0..=26)
         .into_iter()
-        .for_each(|index| mark_used(&mut txout_index, &(TestKeychain::External, index)));
+        .for_each(|index| txout_index.mark_used(&TestKeychain::External, index));
 
     assert_eq!(
         txout_index.next_unused(&TestKeychain::External),
@@ -234,11 +218,12 @@ fn test_non_wildcard_derivations() {
     // - next derivation index should not be new
     // - derive new and next unused should return the old script
     // - store_up_to should not panic and return empty additions
-    mark_used(&mut txout_index, &(TestKeychain::External, 0));
     assert_eq!(
         txout_index.next_derivation_index(&TestKeychain::External),
         (0, false)
     );
+    txout_index.mark_used(&TestKeychain::External, 0);
+
     assert_eq!(
         txout_index.derive_new(&TestKeychain::External),
         ((0, &external_spk), [].into())

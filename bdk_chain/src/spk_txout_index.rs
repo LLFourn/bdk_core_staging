@@ -197,6 +197,30 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         self.unused.get(index).is_none()
     }
 
+    /// Marks the script pubkey at `index` as used even though it hasn't seen an output with it.
+    /// This only has an effect when the `index` had been added to `self` already and was unused.
+    ///
+    /// This is useful when you want to reserve a script pubkey for something but don't want to add
+    /// the transaction output using it to the index yet. Other callers will consider `index` used
+    /// until you call [`unmark_used`].
+    ///
+    /// [`unmark_used`]: Self::unmark_used
+    pub fn mark_used(&mut self, index: &I) {
+        self.unused.remove(index);
+    }
+
+    /// Undoes the effect of [`mark_used`].
+    ///
+    /// Note that if `self` has scanned an output with this script pubkey then this will have no
+    /// effect.
+    ///
+    /// [`mark_used`]: Self::mark_used
+    pub fn unmark_used(&mut self, index: &I) {
+        if self.outputs_in_range(index..=index).next().is_none() {
+            self.unused.insert(index.clone());
+        }
+    }
+
     /// Returns the index associated with the script pubkey.
     pub fn index_of_spk(&self, script: &Script) -> Option<I> {
         self.spk_indexes.get(script).cloned()
