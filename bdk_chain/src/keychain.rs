@@ -20,6 +20,11 @@ mod keychain_txout_index;
 #[cfg(feature = "miniscript")]
 pub use keychain_txout_index::*;
 
+/// Represents updates to the `last_active` for each `keychain`.
+///
+/// TODO: In the future, we will add an additional index per keychain for "lookahead". This will be
+/// helpful for syncing/scanning data from blockchains without increasing the user-derived index
+/// count.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -33,11 +38,15 @@ pub use keychain_txout_index::*;
     )
 )]
 #[must_use]
-pub struct DerivationAdditions<K>(BTreeMap<K, u32>);
+pub struct DerivationAdditions<K> {
+    /// The updates (if any) to the last-derived index per keychain.
+    pub last_derived: BTreeMap<K, u32>,
+}
 
 impl<K> DerivationAdditions<K> {
+    /// Returns `true` if the additions are empty.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.last_derived.is_empty()
     }
 }
 
@@ -47,19 +56,21 @@ impl<K: Ord> DerivationAdditions<K> {
     /// If keychain already exists, increases the index, if other's index > self's index
     /// If keychain didn't exist, appends the new keychain
     pub fn append(&mut self, mut other: Self) {
-        self.0.iter_mut().for_each(|(key, index)| {
-            if let Some(other_index) = other.0.remove(key) {
+        self.last_derived.iter_mut().for_each(|(key, index)| {
+            if let Some(other_index) = other.last_derived.remove(key) {
                 *index = other_index.max(*index);
             }
         });
 
-        self.0.append(&mut other.0);
+        self.last_derived.append(&mut other.last_derived);
     }
 }
 
 impl<K> Default for DerivationAdditions<K> {
     fn default() -> Self {
-        Self(Default::default())
+        Self {
+            last_derived: Default::default(),
+        }
     }
 }
 
@@ -68,19 +79,9 @@ where
     I: IntoIterator<Item = (K, u32)>,
 {
     fn from(value: I) -> Self {
-        Self(value.into_iter().collect())
-    }
-}
-
-impl<K> AsRef<BTreeMap<K, u32>> for DerivationAdditions<K> {
-    fn as_ref(&self) -> &BTreeMap<K, u32> {
-        &self.0
-    }
-}
-
-impl<K> AsMut<BTreeMap<K, u32>> for DerivationAdditions<K> {
-    fn as_mut(&mut self) -> &mut BTreeMap<K, u32> {
-        &mut self.0
+        Self {
+            last_derived: value.into_iter().collect(),
+        }
     }
 }
 
@@ -282,22 +283,22 @@ mod test {
 
         // Exiting index doesn't update if new index in `other` is lower than `self`
         assert_eq!(
-            lhs.derivation_indices.as_ref().get(&Keychain::One),
+            lhs.derivation_indices.last_derived.get(&Keychain::One),
             Some(&7)
         );
         // Existing index updates if new index in `other` is higher than `self.
         assert_eq!(
-            lhs.derivation_indices.as_ref().get(&Keychain::Two),
+            lhs.derivation_indices.last_derived.get(&Keychain::Two),
             Some(&5)
         );
         // Existing index unchanged, if keychain doesn't exist in `other`
         assert_eq!(
-            lhs.derivation_indices.as_ref().get(&Keychain::Three),
+            lhs.derivation_indices.last_derived.get(&Keychain::Three),
             Some(&3)
         );
         // New keychain gets added if keychain is in `other`, but not in `self`.
         assert_eq!(
-            lhs.derivation_indices.as_ref().get(&Keychain::Four),
+            lhs.derivation_indices.last_derived.get(&Keychain::Four),
             Some(&4)
         );
     }

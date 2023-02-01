@@ -261,7 +261,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 .insert_script_pubkey((keychain.clone(), index), spk);
         }
 
-        additions.as_mut().insert(keychain.clone(), end);
+        additions.last_derived.insert(keychain.clone(), end);
         additions
     }
 
@@ -406,6 +406,12 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                     .map(|index| (keychain.clone(), index))
             })
             .collect()
+    }
+
+    /// Applies the derivation additions to the [`KeychainTxOutIndex`], extending the number of
+    /// derived scripts per keychain, as specified in the `additions`.
+    pub fn apply_additions(&mut self, additions: DerivationAdditions<K>) {
+        let _ = self.store_all_up_to(&additions.last_derived);
     }
 }
 
