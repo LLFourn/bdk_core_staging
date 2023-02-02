@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
     let esplora_url = match args.network {
         Network::Bitcoin => "https://mempool.space/api",
         Network::Testnet => "https://mempool.space/testnet/api",
-        Network::Regtest => "http://localhost:3000",
+        Network::Regtest => "http://localhost:3002",
         Network::Signet => "https://mempool.space/signet/api",
     };
 
