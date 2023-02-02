@@ -2,7 +2,9 @@
 mod common;
 
 use bdk_chain::{
-    chain_graph::{ChainGraph, ChangeSet, InflateError, UnresolvableConflict, UpdateError},
+    chain_graph::{
+        ChainGraph, ChangeSet, InflateError, InsertTxError, UnresolvableConflict, UpdateError,
+    },
     collections::HashSet,
     sparse_chain,
     tx_graph::{self, Additions},
@@ -454,4 +456,145 @@ fn test_apply_changes_reintroduce_tx() {
             ..Default::default()
         }
     );
+}
+
+#[test]
+fn test_evict_descendants() {
+    let block_1 = BlockId {
+        height: 1,
+        hash: h!("block 1"),
+    };
+
+    let block_2a = BlockId {
+        height: 2,
+        hash: h!("block 2 a"),
+    };
+
+    let block_2b = BlockId {
+        height: 2,
+        hash: h!("block 2 b"),
+    };
+
+    let tx_1 = Transaction {
+        input: vec![TxIn {
+            previous_output: OutPoint::new(h!("fake tx"), 0),
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: 10_000,
+            script_pubkey: Script::new(),
+        }],
+        ..common::new_tx(1)
+    };
+    let tx_2 = Transaction {
+        input: vec![TxIn {
+            previous_output: OutPoint::new(tx_1.txid(), 0),
+            ..Default::default()
+        }],
+        output: vec![
+            TxOut {
+                value: 20_000,
+                script_pubkey: Script::new(),
+            },
+            TxOut {
+                value: 30_000,
+                script_pubkey: Script::new(),
+            },
+        ],
+        ..common::new_tx(2)
+    };
+    let tx_3 = Transaction {
+        input: vec![TxIn {
+            previous_output: OutPoint::new(tx_2.txid(), 0),
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: 40_000,
+            script_pubkey: Script::new(),
+        }],
+        ..common::new_tx(3)
+    };
+    let tx_4 = Transaction {
+        input: vec![TxIn {
+            previous_output: OutPoint::new(tx_2.txid(), 1),
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: 40_000,
+            script_pubkey: Script::new(),
+        }],
+        ..common::new_tx(4)
+    };
+    let tx_5 = Transaction {
+        input: vec![TxIn {
+            previous_output: OutPoint::new(tx_4.txid(), 0),
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: 40_000,
+            script_pubkey: Script::new(),
+        }],
+        ..common::new_tx(5)
+    };
+
+    let tx_conflict = Transaction {
+        input: vec![TxIn {
+            previous_output: OutPoint::new(tx_1.txid(), 0),
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: 12345,
+            script_pubkey: Script::new(),
+        }],
+        ..common::new_tx(6)
+    };
+
+    // 1 is spent by 2, 2 is spent by 3 and 4, 4 is spent by 5
+    let _txid_1 = tx_1.txid();
+    let txid_2 = tx_2.txid();
+    let txid_3 = tx_3.txid();
+    let txid_4 = tx_4.txid();
+    let txid_5 = tx_5.txid();
+
+    // this tx conflicts with 2
+    let txid_conflict = tx_conflict.txid();
+
+    let cg = {
+        let mut cg = ChainGraph::<TxHeight>::default();
+        let _ = cg.insert_checkpoint(block_1);
+        let _ = cg.insert_checkpoint(block_2a);
+        let _ = cg.insert_tx(tx_1, TxHeight::Confirmed(1));
+        let _ = cg.insert_tx(tx_2, TxHeight::Confirmed(2));
+        let _ = cg.insert_tx(tx_3, TxHeight::Confirmed(2));
+        let _ = cg.insert_tx(tx_4, TxHeight::Confirmed(2));
+        let _ = cg.insert_tx(tx_5, TxHeight::Confirmed(2));
+        cg
+    };
+
+    let update = {
+        let mut cg = ChainGraph::<TxHeight>::default();
+        let _ = cg.insert_checkpoint(block_1);
+        let _ = cg.insert_checkpoint(block_2b);
+        let _ = cg.insert_tx(tx_conflict.clone(), TxHeight::Confirmed(2));
+        cg
+    };
+
+    assert_eq!(
+        cg.determine_changeset(&update),
+        Ok(ChangeSet {
+            chain: changeset! {
+                checkpoints: [(2, Some(block_2b.hash))],
+                txids: [(txid_2, None), (txid_3, None), (txid_4, None), (txid_5, None), (txid_conflict, Some(TxHeight::Confirmed(2)))]
+            },
+            graph: Additions {
+                tx: [tx_conflict.clone()].into(),
+                ..Default::default()
+            }
+        })
+    );
+
+    let err = cg
+        .insert_tx_preview(tx_conflict.clone(), TxHeight::Unconfirmed)
+        .expect_err("must fail due to conflicts");
+    assert!(matches!(err, InsertTxError::UnresolvableConflict(_)));
 }
