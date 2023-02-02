@@ -1,11 +1,17 @@
+use core::ops::RangeInclusive;
+
 use crate::{collections::*, ForEachTxout};
-use alloc::{borrow::Cow, vec::Vec};
+use alloc::vec::Vec;
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TxGraph {
     txs: HashMap<Txid, TxNode>,
     spends: BTreeMap<OutPoint, HashSet<Txid>>,
+
+    // This atrocity exists so that `TxGraph::outspends()` can return a reference.
+    // FIXME: This can be removed once `HashSet::new` is a const fn.
+    empty_outspends: HashSet<Txid>,
 }
 
 /// Node of a [`TxGraph`]
@@ -26,16 +32,8 @@ impl TxGraph {
     ///
     /// `TxGraph` allows conflicting transactions within the graph. Obviously the transactions in
     /// the returned will never be in the same blockchain.
-    ///
-    /// Note this returns a [`Cow`] because of an implementation detail.
-    ///
-    /// [`Cow`]: std::borrow::Cow
-    // FIXME: this Cow could be gotten rid of if we could do HashSet::new in a const fn
-    pub fn outspends(&self, outpoint: OutPoint) -> Cow<HashSet<Txid>> {
-        self.spends
-            .get(&outpoint)
-            .map(|outspends| Cow::Borrowed(outspends))
-            .unwrap_or(Cow::Owned(HashSet::default()))
+    pub fn outspends(&self, outpoint: OutPoint) -> &HashSet<Txid> {
+        self.spends.get(&outpoint).unwrap_or(&self.empty_outspends)
     }
 
     /// The transactions spending from `txid`.
@@ -167,7 +165,7 @@ impl TxGraph {
         })
     }
 
-    /// Iterate over all full transactions in the graph
+    /// Iterate over all full transactions in the graph.
     pub fn full_transactions(&self) -> impl Iterator<Item = &Transaction> {
         self.txs.iter().filter_map(|(_, tx)| match tx {
             TxNode::Whole(tx) => Some(tx),
@@ -175,6 +173,7 @@ impl TxGraph {
         })
     }
 
+    /// Iterate over all partial transactions (outputs only) in the graph.
     pub fn partial_transactions(&self) -> impl Iterator<Item = (Txid, &BTreeMap<u32, TxOut>)> {
         self.txs.iter().filter_map(|(txid, tx)| match tx {
             TxNode::Whole(_) => None,
@@ -182,23 +181,52 @@ impl TxGraph {
         })
     }
 
-    /// Return an iterator of conflicting txids, where the first field of the tuple is the vin of
-    /// the original tx in which the txid conflicts.
-    pub fn conflicting_txids<'g>(
+    /// Creates an iterator that both filters and maps descendants from the starting `txid`.
+    ///
+    /// The supplied closure takes in two inputs `(depth, descendant_txid)`:
+    ///
+    /// * `depth` is the distance between the starting `txid` and the `descendant_txid`. I.e. if the
+    ///     descendant is spending an output of the starting `txid`, the `depth` will be 1.
+    /// * `descendant_txid` is the descendant's txid which we are considering to walk.
+    ///
+    /// The supplied closure returns an `Option<T>`, allowing the caller to map each node it vists
+    /// and decide whether to visit descendants.
+    pub fn walk_descendants<'g, F, T>(&'g self, txid: Txid, walk_map: F) -> TxDescendants<F>
+    where
+        F: FnMut(usize, Txid) -> Option<T> + 'g,
+    {
+        TxDescendants::new_exclude_root(self, txid, walk_map)
+    }
+
+    /// Creates an iterator that both filters and maps conflicting transactions (this includes
+    /// descendants of directly-conflicting transactions, which are also considered conflicts).
+    ///
+    /// Refer to [`Self::walk_descendants()`] for `walk_map` usage.
+    pub fn walk_conflicts<'g, F, T>(&'g self, tx: &'g Transaction, walk_map: F) -> TxDescendants<F>
+    where
+        F: FnMut(usize, Txid) -> Option<T> + 'g,
+    {
+        let txids = self.direct_conflicts_of_tx(tx).map(|(_, txid)| txid);
+        TxDescendants::from_multiple_include_root(self, txids, walk_map)
+    }
+
+    /// Given a transaction, return an iterator of txids which directly conflict with the given
+    /// transaction's inputs (spends). The conflicting txids are returned with the given
+    /// transaction's vin (in which it conflicts).
+    ///
+    /// Note that this only returns directly conflicting txids and does not include descendants of
+    /// those txids (which are technically also conflicting).
+    pub fn direct_conflicts_of_tx<'g>(
         &'g self,
         tx: &'g Transaction,
     ) -> impl Iterator<Item = (usize, Txid)> + '_ {
+        let txid = tx.txid();
         tx.input
             .iter()
             .enumerate()
-            .flat_map(|(vin, txin)| {
-                self.spends
-                    .get(&txin.previous_output)
-                    .into_iter()
-                    .flat_map(|spend_set| spend_set.iter())
-                    .map(move |&spend_txid| (vin, spend_txid))
-            })
-            .filter(move |(_, spend_txid)| spend_txid != &tx.txid())
+            .filter_map(|(vin, txin)| self.spends.get(&txin.previous_output).zip(Some(vin)))
+            .flat_map(|(spends, vin)| core::iter::repeat(vin).zip(spends.iter().cloned()))
+            .filter(move |(_, conflicting_txid)| *conflicting_txid != txid)
     }
 
     /// Previews the resultant [`Additions`] when [`Self`] is updated against the `update` graph.
@@ -347,4 +375,109 @@ impl ForEachTxout for Additions {
     fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
         self.txouts().for_each(f)
     }
+}
+
+pub struct TxDescendants<'g, F> {
+    graph: &'g TxGraph,
+    visited: HashSet<Txid>,
+    stack: Vec<(usize, Txid)>,
+    filter_map: F,
+}
+
+impl<'g, F> TxDescendants<'g, F> {
+    /// Creates a `TxDescendants` that includes the starting `txid` when iterating.
+    #[allow(unused)]
+    pub(crate) fn new_include_root(graph: &'g TxGraph, txid: Txid, filter_map: F) -> Self {
+        Self {
+            graph,
+            visited: Default::default(),
+            stack: [(0, txid)].into(),
+            filter_map,
+        }
+    }
+
+    /// Creates a `TxDescendants` that excludes the starting `txid` when iterating.
+    pub(crate) fn new_exclude_root(graph: &'g TxGraph, txid: Txid, filter_map: F) -> Self {
+        let mut descendants = Self {
+            graph,
+            visited: Default::default(),
+            stack: Default::default(),
+            filter_map,
+        };
+        descendants.populate_stack(1, txid);
+        descendants
+    }
+
+    /// Creates a `TxDescendants` from multiple starting transactions that includes the starting
+    /// `txid`s when iterating.
+    pub(crate) fn from_multiple_include_root<I>(graph: &'g TxGraph, txids: I, filter_map: F) -> Self
+    where
+        I: IntoIterator<Item = Txid>,
+    {
+        Self {
+            graph,
+            visited: Default::default(),
+            stack: txids.into_iter().map(|txid| (0, txid)).collect(),
+            filter_map,
+        }
+    }
+
+    /// Creates a `TxDescendants` from multiple starting transactions that excludes the starting
+    /// `txid`s when iterating.
+    #[allow(unused)]
+    pub(crate) fn from_multiple_exclude_root<I>(graph: &'g TxGraph, txids: I, filter_map: F) -> Self
+    where
+        I: IntoIterator<Item = Txid>,
+    {
+        let mut descendants = Self {
+            graph,
+            visited: Default::default(),
+            stack: Default::default(),
+            filter_map,
+        };
+        for txid in txids {
+            descendants.populate_stack(1, txid);
+        }
+        descendants
+    }
+}
+
+impl<'g, F> TxDescendants<'g, F> {
+    fn populate_stack(&mut self, depth: usize, txid: Txid) {
+        let spend_paths = self
+            .graph
+            .spends
+            .range(tx_outpoint_range(txid))
+            .flat_map(|(_, spends)| spends)
+            .map(|&txid| (depth, txid));
+        self.stack.extend(spend_paths);
+    }
+}
+
+impl<'g, F, T> Iterator for TxDescendants<'g, F>
+where
+    F: FnMut(usize, Txid) -> Option<T>,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (op_spends, txid, item) = loop {
+            // we have exhausted all paths when stack is empty
+            let (op_spends, txid) = self.stack.pop()?;
+            // we do not want to visit the same transaction twice
+            if self.visited.insert(txid) {
+                // ignore paths when user filters them out
+                if let Some(item) = (self.filter_map)(op_spends, txid) {
+                    break (op_spends, txid, item);
+                }
+            }
+        };
+
+        self.populate_stack(op_spends + 1, txid);
+        return Some(item);
+    }
+}
+
+fn tx_outpoint_range(txid: Txid) -> RangeInclusive<OutPoint> {
+    OutPoint::new(txid, u32::MIN)..=OutPoint::new(txid, u32::MAX)
 }

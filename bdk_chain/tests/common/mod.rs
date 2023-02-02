@@ -48,3 +48,13 @@ macro_rules! changeset {
         }
     }};
 }
+
+#[allow(unused)]
+pub fn new_tx(lt: u32) -> bitcoin::Transaction {
+    bitcoin::Transaction {
+        version: 0x00,
+        lock_time: bitcoin::PackedLockTime(lt),
+        input: vec![],
+        output: vec![],
+    }
+}
