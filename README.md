@@ -32,7 +32,7 @@ TODO:
 [x] Working electrum example (see [bdk_electrum_example](./bdk_electrum_example))
 [ ] Working bitcoin core rpc block-by-block example (see [#89](https://github.com/LLFourn/bdk_core_staging/pull/89))
 [ ] Working bitcoin core rpc wallet sync example (see [#79](https://github.com/LLFourn/bdk_core_staging/pull/79))
-[ ] Working compact block filters example using nakamoto (see [#14]).j
+[ ] Working compact block filters example using nakamoto (see #14).
 
 ### Miniscript planning module
 
