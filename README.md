@@ -2,74 +2,105 @@
 
 This is a repo for building out bdk_core before it can be integrated into bdk.
 
-The plan is to have each kind of "blockchain" and each kind of "datastore" as its own crate. Everything will depend on bdk_core most likely but bdk_core only depends on `rust-bitcoin` and `rust-miniscript`.
+## Components
 
-In addition there is the `bdk_core_example` crate which has a basic command line wallet for seeing how it works.
+The `bdk_core` project has three main components in order of importance:
 
-See the [blog post] for an intro to the idea of `bdk_core`
+### 1. `bdk_chain`
 
-## Things that have been built/started
+The goal of this component is give wallets the mechanisms needed to:
 
-###  `DescriptorTracker`
-
-The [blog post] has more detail on the motivation behind this.
-
-This decouples completely how you fetch data from how you store it.
-
-#### TODOs
-
-- I think we should keep a hash of all txids found out to a certain block. This help decide whether we are in sync with persistent storage for example and helps find where two sets of data diverge. This would be better than the current approach. ✅ (done)
-- The algorithm for tracking which txouts have been spent is not guaranteed to be correct if things happen in odd orders or you get conflicting things in the mempool. I think we will need an index of txo spends e.g. outpoints -> tx that spends them. ✅ (done but needs tests)
-
-### `CoinSelector`
-
-This keeps track of the value of the coins you have selected so far and whether the coin selection constraints have been satisfied. Improvements over bdk:
-
-1. You can have **both** a feerate and absolute fee constraint.
-2. The coin selection "algorithm" logic does not need to keep track of whether feerate has been satisfied yet etc. All this logic is done for you. (at least in coin selection algorithms that are greedy I don't know how well this idea will work with branch and bound).
-3. No traits needed to be implemented to do coin selection. This is good because you can use bespoke application data like utxo labels etc without having to pass them into something implementing `CoinSelectionAlgorithm`.
-4. `CoinSelector` tries checks if it complete at any stage both with and without change. In bdk the choice of change [is done after](https://github.com/bitcoindevkit/bdk/issues/147) coin selection which is sub-optimal.
-
-#### TODOs
-
-- implement branch and bound to see how that works
-- Port bdk's `FeeRate`
-
-## Big Things that are missing
-
-### rpc and compact block filters
-
-Incorporating them will probably change the API a bit.
-
-### Persistent Storage
-
-The approach here will start with a flat file db, get that working and then add the others that already exist.
+1. Figure out what data they need to fetch
+2. Process that data in a way that never leads to inconsistent states
+3. Fully index that data and expose it so that it can be consumed without friction.
 
 
-### Choosing how you are going to spend an input
+Our design goals for these mechanisms are:
 
-In bdk we use `max_satisfaction_weight` to figure out the weight of an input for coin selection. But couldn't we ask the application to choose how it would satisfy each input? Or maybe just find the way of satisfying the input with the least weight? This would allow us to use the weight for that witness in coin selection and also let us know what to set the csv/locktime to etc.
+1. Data source agnostic -- nothing in `bdk_chain` cares about where you get data from or whether you
+   do it synchronously or asynchronously. if you know a fact about the blockchain you can
+   just tell `bdk_chain`'s APIs about it that information will be integrated if it can be done
+   consistently.
+2. Error free APIs  
+3. Data persistence agnostic. `bdk_chain` doesn't care where you cache on-chain data, what you cache or how you fetch it.
 
-Without this too much has to be handled by the user. The `policy` module of bdk has some of the logic we need to some extent.
+TODO:
+
+- [x] Chain and data indexing
+- [x] Persistant storage (see [file_store](./bdk_chain/src/file_store.rs))
+- [x] Working esplora example (see [bdk_esplora_example](./bdk_esplora_example))
+- [x] Working electrum example (see [bdk_electrum_example](./bdk_electrum_example))
+- [ ] Working bitcoin core rpc block-by-block example (see [#89](https://github.com/LLFourn/bdk_core_staging/pull/89))
+- [ ] Working bitcoin core rpc wallet sync example (see [#79](https://github.com/LLFourn/bdk_core_staging/pull/79))
+- [ ] Working compact block filters example using nakamoto (see #14).
+
+### 2. Miniscript planning module
+
+This component is about properly using miniscript's potential to know exactly which outputs you can
+spend and the most efficient way to spend them *before* trying to spend them. This allows you to
+know precisely how much weight spending an output will add for coin selection. This is an important
+feature in a taproot world since different spending paths can have vastly different weight.
+
+The PR to miniscript has already been made: https://github.com/rust-bitcoin/rust-miniscript/pull/481
+
+### 3. Coin selection, transaction building and signing
+
+With the planning module, we'll be able to re-engineer coin selection and transaction building as well.
+
+
+#### Coin selection
+
+We've designed and implemented a robust coin selection API which allows users to choose what metric
+they want to optimise for during a branch and bound search.
+
+Coin selection PR: https://github.com/LLFourn/bdk_core_staging/pull/46
+
+
+#### Transaction building
+
+Transaction building
+
+building issue: https://github.com/LLFourn/bdk_core_staging/issues/30
+
+## Development and Release plan
+
+The release dates for the first release we will try to make for the first releases are:
+
+- 10-02-2023: Release `bdk_chain v0.1.0` -- working with esplora/electrum data
+- 24-02-2023: Release `bdk v1.0.0-alpha.0`
+- 10-03-2023: Release `bdk_chain v.2.0` -- working with blocks form CBF and bitcoin RPC
+- 24-03-2023: Release `bdk v1.0.0-alpha.0`
+
+From there we will continue to develop `bdk_chain` and the other components and as they are
+integrated into `bdk` we will continue to make new alpha/beta releases of `bdk` until we have
+something suitable for a release candidate. Before making a release candidate we'll need the
+planning module to be merged into miniscript and released.
 
 ## Try it out
 
-An example cli wallet is in `bdk_example`.
-It does a full sync each time you run it and then runs your command.
-By default it uses signet. You set these environment variables for your descriptors. These values already have coins and history.
+We have examples in their own crates like `bdk_esplora_example` and `bdk_electrum_example` with more coming soon.
 
-This is not well tested. If something goes wrong it's probably a bug!
+To use them move into the directory and try running some commands.
+First you'll need to set some descriptors.
 
+```
+export DESCRIPTOR="tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)" CHANGE_DESCRIPTOR="tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/*)"
+```
+
+### Initialize the data from the chain
+
+
+``` sh
+cargo run -- scan # for electrum and esplora
+cargo run -- balance
+```
 
 ### A plain BIP86 TR wallet
 
 ```
-cd bdk_core_example
-export DESCRIPTOR="tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)" CHANGE_DESCRIPTOR="tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/*)"
-
 cargo run -- address list
 cargo run -- address next
-cargo run -- send 10000 <the new address> 
+cargo run -- send 10000 <the new address>
 ```
 
 ### Script path spending works too
