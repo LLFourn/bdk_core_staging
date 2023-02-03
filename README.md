@@ -39,7 +39,7 @@ TODO:
 This component is about properly using miniscript's potential to know exactly which outputs you can
 spend and the most efficient way to spend them *before* trying to spend them. This allows you to
 know precisely how much weight spending an output will add for coin selection. This is an important
-feature in a taproot world sine different spending paths can have vastly different weight.
+feature in a taproot world since different spending paths can have vastly different weight.
 
 The PR to miniscript has already been made: https://github.com/rust-bitcoin/rust-miniscript/pull/481
 
