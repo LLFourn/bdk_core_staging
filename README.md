@@ -6,7 +6,7 @@ This is a repo for building out bdk_core before it can be integrated into bdk.
 
 The `bdk_core` project has three main components in order of importance:
 
-### `bdk_chain`
+### 1. `bdk_chain`
 
 The goal of this component is give wallets the mechanisms needed to:
 
@@ -26,15 +26,15 @@ Our design goals for these mechanisms are:
 
 TODO:
 
-[x] Chain and data indexing
-[x] Persistant storage (see [file_store](./bdk_chain/src/file_store.rs))
-[x] Working esplora example (see [bdk_esplora_example](./bdk_esplora_example))
-[x] Working electrum example (see [bdk_electrum_example](./bdk_electrum_example))
-[ ] Working bitcoin core rpc block-by-block example (see [#89](https://github.com/LLFourn/bdk_core_staging/pull/89))
-[ ] Working bitcoin core rpc wallet sync example (see [#79](https://github.com/LLFourn/bdk_core_staging/pull/79))
-[ ] Working compact block filters example using nakamoto (see #14).
+- [x] Chain and data indexing
+- [x] Persistant storage (see [file_store](./bdk_chain/src/file_store.rs))
+- [x] Working esplora example (see [bdk_esplora_example](./bdk_esplora_example))
+- [x] Working electrum example (see [bdk_electrum_example](./bdk_electrum_example))
+- [ ] Working bitcoin core rpc block-by-block example (see [#89](https://github.com/LLFourn/bdk_core_staging/pull/89))
+- [ ] Working bitcoin core rpc wallet sync example (see [#79](https://github.com/LLFourn/bdk_core_staging/pull/79))
+- [ ] Working compact block filters example using nakamoto (see #14).
 
-### Miniscript planning module
+### 2. Miniscript planning module
 
 This component is about properly using miniscript's potential to know exactly which outputs you can
 spend and the most efficient way to spend them *before* trying to spend them. This allows you to
@@ -43,21 +43,38 @@ feature in a taproot world since different spending paths can have vastly differ
 
 The PR to miniscript has already been made: https://github.com/rust-bitcoin/rust-miniscript/pull/481
 
-### Coin selection, transaction building and signing
+### 3. Coin selection, transaction building and signing
 
 With the planning module, we'll be able to re-engineer coin selection and transaction building as well.
 
+
+#### Coin selection
+
+We've designed and implemented a robust coin selection API which allows users to choose what metric
+they want to optimise for during a branch and bound search.
+
 Coin selection PR: https://github.com/LLFourn/bdk_core_staging/pull/46
-Tx building issue: https://github.com/LLFourn/bdk_core_staging/issues/30
+
+
+#### Transaction building
+
+Transaction building
+
+building issue: https://github.com/LLFourn/bdk_core_staging/issues/30
 
 ## Development and Release plan
 
 The release dates for the first release we will try to make for the first releases are:
 
-- 10-02-2023: Release `bdk_chain v0.1.0`
+- 10-02-2023: Release `bdk_chain v0.1.0` -- working with esplora/electrum data
 - 24-02-2023: Release `bdk v1.0.0-alpha.0`
+- 10-03-2023: Release `bdk_chain v.2.0` -- working with blocks form CBF and bitcoin RPC
+- 24-03-2023: Release `bdk v1.0.0-alpha.0`
 
-From there we will continue to develop `bdk_chain` and the other components and as they are integrated into `bdk` we  will continue to make new alpha/beta releases of `bdk` until we have something suitable for a release candidate.
+From there we will continue to develop `bdk_chain` and the other components and as they are
+integrated into `bdk` we will continue to make new alpha/beta releases of `bdk` until we have
+something suitable for a release candidate. Before making a release candidate we'll need the
+planning module to be merged into miniscript and released.
 
 ## Try it out
 
