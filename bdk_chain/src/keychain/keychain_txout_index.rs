@@ -232,11 +232,9 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// script pubkeys are added, or if `keychain` does not exist, [`DerivationAdditions`] will be
     /// empty.
     pub fn store_up_to(&mut self, keychain: &K, up_to: u32) -> DerivationAdditions<K> {
-        let mut additions = DerivationAdditions::default();
-
         let descriptor = match self.keychains.get(&keychain) {
             Some(descriptor) => descriptor,
-            None => return additions,
+            None => return Default::default(),
         };
 
         let end = match descriptor.has_wildcard() {
@@ -245,7 +243,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         };
         let (next_to_derive, can_derive) = self.next_derivation_index(keychain);
         if !can_derive || next_to_derive > end {
-            return additions;
+            return Default::default();
         }
 
         let secp = Secp256k1::verification_only();
@@ -261,8 +259,9 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 .insert_script_pubkey((keychain.clone(), index), spk);
         }
 
-        additions.last_derived.insert(keychain.clone(), end);
-        additions
+        let mut additions = BTreeMap::default();
+        additions.insert(keychain.clone(), end);
+        DerivationAdditions(additions)
     }
 
     /// Derives a new script pubkey for `keychain`.
@@ -411,7 +410,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Applies the derivation additions to the [`KeychainTxOutIndex`], extending the number of
     /// derived scripts per keychain, as specified in the `additions`.
     pub fn apply_additions(&mut self, additions: DerivationAdditions<K>) {
-        let _ = self.store_all_up_to(&additions.last_derived);
+        let _ = self.store_all_up_to(&additions.0);
     }
 }
 

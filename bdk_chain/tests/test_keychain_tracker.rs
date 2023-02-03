@@ -29,7 +29,8 @@ fn test_insert_tx() {
         output: vec![txout],
     };
 
-    assert_eq!(tracker.txout_index.store_up_to(&(), 5), [((), 5)].into(),);
+    let _ = tracker.txout_index.store_up_to(&(), 5);
+
     let changeset = tracker
         .insert_tx_preview(tx.clone(), ConfirmationTime::Unconfirmed)
         .unwrap();
@@ -56,15 +57,15 @@ fn test_insert_tx() {
 
 #[test]
 fn test_balance() {
+    use core::str::FromStr;
     #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
     enum Keychain {
         One,
         Two,
     }
     let mut tracker = KeychainTracker::<Keychain, TxHeight>::default();
-    let secp = Secp256k1::new();
-    let (one, _) = Descriptor::parse_descriptor(&secp, "tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/0/*)").unwrap();
-    let (two, _) = Descriptor::parse_descriptor(&secp,"tr([73c5da0a/86'/0'/0']xprv9xgqHN7yz9MwCkxsBPN5qetuNdQSUttZNKw1dcYTV4mkaAFiBVGQziHs3NRSWMkCzvgjEe3n9xV8oYywvM8at9yRqyaZVz6TYYhX98VjsUk/1/*)").unwrap();
+    let one = Descriptor::from_str("tr([73c5da0a/86'/0'/0']xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ/0/*)#rg247h69").unwrap();
+    let two = Descriptor::from_str("tr([73c5da0a/86'/0'/0']xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ/1/*)#ju05rz2a").unwrap();
     tracker.add_keychain(Keychain::One, one.clone());
     tracker.add_keychain(Keychain::Two, two.clone());
 

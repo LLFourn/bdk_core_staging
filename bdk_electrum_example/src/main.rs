@@ -5,7 +5,7 @@ use bdk_cli::{
     clap::{self, Parser, Subcommand},
 };
 use electrum::ElectrumClient;
-use std::{fmt::Debug, io, io::Write};
+use std::{collections::BTreeMap, fmt::Debug, io, io::Write};
 
 use electrum_client::{Client, ConfigBuilder, ElectrumApi};
 
@@ -74,9 +74,7 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mut keychain_changeset = KeychainChangeSet::default();
-
-    let chain_update = match electrum_cmd {
+    let (chain_update, derivatoin_indices_update) = match electrum_cmd {
         ElectrumCommands::Scan {
             stop_gap,
             scan_option,
@@ -111,7 +109,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             // we scan the spks **wihtout** a lock on the tracker
-            let (new_sparsechain, keychain_index_update) = client.wallet_txid_scan(
+            let (new_sparsechain, derivation_indices_update) = client.wallet_txid_scan(
                 spk_iterators,
                 Some(stop_gap),
                 &local_chain,
@@ -120,9 +118,7 @@ fn main() -> anyhow::Result<()> {
 
             eprintln!();
 
-            keychain_changeset.derivation_indices = keychain_index_update.into();
-
-            new_sparsechain
+            (new_sparsechain, derivation_indices_update)
         }
         ElectrumCommands::Sync {
             mut unused,
@@ -189,7 +185,7 @@ fn main() -> anyhow::Result<()> {
                 .spk_txid_scan(spks, &local_chain, scan_option.batch_size)
                 .context("scanning the blockchain")?;
 
-            new_sparsechain
+            (new_sparsechain, BTreeMap::default())
         }
     };
 
@@ -214,14 +210,17 @@ fn main() -> anyhow::Result<()> {
     {
         // Get a final short lock to apply the changes
         let tracker = &mut *tracker.lock().unwrap();
-        let chaingraph_changeset = tracker
+        let mut changeset = KeychainChangeSet::default();
+        changeset.chain_graph = tracker
             .chain_graph()
             .inflate_changeset(sparsechain_changeset, new_txs)
             .context("inflating changeset")?;
-        keychain_changeset.chain_graph = chaingraph_changeset;
+        changeset.derivation_indices = tracker
+            .txout_index
+            .store_all_up_to(&derivatoin_indices_update);
         let db = &mut *db.lock().unwrap();
-        db.append_changeset(&keychain_changeset)?;
-        tracker.apply_changeset(keychain_changeset);
+        db.append_changeset(&changeset)?;
+        tracker.apply_changeset(changeset);
     }
     Ok(())
 }
