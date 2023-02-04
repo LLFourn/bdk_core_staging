@@ -19,8 +19,6 @@ type Reactor = poll::Reactor<net::TcpStream>;
 
 // Things to handle:
 // Block disconnected before filter processed, what to do?
-// I'm not saving the txouts and spk_txouts in the SpkTxOutIndex in KeychainTxOutIndex
-// I should start the client only when syncing, and sync before broadcasting
 
 pub struct CbfClient {
     pub handle: ClientHandle<poll::reactor::Waker>,
@@ -38,6 +36,8 @@ impl CbfClient {
         let handle = client.handle();
 
         // Run the client on a different thread, to not block the main thread.
+        // Note that when we sync we rescan from the latest point of agreement,
+        // so it's not a problem if the client is running in the background
         thread::spawn(|| client.run(config).unwrap());
 
         Ok(CbfClient { handle })
@@ -76,9 +76,9 @@ impl CbfClient {
             .chain()
             .latest_checkpoint()
             .map(|c| c.height)
-            .unwrap_or(63000) as u64; // TODO: We should check point of last agreeement
+            .unwrap_or(0) as u64; // TODO: We should check point of last agreeement
         self.handle.rescan(processed_height.., scripts)?;
-        println!("Rescanning chain from {:?}", processed_height);
+        println!("Rescanning chain from height {:?}", processed_height);
 
         loop {
             chan::select! {
@@ -103,7 +103,7 @@ impl CbfClient {
                             }
                         }
                         Event::BlockConnected { height, .. } => {
-                            if height % 1000 == 0 {
+                            if height % 10000 == 0 {
                                 println!("Connected block with height {:?}", height);
                             }
                         }
@@ -134,9 +134,6 @@ impl CbfClient {
                         }
                         Event::FilterProcessed { matched, height, block, .. } => {
                             let _ = update.insert_checkpoint(BlockId { height: height as u32, hash: block })?;
-                            // if height % 1000 == 0 {
-                            //     println!("Filter processed {}", height);
-                            // }
 
                             processed_height = height;
                             if matched {
@@ -192,7 +189,6 @@ impl CbfClient {
                 .determine_changeset(&update)?,
         };
 
-        //dbg!(&changeset.chain_graph.graph.txout);
         Ok(changeset)
     }
 }
