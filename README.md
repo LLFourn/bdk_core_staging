@@ -21,7 +21,7 @@ Our design goals for these mechanisms are:
    do it synchronously or asynchronously. if you know a fact about the blockchain you can
    just tell `bdk_chain`'s APIs about it that information will be integrated if it can be done
    consistently.
-2. Error free APIs  
+2. Error free APIs
 3. Data persistence agnostic. `bdk_chain` doesn't care where you cache on-chain data, what you cache or how you fetch it.
 
 TODO:
@@ -32,7 +32,9 @@ TODO:
 - [x] Working electrum example (see [bdk_electrum_example](./bdk_electrum_example))
 - [ ] Working bitcoin core rpc block-by-block example (see [#89](https://github.com/LLFourn/bdk_core_staging/pull/89))
 - [ ] Working bitcoin core rpc wallet sync example (see [#79](https://github.com/LLFourn/bdk_core_staging/pull/79))
-- [ ] Working compact block filters example using nakamoto (see #14).
+- [ ] Working compact block filters example using nakamoto (see [#153](https://github.com/LLFourn/bdk_core_staging/pull/153)).
+- [ ] Feerate calculation for RBF and CPFP.
+- [ ] Complete transaction building module (Coin control, coin selection, satisfaction with planning module).
 
 ### 2. Miniscript planning module
 
@@ -58,9 +60,7 @@ Coin selection PR: https://github.com/LLFourn/bdk_core_staging/pull/46
 
 #### Transaction building
 
-Transaction building
-
-building issue: https://github.com/LLFourn/bdk_core_staging/issues/30
+Transaction building issue: https://github.com/LLFourn/bdk_core_staging/issues/30
 
 ## Development and Release plan
 
@@ -69,7 +69,7 @@ The release dates for the first release we will try to make for the first releas
 - 10-02-2023: Release `bdk_chain v0.1.0` -- working with esplora/electrum data
 - 24-02-2023: Release `bdk v1.0.0-alpha.0`
 - 10-03-2023: Release `bdk_chain v.2.0` -- working with blocks form CBF and bitcoin RPC
-- 24-03-2023: Release `bdk v1.0.0-alpha.0`
+- 24-03-2023: Release `bdk v1.0.0-alpha.1`
 
 From there we will continue to develop `bdk_chain` and the other components and as they are
 integrated into `bdk` we will continue to make new alpha/beta releases of `bdk` until we have
