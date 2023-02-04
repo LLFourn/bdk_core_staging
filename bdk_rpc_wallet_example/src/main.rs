@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     let rpc_url = "127.0.0.1:18443".to_string();
     let rpc_auth = ("user".to_string(), "password".to_string());
     let config = RpcConfig::new(rpc_url, rpc_auth, args.network);
-    let client = RpcClient::init_for_tracker(&config, &tracker.txout_index)?;
+    let client = RpcClient::init_for_tracker(&config, &tracker.lock().unwrap().txout_index)?;
 
     let rpc_cmd = match args.command {
         bdk_cli::Commands::ChainSpecific(rpc_cmd) => rpc_cmd,
@@ -44,6 +44,8 @@ fn main() -> anyhow::Result<()> {
     match rpc_cmd {
         RpcCommands::Scan => {
             let mut keychain_changeset = KeychainChangeSet::default();
+
+            let mut tracker = tracker.lock().unwrap();
 
             let chain_update = client.wallet_scan(tracker.chain().checkpoints())?;
 
@@ -69,6 +71,8 @@ fn main() -> anyhow::Result<()> {
                 .context("inflating changeset")?;
 
             keychain_changeset.chain_graph = chaingraph_changeset;
+
+            let mut db = db.lock().unwrap();
 
             db.append_changeset(&keychain_changeset)?;
             tracker.apply_changeset(keychain_changeset);
