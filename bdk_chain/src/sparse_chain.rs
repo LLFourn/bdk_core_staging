@@ -125,7 +125,7 @@ impl<P: core::fmt::Debug> core::fmt::Display for UpdateError<P> {
                 write!(f, "the checkpoints in the update could not be connected to the checkpoints in the chain, try include checkpoint of height {} to connect",
                     h),
             Self::TxInconsistent { txid, original_pos, update_pos } =>
-                write!(f, "tx ({}) had position ({:?}), but is ({:?}) in the update", 
+                write!(f, "tx ({}) had position ({:?}), but is ({:?}) in the update",
                     txid, original_pos, update_pos),
         }
     }
