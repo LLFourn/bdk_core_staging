@@ -8,7 +8,7 @@ use std::{
 
 use bdk_chain::{
     file_store::{FileError, IterError, KeychainStore, MAGIC_BYTES, MAGIC_BYTES_LEN},
-    keychain::KeychainChangeSet,
+    keychain::{KeychainChangeSet, KeychainTracker},
     serde, TxHeight,
 };
 
@@ -109,13 +109,16 @@ fn new_fails_if_magic_bytes_are_invalid() {
 
 #[test]
 fn append_changeset_truncates_invalid_bytes() {
+    use core::str::FromStr;
     // initial data to write to file (magic bytes + invalid data)
     let mut data = [255_u8; 2000];
     data[..MAGIC_BYTES_LEN].copy_from_slice(&MAGIC_BYTES);
 
-    // changeset to append (invalid bytes should be truncated after appending)
+    let descriptor = miniscript::Descriptor::from_str("tr([73c5da0a/86'/0'/0']xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ/0/*)#rg247h69").unwrap();
+    let mut tracker = KeychainTracker::<TestKeychain, TxHeight>::default();
+    tracker.add_keychain(TestKeychain::External, descriptor);
     let changeset = KeychainChangeSet {
-        derivation_indices: [(TestKeychain::External, 21), (TestKeychain::Internal, 21)].into(),
+        derivation_indices: tracker.txout_index.store_up_to(&TestKeychain::External, 21),
         chain_graph: Default::default(),
     };
 

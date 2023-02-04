@@ -10,7 +10,7 @@ use crate::{
     BlockId, FullTxOut, TxHeight,
 };
 
-use super::Balance;
+use super::{Balance, DerivationAdditions};
 
 /// A convenient combination of a `KeychainTxOutIndex<K>` and a `ChainGraph<P>`.
 ///
@@ -58,8 +58,8 @@ where
         &self,
         scan: &KeychainScan<K, P>,
     ) -> Result<KeychainChangeSet<K, P>, chain_graph::UpdateError<P>> {
-        let mut new_derivation_indices = scan.last_active_indexes.clone();
-        new_derivation_indices.retain(|keychain, index| {
+        let mut derivation_indices = scan.last_active_indexes.clone();
+        derivation_indices.retain(|keychain, index| {
             match self.txout_index.derivation_index(keychain) {
                 Some(existing) => *index > existing,
                 None => true,
@@ -67,7 +67,7 @@ where
         });
 
         Ok(KeychainChangeSet {
-            derivation_indices: new_derivation_indices,
+            derivation_indices: DerivationAdditions(derivation_indices),
             chain_graph: self.chain_graph.determine_changeset(&scan.update)?,
         })
     }
@@ -82,10 +82,13 @@ where
     }
 
     pub fn apply_changeset(&mut self, changeset: KeychainChangeSet<K, P>) {
-        self.txout_index
-            .store_all_up_to(&changeset.derivation_indices);
-        self.txout_index.scan(&changeset);
-        self.chain_graph.apply_changeset(changeset.chain_graph)
+        let KeychainChangeSet {
+            derivation_indices,
+            chain_graph,
+        } = changeset;
+        self.txout_index.apply_additions(derivation_indices);
+        self.txout_index.scan(&chain_graph);
+        self.chain_graph.apply_changeset(chain_graph)
     }
 
     pub fn full_txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<P>)> + '_ {

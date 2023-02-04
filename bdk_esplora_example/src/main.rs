@@ -33,7 +33,7 @@ enum EsploraCommands {
 }
 
 fn main() -> anyhow::Result<()> {
-    let (args, keymap, mut keychain_tracker, mut db) = bdk_cli::init::<EsploraCommands, _>()?;
+    let (args, keymap, keychain_tracker, db) = bdk_cli::init::<EsploraCommands, _>()?;
     let esplora_url = match args.network {
         Network::Bitcoin => "https://mempool.space/api",
         Network::Testnet => "https://mempool.space/testnet/api",
@@ -49,8 +49,8 @@ fn main() -> anyhow::Result<()> {
             return bdk_cli::handle_commands(
                 general_command,
                 client,
-                &mut keychain_tracker,
-                &mut db,
+                &keychain_tracker,
+                &db,
                 args.network,
                 &keymap,
             )
@@ -59,89 +59,119 @@ fn main() -> anyhow::Result<()> {
 
     match esplora_cmd {
         EsploraCommands::Scan { stop_gap } => {
-            let spk_iterators = keychain_tracker
-                .txout_index
-                .scripts_of_all_keychains()
-                .into_iter()
-                .map(|(keychain, iter)| {
-                    let mut first = true;
-                    (
-                        keychain,
-                        iter.inspect(move |(i, _)| {
-                            if first {
-                                eprint!("\nscanning {}: ", keychain);
-                                first = false;
-                            }
+            let (spk_iterators, local_chain) = {
+                // Get a short lock on the tracker to get the spks iterators
+                // and local chain state
+                let tracker = &*keychain_tracker.lock().unwrap();
+                let spk_iterators = tracker
+                    .txout_index
+                    .scripts_of_all_keychains()
+                    .into_iter()
+                    .map(|(keychain, iter)| {
+                        let mut first = true;
+                        (
+                            keychain,
+                            iter.inspect(move |(i, _)| {
+                                if first {
+                                    eprint!("\nscanning {}: ", keychain);
+                                    first = false;
+                                }
 
-                            eprint!("{} ", i);
-                            let _ = io::stdout().flush();
-                        }),
-                    )
-                })
-                .collect();
+                                eprint!("{} ", i);
+                                let _ = io::stdout().flush();
+                            }),
+                        )
+                    })
+                    .collect();
 
-            let local_chain = keychain_tracker.chain().checkpoints().clone();
+                let local_chain = tracker.chain().checkpoints().clone();
+                (spk_iterators, local_chain)
+            };
 
+            // we scan the iterators **without** a lock on the tracker
             let wallet_scan = client
                 .wallet_scan(spk_iterators, &local_chain, Some(stop_gap))
                 .context("scanning the blockchain")?;
             eprintln!();
 
-            let changeset = keychain_tracker.apply_update(wallet_scan)?;
-            db.append_changeset(&changeset)?;
+            {
+                // we take a short lock to apply results to tracker and db
+                let tracker = &mut *keychain_tracker.lock().unwrap();
+                let db = &mut *db.lock().unwrap();
+                let changeset = tracker.apply_update(wallet_scan)?;
+                db.append_changeset(&changeset)?;
+            }
         }
         EsploraCommands::Sync {
             mut unused,
             mut unspent,
             all,
         } => {
-            let txout_index = &keychain_tracker.txout_index;
-            if !(all || unused || unspent) {
-                unused = true;
-                unspent = true;
-            } else if all {
-                unused = false;
-                unspent = false
-            }
-            let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
-                Box::new(core::iter::empty());
+            let (spks, local_chain) = {
+                // Get a short lock on the tracker to get the spks we're interested in
+                let tracker = &*keychain_tracker.lock().unwrap();
+                let txout_index = &tracker.txout_index;
+                if !(all || unused || unspent) {
+                    unused = true;
+                    unspent = true;
+                } else if all {
+                    unused = false;
+                    unspent = false
+                }
+                let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
+                    Box::new(core::iter::empty());
 
-            if all {
-                spks = Box::new(spks.chain(txout_index.script_pubkeys().iter().map(
-                    |(index, script)| {
+                if all {
+                    let all_spks = txout_index
+                        .script_pubkeys()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<Vec<_>>();
+                    spks = Box::new(spks.chain(all_spks.into_iter().map(|(index, script)| {
                         eprintln!("scanning {:?}", index);
-                        script.clone()
-                    },
-                )));
-            }
+                        script
+                    })));
+                }
 
-            if unused {
-                spks = Box::new(spks.chain(txout_index.unused(..).map(|(index, script)| {
-                    eprintln!("Checking if address at {:?} has been used", index);
-                    script.clone()
-                })));
-            }
+                if unused {
+                    let unused_spks = txout_index
+                        .unused(..)
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<Vec<_>>();
+                    spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {
+                        eprintln!("Checking if address at {:?} has been used", index);
+                        script
+                    })));
+                }
 
-            if unspent {
-                spks = Box::new(spks.chain(keychain_tracker.full_utxos().map(
-                    |(_index, ftxout)| {
-                        eprintln!("checking if {} has been spent", ftxout.outpoint);
-                        ftxout.txout.script_pubkey
-                    },
-                )));
-            }
+                if unspent {
+                    let unspent_txouts = tracker
+                        .full_utxos()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<Vec<_>>();
+                    spks = Box::new(spks.chain(unspent_txouts.into_iter().map(
+                        |(_index, ftxout)| {
+                            eprintln!("checking if {} has been spent", ftxout.outpoint);
+                            ftxout.txout.script_pubkey
+                        },
+                    )));
+                }
+                let local_chain = tracker.chain().checkpoints().clone();
 
-            let local_chain = keychain_tracker.chain().checkpoints().clone();
+                (spks, local_chain)
+            };
+            // we scan the desired spks **without** a lock on the tracker
             let scan = client
                 .spk_scan(spks, &local_chain, None)
                 .context("scanning the blockchain")?;
 
-            let changeset = keychain_tracker
-                .chain_graph()
-                .determine_changeset(&scan)?
-                .into();
-            db.append_changeset(&changeset)?;
-            keychain_tracker.apply_changeset(changeset);
+            {
+                // we take a short lock to apply the results to the tracker and db
+                let tracker = &mut *keychain_tracker.lock().unwrap();
+                let changeset = tracker.apply_update(scan.into())?;
+                let db = &mut *db.lock().unwrap();
+                db.append_changeset(&changeset)?;
+            }
         }
     }
 

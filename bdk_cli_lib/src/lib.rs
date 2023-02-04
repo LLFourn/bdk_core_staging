@@ -1,14 +1,15 @@
 pub extern crate anyhow;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use bdk_chain::{
     bitcoin::{
         secp256k1::Secp256k1,
         util::sighash::{Prevouts, SighashCache},
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
+    chain_graph::InsertTxError,
     descriptor_ext::DescriptorExt,
     file_store::KeychainStore,
-    keychain::{KeychainChangeSet, KeychainTracker},
+    keychain::{DerivationAdditions, KeychainChangeSet, KeychainTracker},
     miniscript::{
         descriptor::{DescriptorSecretKey, KeyMap},
         Descriptor, DescriptorPublicKey,
@@ -19,7 +20,9 @@ use bdk_chain::{
 use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
 pub use clap;
 use clap::{Parser, Subcommand};
-use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::Duration};
+use std::{
+    cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, sync::Mutex, time::Duration,
+};
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -163,8 +166,8 @@ pub struct AddrsOutput {
 }
 
 pub fn run_address_cmd<P>(
-    keychain_tracker: &mut KeychainTracker<Keychain, P>,
-    db: &mut KeychainStore<Keychain, P>,
+    tracker: &Mutex<KeychainTracker<Keychain, P>>,
+    db: &Mutex<KeychainStore<Keychain, P>>,
     addr_cmd: AddressCmd,
     network: Network,
 ) -> Result<()>
@@ -172,18 +175,21 @@ where
     P: sparse_chain::ChainPosition,
     KeychainChangeSet<Keychain, P>: serde::Serialize + serde::de::DeserializeOwned,
 {
-    let txout_index = &mut keychain_tracker.txout_index;
+    let mut tracker = tracker.lock().unwrap();
+    let txout_index = &mut tracker.txout_index;
 
-    let new_address = match addr_cmd {
+    let addr_cmmd_output = match addr_cmd {
         AddressCmd::Next => Some(txout_index.next_unused(&Keychain::External)),
         AddressCmd::New => Some(txout_index.derive_new(&Keychain::External)),
         _ => None,
     };
 
-    if let Some((index, spk)) = new_address {
-        let spk = spk.clone();
+    if let Some(((index, spk), additions)) = addr_cmmd_output {
+        let mut db = db.lock().unwrap();
         // update database since we're about to give out a new address
-        db.set_derivation_indices(txout_index.derivation_indices())?;
+        db.append_changeset(&additions.into())?;
+
+        let spk = spk.clone();
         let address =
             Address::from_script(&spk, network).expect("should always be able to derive address");
         eprintln!("This is the address at index {}", index);
@@ -221,9 +227,10 @@ where
     }
 }
 
-pub fn run_balance_cmd<P: ChainPosition>(keychain_tracker: &KeychainTracker<Keychain, P>) {
+pub fn run_balance_cmd<P: ChainPosition>(tracker: &Mutex<KeychainTracker<Keychain, P>>) {
+    let tracker = tracker.lock().unwrap();
     let (confirmed, unconfirmed) =
-        keychain_tracker
+        tracker
             .full_utxos()
             .fold((0, 0), |(confirmed, unconfirmed), (_, utxo)| {
                 if utxo.chain_position.height().is_confirmed() {
@@ -239,12 +246,13 @@ pub fn run_balance_cmd<P: ChainPosition>(keychain_tracker: &KeychainTracker<Keyc
 
 pub fn run_txo_cmd<K: Debug + Clone + Ord, P: ChainPosition>(
     txout_cmd: TxOutCmd,
-    keychain_tracker: &KeychainTracker<K, P>,
+    tracker: &Mutex<KeychainTracker<K, P>>,
     network: Network,
 ) {
     match txout_cmd {
         TxOutCmd::List => {
-            for (spk_index, full_txout) in keychain_tracker.full_txouts() {
+            let tracker = tracker.lock().unwrap();
+            for (spk_index, full_txout) in tracker.full_txouts() {
                 let address =
                     Address::from_script(&full_txout.txout.script_pubkey, network).unwrap();
 
@@ -267,7 +275,12 @@ pub fn create_tx<P: ChainPosition>(
     coin_select: CoinSelectionAlgo,
     keychain_tracker: &mut KeychainTracker<Keychain, P>,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
-) -> Result<Transaction> {
+) -> Result<(
+    Transaction,
+    Option<(DerivationAdditions<Keychain>, (Keychain, u32))>,
+)> {
+    let mut additions = DerivationAdditions::default();
+
     let assets = bdk_tmp_plan::Assets {
         keys: keymap.iter().map(|(pk, _)| pk.clone()).collect(),
         ..Default::default()
@@ -319,10 +332,13 @@ pub fn create_tx<P: ChainPosition>(
         Keychain::External
     };
 
-    let (change_index, change_script) = {
-        let (index, script) = keychain_tracker.txout_index.next_unused(&internal_keychain);
-        (index, script.clone())
-    };
+    let ((change_index, change_script), change_additions) =
+        keychain_tracker.txout_index.next_unused(&internal_keychain);
+    additions.append(change_additions);
+
+    // Clone to drop the immutable reference.
+    let change_script = change_script.clone();
+
     let change_plan = bdk_tmp_plan::plan_satisfaction(
         &keychain_tracker
             .txout_index
@@ -456,7 +472,13 @@ pub fn create_tx<P: ChainPosition>(
         }
     }
 
-    Ok(transaction)
+    let change_info = if selection_meta.drain_value.is_some() {
+        Some((additions, (internal_keychain, change_index)))
+    } else {
+        None
+    };
+
+    Ok((transaction, change_info))
 }
 
 pub trait Broadcast {
@@ -467,8 +489,10 @@ pub trait Broadcast {
 pub fn handle_commands<C: clap::Subcommand, P>(
     command: Commands<C>,
     client: impl Broadcast,
-    tracker: &mut KeychainTracker<Keychain, P>,
-    store: &mut KeychainStore<Keychain, P>,
+    // we Mutexes around these not because we need them for a simple CLI app but to demonsrate how
+    // all the stuff we're doing can be thread safe and also not keep locks up over an IO bound.
+    tracker: &Mutex<KeychainTracker<Keychain, P>>,
+    store: &Mutex<KeychainStore<Keychain, P>>,
     network: Network,
     keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>,
 ) -> Result<()>
@@ -478,42 +502,89 @@ where
 {
     match command {
         // TODO: Make these functions return stuffs
-        Commands::Address { addr_cmd } => {
-            run_address_cmd(tracker, store, addr_cmd, network)?;
-        }
+        Commands::Address { addr_cmd } => run_address_cmd(&tracker, &store, addr_cmd, network),
         Commands::Balance => {
             run_balance_cmd(&tracker);
+            Ok(())
         }
         Commands::TxOut { txout_cmd } => {
-            run_txo_cmd(txout_cmd, tracker, network);
+            run_txo_cmd(txout_cmd, &tracker, network);
+            Ok(())
         }
         Commands::Send {
             value,
             address,
             coin_select,
         } => {
-            let transaction = create_tx(value, address, coin_select, tracker, &keymap)?;
-            let changeset = tracker.insert_tx(transaction.clone(), P::unconfirmed())?;
-            client.broadcast(&transaction)?;
-            // We only want to store the changeset if we actually successfully broadcasted because
-            // it will increase the derivation index of the internal keychain.
-            store.set_derivation_indices(tracker.txout_index.derivation_indices())?;
-            store.append_changeset(&changeset)?;
-            println!("Broadcasted Tx : {}", transaction.txid());
+            let (transaction, change_index) = {
+                // take mutable ref to construct tx -- it is only open for a short time while building it.
+                let tracker = &mut *tracker.lock().unwrap();
+                let (transaction, change_info) =
+                    create_tx(value, address, coin_select, tracker, &keymap)?;
+
+                if let Some((change_derivation_changes, (change_keychain, index))) = change_info {
+                    // We must first persist to disk the fact that we've got a new address from the
+                    // change keychain so future scans will find the tx we're about to broadcast.
+                    // If we're unable to persist this then we don't want to broadcast.
+                    let store = &mut *store.lock().unwrap();
+                    store.append_changeset(&change_derivation_changes.into())?;
+
+                    // We don't want other callers/threads to use this address while we're using it
+                    // but we also don't want to scan the tx we just created because it's not
+                    // technically in the blockchain yet.
+                    tracker.txout_index.mark_used(&change_keychain, index);
+                    (transaction, Some((change_keychain, index)))
+                } else {
+                    (transaction, None)
+                }
+            };
+
+            match client.broadcast(&transaction) {
+                Ok(_) => {
+                    println!("Broadcasted Tx : {}", transaction.txid());
+                    let mut tracker = tracker.lock().unwrap();
+                    match tracker.insert_tx(transaction.clone(), P::unconfirmed()) {
+                        Ok(changeset) => {
+                            let store = &mut *store.lock().unwrap();
+                            // We know the tx is at least unconfirmed now. Note if persisting here
+                            // fails it's not a big deal since we can always find it again form
+                            // blockchain.
+                            store.append_changeset(&changeset)?;
+                            Ok(())
+                        }
+                        Err(e) => match e {
+                            InsertTxError::Chain(e) => match e {
+                                // TODO: add insert_unconfirmed_tx to chain graph and sparse chain
+                                sparse_chain::InsertTxError::TxTooHigh { .. } => unreachable!("we are inserting at unconfirmed position"),
+                                sparse_chain::InsertTxError::TxMovedUnexpectedly { txid, original_pos, ..} => Err(anyhow!("the tx we created {} has already been confirmed at block {:?}", txid, original_pos)),
+                            },
+                            InsertTxError::UnresolvableConflict(e) => Err(e).context("another tx that conflicts with the one we tried to create has been confirmed"),
+                        }
+                    }
+                }
+                Err(e) => {
+                    let tracker = &mut *tracker.lock().unwrap();
+                    if let Some((keychain, index)) = change_index {
+                        // We failed to broadcast so allow our change address to be used in the future
+                        tracker.txout_index.unmark_used(&keychain, index);
+                    }
+                    Err(e.into())
+                }
+            }
         }
         Commands::ChainSpecific(_) => {
             todo!("example code is meant to handle this!")
         }
     }
-
-    Ok(())
 }
 
 pub fn init<C: clap::Subcommand, P>() -> anyhow::Result<(
     Args<C>,
     KeyMap,
-    KeychainTracker<Keychain, P>,
-    KeychainStore<Keychain, P>,
+    // These don't need to have mutexes around them but we want the cli example code to make it obvious how they
+    // are thread safe so this forces the example developer to show where they would lock and unlock things.
+    Mutex<KeychainTracker<Keychain, P>>,
+    Mutex<KeychainStore<Keychain, P>>,
 )>
 where
     P: sparse_chain::ChainPosition,
@@ -554,7 +625,7 @@ where
         eprintln!("⚠ Consider running a rescan of chain data.");
     }
 
-    Ok((args, keymap, tracker, db))
+    Ok((args, keymap, Mutex::new(tracker), Mutex::new(db)))
 }
 
 pub fn planned_utxos<'a, AK: bdk_tmp_plan::CanDerive + Clone, P: ChainPosition>(
