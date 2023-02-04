@@ -318,23 +318,26 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Marks the script pubkey at `index` as used even though it hasn't seen an output with it.
     /// This only has an effect when the `index` had been added to `self` already and was unused.
     ///
+    /// Returns whether the `index` was originally present as `unused`.
+    ///
     /// This is useful when you want to reserve a script pubkey for something but don't want to add
     /// the transaction output using it to the index yet. Other callers will consider `index` on
     /// `keychain` used until you call [`unmark_used`].
     ///
     /// [`unmark_used`]: Self::unmark_used
-    pub fn mark_used(&mut self, keychain: &K, index: u32) {
+    pub fn mark_used(&mut self, keychain: &K, index: u32) -> bool {
         self.inner.mark_used(&(keychain.clone(), index))
     }
 
-    /// Undoes the effect of [`mark_used`].
+    /// Undoes the effect of [`mark_used`]. Returns whether the `index` is inserted back into
+    /// `unused`.
     ///
     /// Note that if `self` has scanned an output with this script pubkey then this will have no
     /// effect.
     ///
     /// [`mark_used`]: Self::mark_used
-    pub fn unmark_used(&mut self, keychain: &K, index: u32) {
-        self.inner.unmark_used(&(keychain.clone(), index));
+    pub fn unmark_used(&mut self, keychain: &K, index: u32) -> bool {
+        self.inner.unmark_used(&(keychain.clone(), index))
     }
 
     /// Convenience method to call [`Self::pad_keychain_with_unused`] on all keychains.

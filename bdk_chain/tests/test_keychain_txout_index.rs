@@ -118,7 +118,7 @@ fn test_wildcard_derivations() {
     (0..=15)
         .into_iter()
         .chain([17, 20, 23].into_iter())
-        .for_each(|index| txout_index.mark_used(&TestKeychain::External, index));
+        .for_each(|index| assert!(txout_index.mark_used(&TestKeychain::External, index)));
 
     assert_eq!(
         txout_index.next_derivation_index(&TestKeychain::External),
@@ -136,9 +136,9 @@ fn test_wildcard_derivations() {
 
     // - Use all the derived till 26.
     // - next_unused() = ((27, <spk>), DerivationAdditions)
-    (0..=26)
-        .into_iter()
-        .for_each(|index| txout_index.mark_used(&TestKeychain::External, index));
+    (0..=26).into_iter().for_each(|index| {
+        txout_index.mark_used(&TestKeychain::External, index);
+    });
 
     let (spk, changeset) = txout_index.next_unused(&TestKeychain::External);
     assert_eq!(spk, (27, &external_spk_27));

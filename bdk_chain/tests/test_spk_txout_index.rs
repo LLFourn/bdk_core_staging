@@ -90,3 +90,12 @@ fn mark_used() {
         "even though we unmark_used it doesn't matter because there was a tx scanned that used it"
     );
 }
+
+#[test]
+fn unmark_used_does_not_result_in_invalid_representation() {
+    let mut spk_index = SpkTxOutIndex::default();
+    assert_eq!(spk_index.unmark_used(&0), false);
+    assert_eq!(spk_index.unmark_used(&1), false);
+    assert_eq!(spk_index.unmark_used(&2), false);
+    assert!(spk_index.unused(..).collect::<Vec<_>>().is_empty());
+}
