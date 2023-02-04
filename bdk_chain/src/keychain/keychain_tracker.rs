@@ -82,10 +82,13 @@ where
     }
 
     pub fn apply_changeset(&mut self, changeset: KeychainChangeSet<K, P>) {
-        self.txout_index
-            .apply_additions(changeset.derivation_indices.clone());
-        self.txout_index.scan(&changeset);
-        self.chain_graph.apply_changeset(changeset.chain_graph)
+        let KeychainChangeSet {
+            derivation_indices,
+            chain_graph,
+        } = changeset;
+        self.txout_index.apply_additions(derivation_indices);
+        self.txout_index.scan(&chain_graph);
+        self.chain_graph.apply_changeset(chain_graph)
     }
 
     pub fn full_txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<P>)> + '_ {

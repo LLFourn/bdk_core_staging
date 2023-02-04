@@ -352,7 +352,7 @@ pub fn create_tx<P: ChainPosition>(
 
     let mut change_output = TxOut {
         value: 0,
-        script_pubkey: change_script.clone(),
+        script_pubkey: change_script,
     };
 
     let cs_opts = CoinSelectorOpt {
