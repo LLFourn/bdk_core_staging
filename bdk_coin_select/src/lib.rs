@@ -21,6 +21,9 @@ pub use coin_selector::*;
 mod bnb;
 pub use bnb::*;
 
+mod coin_grouping;
+pub use coin_grouping::*;
+
 /// Txin "base" fields include `outpoint` (32+4) and `nSequence` (4). This does not include
 /// `scriptSigLen` or `scriptSig`.
 pub const TXIN_BASE_WEIGHT: u32 = (32 + 4 + 4) * 4;
