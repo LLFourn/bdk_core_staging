@@ -16,7 +16,7 @@ use bdk_chain::{
     sparse_chain::{self, ChainPosition},
     FullTxOut,
 };
-use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
+use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue, CoinGroupingStrategy, Selection, CoinGroup};
 pub use clap;
 use clap::{Parser, Subcommand};
 use std::{cmp::Reverse, collections::HashMap, fmt::Debug, path::PathBuf, time::Duration};
@@ -67,6 +67,14 @@ pub enum Commands<C: clap::Subcommand> {
         #[clap(short, default_value = "largest-first")]
         coin_select: CoinSelectionAlgo,
     },
+    Coingroup {
+        value: u64,
+        address: Address,
+        #[clap(long, default_value = "address-reuse")]
+        coin_group: CoinGroupingStrategy,
+        #[clap(short, default_value = "largest-first")]
+        coin_select: CoinSelectionAlgo,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -459,6 +467,147 @@ pub fn create_tx<P: ChainPosition>(
     Ok(transaction)
 }
 
+pub fn coin_grouping<P: ChainPosition>(
+    grouping_strategy: CoinGroupingStrategy,
+    value: u64,
+    address: Address, 
+    coin_select: CoinSelectionAlgo, 
+    keychain_tracker: &mut KeychainTracker<Keychain, P>, 
+    keymap: &HashMap<DescriptorPublicKey, DescriptorSecretKey>) -> Result<[(Option<CoinGroupingStrategy>, i64); 2]> {
+        let assets = bdk_tmp_plan::Assets {
+            keys: keymap.iter().map(|(pk, _)| pk.clone()).collect(),
+            ..Default::default()
+        };
+    
+        // TODO use planning module
+        let mut candidates = planned_utxos(keychain_tracker, &assets).collect::<Vec<_>>();
+    
+        // apply coin selection algorithm
+        match coin_select {
+            CoinSelectionAlgo::LargestFirst => {
+                candidates.sort_by_key(|(_, utxo)| Reverse(utxo.txout.value))
+            }
+            CoinSelectionAlgo::SmallestFirst => candidates.sort_by_key(|(_, utxo)| utxo.txout.value),
+            CoinSelectionAlgo::OldestFirst => {
+                candidates.sort_by_key(|(_, utxo)| utxo.chain_position.clone())
+            }
+            CoinSelectionAlgo::NewestFirst => {
+                candidates.sort_by_key(|(_, utxo)| Reverse(utxo.chain_position.clone()))
+            }
+            CoinSelectionAlgo::BranchAndBound => {}
+        }
+
+        // Group coins using coin grouping
+        let coin_groups = bdk_coin_select::apply_grouping(&candidates, Some(grouping_strategy.clone()));
+
+        let (first_selection, first_waste) = select_coins_with_strategy(coin_select.clone(), &coin_groups, address.clone(), value, keychain_tracker, &assets)?;
+
+        let mut utxo_indices: Vec<usize> = vec![];
+        first_selection.selected.iter().for_each(|i| { 
+            let (_, indices) = &coin_groups[*i];
+            utxo_indices.extend(indices.iter());
+        });
+        let first_selected_utxos = utxo_indices.iter().map(|i| candidates[*i].1.txout.clone());
+
+        println!("Grouping Address Reuse ==========================================================================");
+        for utxo in first_selected_utxos {
+            println!("{:?}", utxo);
+        }
+
+
+        let coin_groups = bdk_coin_select::apply_grouping(&candidates, None);
+
+        let (second_selection, second_waste) = select_coins_with_strategy(coin_select.clone(), &coin_groups, address, value, keychain_tracker, &assets)?;
+
+        //use selection to extract the indices of selected utxos
+        //using the indices extract utxos from candidates.
+        let mut utxo_indices: Vec<usize> = vec![];
+        second_selection.selected.iter().for_each(|i| { 
+            let (_, indices) = &coin_groups[*i];
+            utxo_indices.extend(indices.iter()); 
+        });
+        let second_selected_utxos = utxo_indices.iter().map(|i| candidates[*i].1.txout.clone());
+
+        println!("Grouping None ==========================================================================");
+        for utxo in second_selected_utxos {
+            println!("{:?}", utxo);
+        }
+
+
+        Ok([(Some(grouping_strategy), first_waste), (None, second_waste)])
+}
+
+fn select_coins_with_strategy<P: ChainPosition, K: bdk_tmp_plan::CanDerive + Clone>(coin_select: CoinSelectionAlgo, coin_groups: &[CoinGroup], address: Address, value: u64, keychain_tracker: &mut KeychainTracker<Keychain, P>, assets: &bdk_tmp_plan::Assets<K>) -> Result<(Selection, i64)> {
+    let weighted_values = coin_groups.iter().map(|coin_group| coin_group.into()).collect();
+
+    let outputs = vec![TxOut {
+        value,
+        script_pubkey: address.script_pubkey(),
+    }];
+    
+    let internal_keychain = if keychain_tracker
+        .txout_index
+        .keychains()
+        .get(&Keychain::Internal)
+        .is_some()
+    {
+        Keychain::Internal
+    } else {
+        Keychain::External
+    };
+    
+    let (change_index, change_script) = {
+        let (index, script) = keychain_tracker.txout_index.next_unused(&internal_keychain);
+        (index, script.clone())
+    };
+
+    let change_plan = bdk_tmp_plan::plan_satisfaction(
+        &keychain_tracker
+        .txout_index
+        .keychains()
+        .get(&internal_keychain)
+        .expect("must exist")
+        .at_derivation_index(change_index),
+        assets,
+    )
+    .expect("failed to obtain change plan");
+    
+    let change_output = TxOut {
+        value: 0,
+        script_pubkey: change_script,
+    };
+    
+    let cs_opts = CoinSelectorOpt {
+        target_feerate: 0.5,
+        min_drain_value: keychain_tracker
+            .txout_index
+            .keychains()
+            .get(&internal_keychain)
+            .expect("must exist")
+            .dust_value(),
+        ..CoinSelectorOpt::fund_outputs(
+            &outputs,
+            &change_output,
+            change_plan.expected_weight() as u32,
+        )
+    };
+
+    let mut coin_selector = CoinSelector::new(&weighted_values, &cs_opts);
+    
+    let selection = match coin_select {
+        CoinSelectionAlgo::BranchAndBound => {
+            coin_select_bnb(Duration::from_secs(10), coin_selector.clone())
+                .map_or_else(|| coin_selector.select_until_finished(), |cs| cs.finish())?
+            }
+            _ => coin_selector.select_until_finished()?,
+        };
+    
+    let waste = coin_selector.selected_waste();
+    
+    Ok((selection, waste))
+
+}
+
 pub trait Broadcast {
     type Error: std::error::Error + Send + Sync + 'static;
     fn broadcast(&self, tx: &Transaction) -> Result<(), Self::Error>;
@@ -500,7 +649,14 @@ where
             store.set_derivation_indices(tracker.txout_index.derivation_indices())?;
             store.append_changeset(&changeset)?;
             println!("Broadcasted Tx : {}", transaction.txid());
-        }
+        },
+        Commands::Coingroup { value, address, coin_group, coin_select } => {
+            let results = coin_grouping(coin_group, value, address, coin_select, tracker, &keymap)?;
+            for (strategy, waste) in results {
+                println!("{:?}", strategy);
+                println!("{:?}", waste);
+            }
+        },
         Commands::ChainSpecific(_) => {
             todo!("example code is meant to handle this!")
         }
