@@ -10,19 +10,19 @@ The `bdk_core` project has three main components in order of importance:
 
 The goal of this component is give wallets the mechanisms needed to:
 
-1. Figure out what data they need to fetch
-2. Process that data in a way that never leads to inconsistent states
+1. Figure out what data they need to fetch.
+2. Process that data in a way that never leads to inconsistent states.
 3. Fully index that data and expose it so that it can be consumed without friction.
-
 
 Our design goals for these mechanisms are:
 
-1. Data source agnostic -- nothing in `bdk_chain` cares about where you get data from or whether you
-   do it synchronously or asynchronously. if you know a fact about the blockchain you can
-   just tell `bdk_chain`'s APIs about it that information will be integrated if it can be done
+1. Data source agnostic -- nothing in `bdk_chain` cares about where you get data from or whether
+   you do it synchronously or asynchronously. If you know a fact about the blockchain you can just
+   tell `bdk_chain`'s APIs about it and that information will be integrated if it can be done
    consistently.
-2. Error free APIs
-3. Data persistence agnostic. `bdk_chain` doesn't care where you cache on-chain data, what you cache or how you fetch it.
+2. Error free APIs.
+3. Data persistence agnostic -- `bdk_chain` does not care where you cache on-chain data, what you
+   cache or how you fetch it.
 
 TODO:
 
@@ -30,11 +30,11 @@ TODO:
 - [x] Persistant storage (see [file_store](./bdk_chain/src/file_store.rs))
 - [x] Working esplora example (see [bdk_esplora_example](./bdk_esplora_example))
 - [x] Working electrum example (see [bdk_electrum_example](./bdk_electrum_example))
-- [ ] Working bitcoin core rpc block-by-block example (see [#89](https://github.com/LLFourn/bdk_core_staging/pull/89))
-- [ ] Working bitcoin core rpc wallet sync example (see [#79](https://github.com/LLFourn/bdk_core_staging/pull/79))
-- [ ] Working compact block filters example using nakamoto (see [#153](https://github.com/LLFourn/bdk_core_staging/pull/153)).
-- [ ] Feerate calculation for RBF and CPFP.
-- [ ] Complete transaction building module (Coin control, coin selection, satisfaction with planning module).
+- [ ] Working bitcoin core rpc block-by-block example (see https://github.com/LLFourn/bdk_core_staging/pull/89)
+- [ ] Working bitcoin core rpc wallet sync example (see https://github.com/LLFourn/bdk_core_staging/pull/79)
+- [ ] Working compact block filters example using nakamoto (see https://github.com/LLFourn/bdk_core_staging/pull/14)
+- [ ] Improve API for block-by-block syncing -- i.e. CBF and RPC Chain
+- [ ] Feerate calculation for CPFP
 
 ### 2. Miniscript planning module
 
@@ -49,14 +49,12 @@ The PR to miniscript has already been made: https://github.com/rust-bitcoin/rust
 
 With the planning module, we'll be able to re-engineer coin selection and transaction building as well.
 
-
 #### Coin selection
 
 We've designed and implemented a robust coin selection API which allows users to choose what metric
 they want to optimise for during a branch and bound search.
 
 Coin selection PR: https://github.com/LLFourn/bdk_core_staging/pull/46
-
 
 #### Transaction building
 
@@ -113,7 +111,5 @@ export DESCRIPTOR="tr(xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYW
 
 - open issues with respect to any aspect of the project
 - make PRs
-
-
 
 [blog post]: https://bitcoindevkit.org/blog/bdk-core-pt1/
