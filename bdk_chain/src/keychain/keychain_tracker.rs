@@ -94,7 +94,7 @@ where
             chain_graph,
         } = changeset;
         self.txout_index.apply_additions(derivation_indices);
-        self.txout_index.scan(&chain_graph);
+        let _ = self.txout_index.scan(&chain_graph);
         self.chain_graph.apply_changeset(chain_graph)
     }
 
