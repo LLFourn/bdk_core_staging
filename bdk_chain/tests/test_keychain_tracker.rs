@@ -29,7 +29,7 @@ fn test_insert_tx() {
         output: vec![txout],
     };
 
-    let _ = tracker.txout_index.store_up_to(&(), 5);
+    let _ = tracker.txout_index.set_derivation_index(&(), 5);
 
     let changeset = tracker
         .insert_tx_preview(tx.clone(), ConfirmationTime::Unconfirmed)

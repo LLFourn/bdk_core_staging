@@ -38,12 +38,14 @@ fn test_store_all_up_to() {
     let derive_to: BTreeMap<_, _> =
         [(TestKeychain::External, 12), (TestKeychain::Internal, 24)].into();
     assert_eq!(
-        txout_index.store_all_up_to(&derive_to).as_inner(),
+        txout_index
+            .set_all_derivation_indices(&derive_to)
+            .as_inner(),
         &derive_to
     );
     assert_eq!(txout_index.derivation_indices(), derive_to);
     assert_eq!(
-        txout_index.store_all_up_to(&derive_to),
+        txout_index.set_all_derivation_indices(&derive_to),
         DerivationAdditions::default(),
         "no changes if we set to the same thing"
     );
@@ -112,7 +114,7 @@ fn test_wildcard_derivations() {
     // - next_derivation_index() = (26, true)
     // - derive_new() = ((26, <spk>), DerivationAdditions)
     // - next_unused() == ((16, <spk>), DerivationAdditions::is_empty())
-    let _ = txout_index.store_up_to(&TestKeychain::External, 25);
+    let _ = txout_index.set_derivation_index(&TestKeychain::External, 25);
 
     (0..=15)
         .into_iter()
@@ -194,6 +196,6 @@ fn test_non_wildcard_derivations() {
     assert_eq!(spk, (0, &external_spk));
     assert_eq!(changeset.as_inner(), &[].into());
     assert!(txout_index
-        .store_up_to(&TestKeychain::External, 200)
+        .set_derivation_index(&TestKeychain::External, 200)
         .is_empty());
 }

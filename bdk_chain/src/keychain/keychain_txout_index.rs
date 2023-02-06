@@ -134,6 +134,12 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         self.keychains.insert(keychain, (descriptor, 0));
     }
 
+    /// Returns the lookahead settings for each keychain. If lookahead does not exist for a
+    /// keychain, the default is 0.
+    pub fn lookaheads(&self) -> &BTreeMap<K, u32> {
+        &self.lookahead
+    }
+
     /// Convenience method of [`set_lookahead`] for all keychains.
     ///
     /// [`set_lookahead`]: Self::set_lookahead
@@ -294,23 +300,26 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .collect()
     }
 
-    /// Convenience method to call [`Self::store_up_to`] on several keychains.
-    pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> DerivationAdditions<K> {
+    /// Convenience method to call [`Self::set_derivation_index`] on several keychains.
+    pub fn set_all_derivation_indices(
+        &mut self,
+        keychains: &BTreeMap<K, u32>,
+    ) -> DerivationAdditions<K> {
         let mut additions = DerivationAdditions::default();
         for (keychain, &index) in keychains {
-            additions.append(self.store_up_to(keychain, index));
+            additions.append(self.set_derivation_index(keychain, index));
         }
         additions
     }
 
-    /// Derives script pubkeys from the descriptor **up to and including** `up_to` and stores them
+    /// Derives script pubkeys from the descriptor **up to and including** `index` and stores them
     /// (if necessary).
     ///
     /// Returns [`DerivationAdditions`] for any new `script_pubkey`s that has been added. If no
     /// script pubkeys are added, or if `keychain` does not exist, [`DerivationAdditions`] will be
     /// empty.
-    pub fn store_up_to(&mut self, keychain: &K, up_to: u32) -> DerivationAdditions<K> {
-        let target_count = up_to + 1;
+    pub fn set_derivation_index(&mut self, keychain: &K, index: u32) -> DerivationAdditions<K> {
+        let target_count = index + 1;
         let lookahead = self.lookahead.get(keychain).map_or(0, |v| *v);
 
         let (descriptor, index_count) = match self.keychains.get_mut(&keychain) {
@@ -367,7 +376,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Panics if the `keychain` does not exist.
     pub fn derive_new(&mut self, keychain: &K) -> ((u32, &Script), DerivationAdditions<K>) {
         let (next_index, _) = self.next_derivation_index(keychain);
-        let additions = self.store_up_to(keychain, next_index);
+        let additions = self.set_derivation_index(keychain, next_index);
         let script = self
             .inner
             .spk_at_index(&(keychain.clone(), next_index))
@@ -448,17 +457,17 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 
     /// Returns the highest derivation index of the `keychain` where [`KeychainTxOutIndex`] has
     /// found a [`TxOut`] with it's script pubkey.
-    pub fn last_active_index(&self, keychain: &K) -> Option<u32> {
+    pub fn last_used_index(&self, keychain: &K) -> Option<u32> {
         self.keychain_txouts(keychain).last().map(|(i, _)| i)
     }
 
     /// Returns the highest derivation index of each keychain that [`KeychainTxOutIndex`] has found
     /// a [`TxOut`] with it's script pubkey.
-    pub fn last_active_indicies(&self) -> BTreeMap<K, u32> {
+    pub fn last_used_indices(&self) -> BTreeMap<K, u32> {
         self.keychains
             .iter()
             .filter_map(|(keychain, _)| {
-                self.last_active_index(keychain)
+                self.last_used_index(keychain)
                     .map(|index| (keychain.clone(), index))
             })
             .collect()
@@ -467,7 +476,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Applies the derivation additions to the [`KeychainTxOutIndex`], extending the number of
     /// derived scripts per keychain, as specified in the `additions`.
     pub fn apply_additions(&mut self, additions: DerivationAdditions<K>) {
-        let _ = self.store_all_up_to(&additions.0);
+        let _ = self.set_all_derivation_indices(&additions.0);
     }
 }
 
