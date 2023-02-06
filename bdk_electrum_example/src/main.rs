@@ -217,7 +217,7 @@ fn main() -> anyhow::Result<()> {
             .context("inflating changeset")?;
         changeset.derivation_indices = tracker
             .txout_index
-            .store_all_up_to(&derivatoin_indices_update);
+            .set_all_derivation_indices(&derivatoin_indices_update);
         let db = &mut *db.lock().unwrap();
         db.append_changeset(&changeset)?;
         tracker.apply_changeset(changeset);
