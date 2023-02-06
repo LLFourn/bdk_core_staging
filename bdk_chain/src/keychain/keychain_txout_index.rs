@@ -227,9 +227,10 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         &self,
         keychain: &K,
     ) -> impl DoubleEndedIterator<Item = (u32, &Script)> + Clone {
+        let (_, script_count) = self.keychains.get(keychain).expect("keychain must exist");
         self.inner
             .script_pubkeys()
-            .range(&(keychain.clone(), u32::MIN)..=&(keychain.clone(), u32::MAX))
+            .range(&(keychain.clone(), u32::MIN)..&(keychain.clone(), *script_count))
             .map(|((_, derivation_index), spk)| (*derivation_index, spk))
     }
 
@@ -247,15 +248,17 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// Panics if the `keychain` does not exist.
     pub fn next_derivation_index(&self, keychain: &K) -> (u32, bool) {
-        // we can only get the next index if wildcard exists
-        let has_wildcard = self
-            .keychains
-            .get(keychain)
-            .expect(&format!("keychain {:?} does not exist", keychain))
-            .0
-            .has_wildcard();
+        let (descriptor, script_count) = self.keychains.get(keychain).expect("keychain must exist");
 
-        match self.derivation_index(keychain) {
+        let current_index = match script_count {
+            0 => None,
+            n => Some(n - 1),
+        };
+
+        // we can only get the next index if wildcard exists
+        let has_wildcard = descriptor.has_wildcard();
+
+        match current_index {
             // if there is no index, next_index is always 0
             None => (0, true),
             // descriptors without wildcards can only have one index
@@ -282,7 +285,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             current,
             self.inner
                 .script_pubkeys()
-                .range(&(keychain.clone(), u32::MIN)..=&(keychain.clone(), u32::MAX))
+                .range(&(keychain.clone(), u32::MIN)..&(keychain.clone(), *script_count))
                 .last()
                 .map(|((_, index), _)| *index)
         );
@@ -331,7 +334,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         let mut last_derived = None;
 
         if target_count <= *index_count + lookahead {
-            last_derived = Some(target_count);
+            last_derived = Some(index);
         } else {
             for index in *index_count..target_count {
                 let spk = match descriptor
@@ -438,7 +441,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 
     /// Iterates over all unused script pubkeys for a `keychain` that have been stored in the index.
     pub fn keychain_unused(&self, keychain: &K) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
-        let range = (keychain.clone(), u32::MIN)..(keychain.clone(), u32::MAX);
+        let &(_, script_count) = self.keychains.get(keychain).expect("keychain must exist");
+        let range = (keychain.clone(), u32::MIN)..(keychain.clone(), script_count);
         self.inner
             .unused(range)
             .map(|((_, i), script)| (*i, script))

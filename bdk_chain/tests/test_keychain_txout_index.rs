@@ -33,7 +33,7 @@ fn init_txout_index() -> (
 }
 
 #[test]
-fn test_store_all_up_to() {
+fn test_set_all_derivation_indices() {
     let (mut txout_index, _, _) = init_txout_index();
     let derive_to: BTreeMap<_, _> =
         [(TestKeychain::External, 12), (TestKeychain::Internal, 24)].into();
@@ -49,6 +49,104 @@ fn test_store_all_up_to() {
         DerivationAdditions::default(),
         "no changes if we set to the same thing"
     );
+}
+
+#[test]
+fn test_lookahead() {
+    let (mut txout_index, external_desc, internal_desc) = init_txout_index();
+
+    txout_index.set_lookahead(&TestKeychain::External, 10);
+    txout_index.set_lookahead(&TestKeychain::Internal, 20);
+    assert_eq!(txout_index.inner().script_pubkeys().len(), 30);
+
+    // given:
+    // - external lookahead set to 10
+    // - internal lookahead set to 20
+    // when:
+    // - set external derivation index to value higher than last, but within the lookahead value
+    // expect:
+    // - scripts cached in spk_txout_index should increase correctly
+    // - stored scripts of external keychain should be of expected counts
+    for index in (0..20).skip_while(|i| i % 2 == 1) {
+        assert_eq!(
+            txout_index
+                .set_derivation_index(&TestKeychain::External, index)
+                .as_inner(),
+            &[(TestKeychain::External, index)].into()
+        );
+
+        assert_eq!(
+            txout_index.inner().script_pubkeys().len(),
+            10 /* external lookahead */ +
+            20 /* internal lookahead */ +
+            index as usize + 1 /* `derived` count */
+        );
+        assert_eq!(
+            txout_index
+                .stored_scripts_of_keychain(&TestKeychain::External)
+                .count(),
+            index as usize + 1,
+        );
+        assert_eq!(
+            txout_index
+                .stored_scripts_of_keychain(&TestKeychain::Internal)
+                .count(),
+            0,
+        );
+        assert_eq!(
+            txout_index.keychain_unused(&TestKeychain::External).count(),
+            index as usize + 1,
+        );
+        assert_eq!(
+            txout_index.keychain_unused(&TestKeychain::Internal).count(),
+            0,
+        );
+    }
+
+    // given:
+    // - internal lookahead is 20
+    // - internal derivation index is `None`
+    // when:
+    // - derivation index is set ahead of current derivation index + lookahead
+    // expect:
+    // - scripts cached in spk_txout_index should increase correctly, a.k.a. no scripts are skipped
+    assert_eq!(
+        txout_index
+            .set_derivation_index(&TestKeychain::Internal, 24)
+            .as_inner(),
+        &[(TestKeychain::Internal, 24)].into()
+    );
+    assert_eq!(
+        txout_index.inner().script_pubkeys().len(),
+        10 /* external lookahead */ +
+        20 /* internal lookahead */ +
+        20 /* external stored index count */ +
+        25 /* internal stored index count */
+    );
+    assert_eq!(
+        txout_index
+            .stored_scripts_of_keychain(&TestKeychain::Internal)
+            .count(),
+        25,
+    );
+
+    // ensure derivation indices are expected for each keychain
+    let external_index = txout_index
+        .derivation_index(&TestKeychain::External)
+        .expect("already derived");
+    let internal_index = txout_index
+        .derivation_index(&TestKeychain::Internal)
+        .expect("already derived");
+    assert_eq!(external_index, 19);
+    assert_eq!(internal_index, 24);
+
+    // lol
+    let external_spk = external_desc
+        .at_derivation_index(external_index - 1)
+        .script_pubkey();
+    let internal_spk = internal_desc
+        .at_derivation_index(internal_index - 1)
+        .script_pubkey();
 }
 
 // #[test]
