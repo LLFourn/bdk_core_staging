@@ -64,18 +64,28 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// See [`ForEachTxout`] for the types that support this.
     ///
     /// [`ForEachTxout`]: crate::ForEachTxout
-    pub fn scan(&mut self, txouts: &impl ForEachTxout) {
-        txouts.for_each_txout(&mut |(op, txout)| self.scan_txout(op, txout))
+    pub fn scan(&mut self, txouts: &impl ForEachTxout) -> BTreeSet<I> {
+        let mut scanned_indices = BTreeSet::new();
+        txouts.for_each_txout(&mut |(op, txout)| {
+            if let Some(spk_i) = self.scan_txout(op, txout).cloned() {
+                scanned_indices.insert(spk_i);
+            }
+        });
+        scanned_indices
     }
 
-    /// Scan a single `TxOut` for a matching script pubkey
-    pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) {
-        if let Some(spk_i) = self.index_of_spk(&txout.script_pubkey) {
-            self.txouts
-                .insert(op.clone(), (spk_i.clone(), txout.clone()));
+    /// Scan a single `TxOut` for a matching script pubkey, and returns the index that matched the
+    /// script pubkey (if any).
+    pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) -> Option<&I> {
+        let spk_i = self.spk_indexes.get(&txout.script_pubkey);
+
+        if let Some(spk_i) = spk_i {
+            self.txouts.insert(op, (spk_i.clone(), txout.clone()));
             self.spk_txouts.insert((spk_i.clone(), op));
             self.unused.remove(&spk_i);
         }
+
+        spk_i
     }
 
     /// Iterate over all known txouts that spend to tracked script pubkeys.
@@ -231,8 +241,8 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     }
 
     /// Returns the index associated with the script pubkey.
-    pub fn index_of_spk(&self, script: &Script) -> Option<I> {
-        self.spk_indexes.get(script).cloned()
+    pub fn index_of_spk(&self, script: &Script) -> Option<&I> {
+        self.spk_indexes.get(script)
     }
 
     /// Computes total input value going from script pubkeys in the index (sent) and total output

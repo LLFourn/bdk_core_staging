@@ -91,15 +91,29 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// See [`ForEachTxout`] for the types that support this.
     ///
     /// [`ForEachTxout`]: crate::ForEachTxout
-    pub fn scan(&mut self, txouts: &impl ForEachTxout) {
-        self.inner.scan(txouts);
+    pub fn scan(&mut self, txouts: &impl ForEachTxout) -> DerivationAdditions<K> {
+        let mut additions = DerivationAdditions::<K>::default();
+        txouts.for_each_txout(&mut |(op, txout)| additions.append(self.scan_txout(op, txout)));
+        additions
     }
 
     /// Scan a single `TxOut` for a matching script pubkey.
     ///
     /// If it matches the index will store and index it.
-    pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) {
-        self.inner.scan_txout(op, &txout);
+    pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) -> DerivationAdditions<K> {
+        let secp = Secp256k1::verification_only();
+        if let Some((keychain, index)) = self.inner.scan_txout(op, txout).cloned() {
+            let (_, index_count) = self
+                .keychains
+                .get_mut(&keychain)
+                .expect("keychain must exist");
+            if index >= *index_count {
+                *index_count = index + 1;
+                self.replenish_lookahead(&secp, &keychain);
+                return DerivationAdditions([(keychain.clone(), index)].into());
+            }
+        }
+        return DerivationAdditions::default();
     }
 
     pub fn inner(&self) -> &SpkTxOutIndex<(K, u32)> {
