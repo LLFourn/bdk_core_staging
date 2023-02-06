@@ -43,7 +43,7 @@ where
 
     /// Get the internal map of keychains to their descriptors. This is just shorthand for calling
     /// [`KeychainTxOutIndex::keychains`] on the internal `txout_index`.
-    pub fn keychains(&mut self) -> &BTreeMap<K, Descriptor<DescriptorPublicKey>> {
+    pub fn keychains(&mut self) -> &BTreeMap<K, (Descriptor<DescriptorPublicKey>, u32)> {
         self.txout_index.keychains()
     }
 
