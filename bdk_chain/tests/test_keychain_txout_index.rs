@@ -7,6 +7,7 @@ use bdk_chain::{
     keychain::{DerivationAdditions, KeychainTxOutIndex},
 };
 
+use bitcoin::{Transaction, TxOut};
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
@@ -33,7 +34,7 @@ fn init_txout_index() -> (
 }
 
 #[test]
-fn test_store_all_up_to() {
+fn test_set_all_derivation_indices() {
     let (mut txout_index, _, _) = init_txout_index();
     let derive_to: BTreeMap<_, _> =
         [(TestKeychain::External, 12), (TestKeychain::Internal, 24)].into();
@@ -51,35 +52,149 @@ fn test_store_all_up_to() {
     );
 }
 
-// #[test]
-// fn test_pad_all_with_unused() {
-//     let (mut txout_index, external_desc, _) = init_txout_index();
+#[test]
+fn test_lookahead() {
+    let (mut txout_index, external_desc, internal_desc) = init_txout_index();
 
-//     let external_spk3 = external_desc.at_derivation_index(3).script_pubkey();
+    txout_index.set_lookahead(&TestKeychain::External, 10);
+    txout_index.set_lookahead(&TestKeychain::Internal, 20);
+    assert_eq!(txout_index.inner().script_pubkeys().len(), 30);
 
-//     assert_eq!(
-//         txout_index
-//             .store_up_to(&TestKeychain::External, 3)
-//             .as_inner(),
-//         &[(TestKeychain::External, 3)].into(),
-//     );
-//     txout_index.scan_txout(
-//         OutPoint::default(),
-//         &TxOut {
-//             value: 420,
-//             script_pubkey: external_spk3,
-//         },
-//     );
+    // given:
+    // - external lookahead set to 10
+    // - internal lookahead set to 20
+    // when:
+    // - set external derivation index to value higher than last, but within the lookahead value
+    // expect:
+    // - scripts cached in spk_txout_index should increase correctly
+    // - stored scripts of external keychain should be of expected counts
+    for index in (0..20).skip_while(|i| i % 2 == 1) {
+        assert_eq!(
+            txout_index
+                .set_derivation_index(&TestKeychain::External, index)
+                .as_inner(),
+            &[(TestKeychain::External, index)].into()
+        );
 
-//     assert_eq!(
-//         txout_index.pad_all_with_unused(5).as_inner(),
-//         &[(TestKeychain::External, 8), (TestKeychain::Internal, 4)].into(),
-//     );
-//     assert_eq!(
-//         txout_index.derivation_indices(),
-//         [(TestKeychain::External, 8), (TestKeychain::Internal, 4)].into()
-//     );
-// }
+        assert_eq!(
+            txout_index.inner().script_pubkeys().len(),
+            10 /* external lookahead */ +
+            20 /* internal lookahead */ +
+            index as usize + 1 /* `derived` count */
+        );
+        assert_eq!(
+            txout_index
+                .stored_scripts_of_keychain(&TestKeychain::External)
+                .count(),
+            index as usize + 1,
+        );
+        assert_eq!(
+            txout_index
+                .stored_scripts_of_keychain(&TestKeychain::Internal)
+                .count(),
+            0,
+        );
+        assert_eq!(
+            txout_index.keychain_unused(&TestKeychain::External).count(),
+            index as usize + 1,
+        );
+        assert_eq!(
+            txout_index.keychain_unused(&TestKeychain::Internal).count(),
+            0,
+        );
+    }
+
+    // given:
+    // - internal lookahead is 20
+    // - internal derivation index is `None`
+    // when:
+    // - derivation index is set ahead of current derivation index + lookahead
+    // expect:
+    // - scripts cached in spk_txout_index should increase correctly, a.k.a. no scripts are skipped
+    assert_eq!(
+        txout_index
+            .set_derivation_index(&TestKeychain::Internal, 24)
+            .as_inner(),
+        &[(TestKeychain::Internal, 24)].into()
+    );
+    assert_eq!(
+        txout_index.inner().script_pubkeys().len(),
+        10 /* external lookahead */ +
+        20 /* internal lookahead */ +
+        20 /* external stored index count */ +
+        25 /* internal stored index count */
+    );
+    assert_eq!(
+        txout_index
+            .stored_scripts_of_keychain(&TestKeychain::Internal)
+            .count(),
+        25,
+    );
+
+    // ensure derivation indices are expected for each keychain
+    let last_external_index = txout_index
+        .derivation_index(&TestKeychain::External)
+        .expect("already derived");
+    let last_internal_index = txout_index
+        .derivation_index(&TestKeychain::Internal)
+        .expect("already derived");
+    assert_eq!(last_external_index, 19);
+    assert_eq!(last_internal_index, 24);
+
+    // when:
+    // - scanning txouts with spks within stored indexes
+    // expect:
+    // - no changes to stored index counts
+    let external_iter = 0..=last_external_index;
+    let internal_iter = last_internal_index - last_external_index..=last_internal_index;
+    for (external_index, internal_index) in external_iter.zip(internal_iter) {
+        let tx = Transaction {
+            output: vec![
+                TxOut {
+                    script_pubkey: external_desc
+                        .at_derivation_index(external_index)
+                        .script_pubkey(),
+                    value: 10_000,
+                },
+                TxOut {
+                    script_pubkey: internal_desc
+                        .at_derivation_index(internal_index)
+                        .script_pubkey(),
+                    value: 10_000,
+                },
+            ],
+            ..common::new_tx(external_index)
+        };
+        assert_eq!(txout_index.scan(&tx), DerivationAdditions::default());
+        assert_eq!(
+            txout_index.derivation_index(&TestKeychain::External),
+            Some(last_external_index)
+        );
+        assert_eq!(
+            txout_index.derivation_index(&TestKeychain::Internal),
+            Some(last_internal_index)
+        );
+        assert_eq!(
+            txout_index
+                .stored_scripts_of_keychain(&TestKeychain::External)
+                .count(),
+            last_external_index as usize + 1,
+        );
+        assert_eq!(
+            txout_index
+                .stored_scripts_of_keychain(&TestKeychain::Internal)
+                .count(),
+            last_internal_index as usize + 1,
+        );
+    }
+
+    // when:
+    // - scanning txouts with spks above last stored index
+    // expect:
+    // - cached scripts count should increase as expected
+    // - last stored index should increase as expected
+    // TODO!
+}
 
 #[test]
 fn test_wildcard_derivations() {
