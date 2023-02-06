@@ -345,6 +345,7 @@ pub fn create_tx<P: ChainPosition>(
             .keychains()
             .get(&internal_keychain)
             .expect("must exist")
+            .0
             .at_derivation_index(change_index),
         &assets,
     )
@@ -362,6 +363,7 @@ pub fn create_tx<P: ChainPosition>(
             .keychains()
             .get(&internal_keychain)
             .expect("must exist")
+            .0
             .dust_value(),
         ..CoinSelectorOpt::fund_outputs(
             &outputs,
@@ -642,6 +644,7 @@ pub fn planned_utxos<'a, AK: bdk_tmp_plan::CanDerive + Clone, P: ChainPosition>(
                         .keychains()
                         .get(keychain)
                         .expect("must exist since we have a utxo for it")
+                        .0
                         .at_derivation_index(*derivation_index),
                     assets,
                 )?,
