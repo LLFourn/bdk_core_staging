@@ -64,13 +64,22 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// See [`ForEachTxout`] for the types that support this.
     ///
     /// [`ForEachTxout`]: crate::ForEachTxout
-    pub fn scan(&mut self, txouts: &impl ForEachTxout) -> BTreeSet<I> {
+    pub fn scan(&mut self, txouts: &impl ForEachTxout) -> BTreeSet<&I> {
         let mut scanned_indices = BTreeSet::new();
+
         txouts.for_each_txout(&mut |(op, txout)| {
-            if let Some(spk_i) = self.scan_txout(op, txout).cloned() {
+            // The follow is copied from `scan_txout` because of lifetime issues.
+            let spk_i = self.spk_indexes.get(&txout.script_pubkey);
+
+            if let Some(spk_i) = spk_i {
+                self.txouts.insert(op, (spk_i.clone(), txout.clone()));
+                self.spk_txouts.insert((spk_i.clone(), op));
+                self.unused.remove(&spk_i);
+
                 scanned_indices.insert(spk_i);
             }
         });
+
         scanned_indices
     }
 
