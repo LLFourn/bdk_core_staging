@@ -64,7 +64,7 @@ where
     {
         let mut derivation_indices = scan.last_active_indices.clone();
         derivation_indices.retain(|keychain, index| {
-            match self.txout_index.derivation_index(keychain) {
+            match self.txout_index.last_stored_index(keychain) {
                 Some(existing) => *index > existing,
                 None => true,
             }
