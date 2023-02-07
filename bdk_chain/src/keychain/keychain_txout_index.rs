@@ -101,19 +101,11 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// If it matches the index will store and index it.
     pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) -> DerivationAdditions<K> {
-        let secp = Secp256k1::verification_only();
+        let mut additions = DerivationAdditions::default();
         if let Some((keychain, index)) = self.inner.scan_txout(op, txout).cloned() {
-            let (_, index_count) = self
-                .keychains
-                .get_mut(&keychain)
-                .expect("keychain must exist");
-            if index >= *index_count {
-                *index_count = index + 1;
-                self.replenish_lookahead(&secp, &keychain);
-                return DerivationAdditions([(keychain.clone(), index)].into());
-            }
+            additions.append(self.set_derivation_index(&keychain, index));
         }
-        return DerivationAdditions::default();
+        additions
     }
 
     pub fn inner(&self) -> &SpkTxOutIndex<(K, u32)> {
