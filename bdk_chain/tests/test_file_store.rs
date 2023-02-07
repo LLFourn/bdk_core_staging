@@ -11,6 +11,7 @@ use bdk_chain::{
     keychain::{KeychainChangeSet, KeychainTracker},
     serde, TxHeight,
 };
+use bitcoin::Transaction;
 
 #[macro_use]
 mod common;
@@ -86,7 +87,7 @@ fn new_fails_if_file_is_too_short() {
         .write_all(&MAGIC_BYTES[..MAGIC_BYTES_LEN - 1])
         .expect("should write");
 
-    match KeychainStore::<TestKeychain, TxHeight>::new(path.open()) {
+    match KeychainStore::<TestKeychain, TxHeight, Transaction>::new(path.open()) {
         Err(FileError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof),
         unexpected => panic!("unexpected result: {:?}", unexpected),
     };
@@ -101,7 +102,7 @@ fn new_fails_if_magic_bytes_are_invalid() {
         .write_all(invalid_magic_mnemonic.as_bytes())
         .expect("should write");
 
-    match KeychainStore::<TestKeychain, TxHeight>::new(path.open()) {
+    match KeychainStore::<TestKeychain, TxHeight, Transaction>::new(path.open()) {
         Err(FileError::InvalidMagicBytes(b)) => assert_eq!(b, invalid_magic_mnemonic.as_bytes()),
         unexpected => panic!("unexpected result: {:?}", unexpected),
     };
@@ -115,7 +116,7 @@ fn append_changeset_truncates_invalid_bytes() {
     data[..MAGIC_BYTES_LEN].copy_from_slice(&MAGIC_BYTES);
 
     let descriptor = miniscript::Descriptor::from_str("tr([73c5da0a/86'/0'/0']xpub6BgBgsespWvERF3LHQu6CnqdvfEvtMcQjYrcRzx53QJjSxarj2afYWcLteoGVky7D3UKDP9QyrLprQ3VCECoY49yfdDEHGCtMMj92pReUsQ/0/*)#rg247h69").unwrap();
-    let mut tracker = KeychainTracker::<TestKeychain, TxHeight>::default();
+    let mut tracker = KeychainTracker::<TestKeychain, TxHeight, Transaction>::default();
     tracker.add_keychain(TestKeychain::External, descriptor);
     let changeset = KeychainChangeSet {
         derivation_indices: tracker.txout_index.store_up_to(&TestKeychain::External, 21),
@@ -125,7 +126,8 @@ fn append_changeset_truncates_invalid_bytes() {
     let path = TempPath::new();
     path.open().write_all(&data).expect("should write");
 
-    let mut store = KeychainStore::<TestKeychain, TxHeight>::new(path.open()).expect("should open");
+    let mut store = KeychainStore::<TestKeychain, TxHeight, Transaction>::new(path.open())
+        .expect("should open");
     match store.iter_changesets().expect("seek should succeed").next() {
         Some(Err(IterError::Bincode(_))) => {}
         unexpected_res => panic!("unexpected result: {:?}", unexpected_res),

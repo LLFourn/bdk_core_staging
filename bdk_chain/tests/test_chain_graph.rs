@@ -2,12 +2,10 @@
 mod common;
 
 use bdk_chain::{
-    chain_graph::{
-        ChainGraph, ChangeSet, InflateError, InsertTxError, UnresolvableConflict, UpdateError,
-    },
+    chain_graph::*,
     collections::HashSet,
     sparse_chain,
-    tx_graph::{self, Additions},
+    tx_graph::{self, TxGraph},
     BlockId, TxHeight,
 };
 use bitcoin::{OutPoint, PackedLockTime, Script, Sequence, Transaction, TxIn, TxOut, Witness};
@@ -126,7 +124,7 @@ fn update_evicts_conflicting_tx() {
             cg
         };
 
-        let changeset = ChangeSet::<TxHeight> {
+        let changeset = ChangeSet::<TxHeight, Transaction> {
             chain: sparse_chain::ChangeSet {
                 checkpoints: Default::default(),
                 txids: [
@@ -135,7 +133,7 @@ fn update_evicts_conflicting_tx() {
                 ]
                 .into(),
             },
-            graph: Additions {
+            graph: tx_graph::Additions {
                 tx: [tx_b2.clone()].into(),
                 txout: [].into(),
             },
@@ -205,7 +203,7 @@ fn update_evicts_conflicting_tx() {
             cg
         };
 
-        let changeset = ChangeSet::<TxHeight> {
+        let changeset = ChangeSet::<TxHeight, Transaction> {
             chain: sparse_chain::ChangeSet {
                 checkpoints: [(1, Some(h!("B'")))].into(),
                 txids: [
@@ -214,7 +212,7 @@ fn update_evicts_conflicting_tx() {
                 ]
                 .into(),
             },
-            graph: Additions {
+            graph: tx_graph::Additions {
                 tx: [tx_b2.clone()].into(),
                 txout: [].into(),
             },
@@ -230,8 +228,7 @@ fn update_evicts_conflicting_tx() {
 }
 
 #[test]
-fn chain_graph_inflate_changeset() {
-    let mut cg = ChainGraph::default();
+fn chain_graph_new_missing() {
     let tx_a = Transaction {
         version: 0x01,
         lock_time: PackedLockTime(0),
@@ -245,30 +242,34 @@ fn chain_graph_inflate_changeset() {
         output: vec![TxOut::default()],
     };
 
-    let chain_changeset = changeset! {
-        checkpoints: [ (0, Some(h!("A"))) ],
+    let update = chain!(
+        index: TxHeight,
+        checkpoints: [[0, h!("A")]],
         txids: [
-            (tx_a.txid(), Some(TxHeight::Confirmed(0))),
-            (tx_b.txid(), Some(TxHeight::Confirmed(0)))
+            (tx_a.txid(), TxHeight::Confirmed(0)),
+            (tx_b.txid(), TxHeight::Confirmed(0))
         ]
-    };
+    );
+    let mut graph = TxGraph::default();
 
     let mut expected_missing = HashSet::new();
     expected_missing.insert(tx_a.txid());
     expected_missing.insert(tx_b.txid());
 
     assert_eq!(
-        cg.inflate_changeset(chain_changeset.clone(), vec![]),
-        Err(InflateError::Missing(expected_missing.clone()))
+        ChainGraph::new(update.clone(), graph.clone()),
+        Err(NewError::Missing(expected_missing.clone()))
     );
 
+    let _ = graph.insert_tx(tx_b.clone());
     expected_missing.remove(&tx_b.txid());
+
     assert_eq!(
-        cg.inflate_changeset(chain_changeset.clone(), vec![tx_b.clone()]),
-        Err(InflateError::Missing(expected_missing.clone()))
+        ChainGraph::new(update.clone(), graph.clone()),
+        Err(NewError::Missing(expected_missing.clone()))
     );
 
-    let _ = cg.insert_txout(
+    let _ = graph.insert_txout(
         OutPoint {
             txid: tx_a.txid(),
             vout: 0,
@@ -277,24 +278,76 @@ fn chain_graph_inflate_changeset() {
     );
 
     assert_eq!(
-        cg.inflate_changeset(chain_changeset.clone(), vec![tx_b.clone()]),
-        Err(InflateError::Missing(expected_missing)),
+        ChainGraph::new(update.clone(), graph.clone()),
+        Err(NewError::Missing(expected_missing)),
         "inserting an output instead of full tx doesn't satisfy constraint"
     );
 
-    let mut additions = tx_graph::Additions::default();
-    additions.tx.insert(tx_a.clone());
-    additions.tx.insert(tx_b.clone());
-    let changeset = cg.inflate_changeset(chain_changeset.clone(), vec![tx_a, tx_b]);
-    assert_eq!(
-        changeset,
-        Ok(ChangeSet {
-            chain: chain_changeset,
-            graph: additions
-        })
+    let _ = graph.insert_tx(tx_a.clone());
+
+    let new_graph = ChainGraph::new(update.clone(), graph.clone()).unwrap();
+    let expected_graph = {
+        let mut cg = ChainGraph::<TxHeight, Transaction>::default();
+        let _ = cg
+            .insert_checkpoint(update.latest_checkpoint().unwrap())
+            .unwrap();
+        let _ = cg.insert_tx(tx_a, TxHeight::Confirmed(0)).unwrap();
+        let _ = cg.insert_tx(tx_b, TxHeight::Confirmed(0)).unwrap();
+        cg
+    };
+
+    assert_eq!(new_graph, expected_graph);
+}
+
+#[test]
+fn chain_graph_new_conflicts() {
+    let tx_a = Transaction {
+        version: 0x01,
+        lock_time: PackedLockTime(0),
+        input: vec![],
+        output: vec![TxOut::default()],
+    };
+
+    let tx_b = Transaction {
+        version: 0x01,
+        lock_time: PackedLockTime(0),
+        input: vec![TxIn {
+            previous_output: OutPoint::new(tx_a.txid(), 0),
+            script_sig: Script::new(),
+            sequence: Sequence::default(),
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut::default()],
+    };
+
+    let tx_b2 = Transaction {
+        version: 0x02,
+        lock_time: PackedLockTime(0),
+        input: vec![TxIn {
+            previous_output: OutPoint::new(tx_a.txid(), 0),
+            script_sig: Script::new(),
+            sequence: Sequence::default(),
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut::default(), TxOut::default()],
+    };
+
+    let chain = chain!(
+        index: TxHeight,
+        checkpoints: [[5, h!("A")]],
+        txids: [
+            (tx_a.txid(), TxHeight::Confirmed(1)),
+            (tx_b.txid(), TxHeight::Confirmed(2)),
+            (tx_b2.txid(), TxHeight::Confirmed(3))
+        ]
     );
 
-    cg.apply_changeset(changeset.unwrap());
+    let graph = TxGraph::new([tx_a, tx_b, tx_b2]);
+
+    assert!(matches!(
+        ChainGraph::new(chain, graph),
+        Err(NewError::Conflict { .. })
+    ));
 }
 
 #[test]
@@ -429,7 +482,7 @@ fn test_apply_changes_reintroduce_tx() {
                 checkpoints: [(2, Some(block2b.hash))],
                 txids: [(tx2a.txid(), None), (tx2b.txid(), Some(TxHeight::Confirmed(2)))]
             },
-            graph: Additions {
+            graph: tx_graph::Additions {
                 tx: [tx2b.clone()].into(),
                 ..Default::default()
             },
@@ -586,7 +639,7 @@ fn test_evict_descendants() {
                 checkpoints: [(2, Some(block_2b.hash))],
                 txids: [(txid_2, None), (txid_3, None), (txid_4, None), (txid_5, None), (txid_conflict, Some(TxHeight::Confirmed(2)))]
             },
-            graph: Additions {
+            graph: tx_graph::Additions {
                 tx: [tx_conflict.clone()].into(),
                 ..Default::default()
             }

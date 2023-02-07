@@ -5,11 +5,11 @@ mod spk_txout_index;
 pub use spk_txout_index::*;
 mod chain_data;
 pub use chain_data::*;
-mod for_each_txout;
 pub mod keychain;
 pub mod sparse_chain;
+mod tx_data_traits;
 pub mod tx_graph;
-pub use for_each_txout::*;
+pub use tx_data_traits::*;
 
 #[cfg(feature = "miniscript")]
 pub use miniscript;

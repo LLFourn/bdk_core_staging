@@ -1,5 +1,5 @@
 mod electrum;
-use bdk_chain::{bitcoin::Network, keychain::KeychainChangeSet};
+use bdk_chain::{bitcoin::Network, keychain::KeychainScan};
 use bdk_cli::{
     anyhow::{self, Context},
     clap::{self, Parser, Subcommand},
@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let (chain_update, derivatoin_indices_update) = match electrum_cmd {
+    let (chain_update, last_active_indices) = match electrum_cmd {
         ElectrumCommands::Scan {
             stop_gap,
             scan_option,
@@ -109,7 +109,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             // we scan the spks **wihtout** a lock on the tracker
-            let (new_sparsechain, derivation_indices_update) = client.wallet_txid_scan(
+            let (new_sparsechain, last_active_indices) = client.wallet_txid_scan(
                 spk_iterators,
                 Some(stop_gap),
                 &local_chain,
@@ -118,7 +118,7 @@ fn main() -> anyhow::Result<()> {
 
             eprintln!();
 
-            (new_sparsechain, derivation_indices_update)
+            (new_sparsechain, last_active_indices)
         }
         ElectrumCommands::Sync {
             mut unused,
@@ -189,20 +189,16 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let (sparsechain_changeset, new_txids) = {
-        // get another short lock to figure out which txids are missing full transactions
+    let new_txids = {
         let tracker = &*tracker.lock().unwrap();
-        let sparsechain_changeset = tracker.chain().determine_changeset(&chain_update)?;
-
-        let new_txids = tracker
-            .chain()
-            .changeset_additions(&sparsechain_changeset)
-            .collect::<Vec<_>>();
-
-        (sparsechain_changeset, new_txids)
+        chain_update
+            .txids()
+            .filter(|(_, txid)| tracker.graph().get_tx(*txid).is_none())
+            .map(|&(_, txid)| txid)
+            .collect::<Vec<_>>()
     };
 
-    // fetch the full transactions **without** a lock on the tracker
+    // fetch the missing full transactions **without** a lock on the tracker
     let new_txs = client
         .batch_transaction_get(new_txids.iter())
         .context("fetching full transactions")?;
@@ -210,14 +206,17 @@ fn main() -> anyhow::Result<()> {
     {
         // Get a final short lock to apply the changes
         let tracker = &mut *tracker.lock().unwrap();
-        let mut changeset = KeychainChangeSet::default();
-        changeset.chain_graph = tracker
+        let update = tracker
             .chain_graph()
-            .inflate_changeset(sparsechain_changeset, new_txs)
-            .context("inflating changeset")?;
-        changeset.derivation_indices = tracker
-            .txout_index
-            .store_all_up_to(&derivatoin_indices_update);
+            .inflate_update(chain_update, new_txs)
+            .context("inflating update")?;
+        let changeset = {
+            let keychain_scan = KeychainScan {
+                update: update,
+                last_active_indices,
+            };
+            tracker.determine_changeset(&keychain_scan)?
+        };
         let db = &mut *db.lock().unwrap();
         db.append_changeset(&changeset)?;
         tracker.apply_changeset(changeset);
