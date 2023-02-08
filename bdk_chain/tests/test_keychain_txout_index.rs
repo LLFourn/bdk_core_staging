@@ -302,8 +302,8 @@ fn test_non_wildcard_derivations() {
     let (spk, changeset) = txout_index.next_unused_spk(&TestKeychain::External);
     assert_eq!(spk, (0, &external_spk));
     assert_eq!(changeset.as_inner(), &[].into());
-    assert!(txout_index
-        .reveal_to_target(&TestKeychain::External, 200)
-        .1
-        .is_empty());
+    let (revealed_spks, revealed_additions) =
+        txout_index.reveal_to_target(&TestKeychain::External, 200);
+    assert!(revealed_spks.is_none());
+    assert!(revealed_additions.is_empty());
 }
