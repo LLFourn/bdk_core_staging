@@ -67,7 +67,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     pub fn scan(&mut self, txouts: &impl ForEachTxout) -> BTreeSet<&I> {
         let mut scanned_indices = BTreeSet::new();
 
-        txouts.for_each_txout(&mut |(op, txout)| {
+        txouts.for_each_txout(|(op, txout)| {
             // The follow is copied from `scan_txout` because of lifetime issues.
             let spk_i = self.spk_indexes.get(&txout.script_pubkey);
 

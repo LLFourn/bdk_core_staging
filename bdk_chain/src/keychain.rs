@@ -185,7 +185,7 @@ impl<K, P, T> AsRef<TxGraph<T>> for KeychainScan<K, P, T> {
 }
 
 impl<K, P, T: AsTransaction> ForEachTxout for KeychainChangeSet<K, P, T> {
-    fn for_each_txout(&self, f: &mut impl FnMut((bitcoin::OutPoint, &bitcoin::TxOut))) {
+    fn for_each_txout(&self, f: impl FnMut((bitcoin::OutPoint, &bitcoin::TxOut))) {
         self.chain_graph.for_each_txout(f)
     }
 }

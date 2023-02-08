@@ -107,7 +107,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// [`ForEachTxout`]: crate::ForEachTxout
     pub fn scan(&mut self, txouts: &impl ForEachTxout) -> DerivationAdditions<K> {
         let mut additions = DerivationAdditions::<K>::default();
-        txouts.for_each_txout(&mut |(op, txout)| additions.append(self.scan_txout(op, txout)));
+        txouts.for_each_txout(|(op, txout)| additions.append(self.scan_txout(op, txout)));
         additions
     }
 

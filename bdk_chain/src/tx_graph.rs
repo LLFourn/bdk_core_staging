@@ -412,13 +412,13 @@ impl AsRef<TxGraph> for TxGraph {
 }
 
 impl<T: AsTransaction> ForEachTxout for Additions<T> {
-    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+    fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut))) {
         self.txouts().for_each(f)
     }
 }
 
 impl<T: AsTransaction> ForEachTxout for TxGraph<T> {
-    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+    fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut))) {
         self.all_txouts().for_each(f)
     }
 }

@@ -451,13 +451,13 @@ impl<P, T> AsRef<TxGraph<T>> for ChainGraph<P, T> {
 }
 
 impl<P, T: AsTransaction> ForEachTxout for ChainGraph<P, T> {
-    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+    fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut))) {
         self.graph.for_each_txout(f)
     }
 }
 
 impl<P, T: AsTransaction> ForEachTxout for ChangeSet<P, T> {
-    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+    fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut))) {
         self.graph.for_each_txout(f)
     }
 }
