@@ -7,7 +7,7 @@ use bdk_chain::{
     keychain::{DerivationAdditions, KeychainTxOutIndex},
 };
 
-use bitcoin::{Transaction, TxOut};
+use bitcoin::{secp256k1::Secp256k1, Script, Transaction, TxOut};
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
@@ -31,6 +31,13 @@ fn init_txout_index() -> (
     txout_index.add_keychain(TestKeychain::Internal, internal_descriptor.clone());
 
     (txout_index, external_descriptor, internal_descriptor)
+}
+
+fn spk_at_index(descriptor: &Descriptor<DescriptorPublicKey>, index: u32) -> Script {
+    descriptor
+        .derived_descriptor(&Secp256k1::verification_only(), index)
+        .expect("must derive")
+        .script_pubkey()
 }
 
 #[test]
@@ -67,11 +74,14 @@ fn test_lookahead() {
     // - scripts cached in spk_txout_index should increase correctly
     // - stored scripts of external keychain should be of expected counts
     for index in (0..20).skip_while(|i| i % 2 == 1) {
+        let (revealed_spks, revealed_additions) =
+            txout_index.reveal_to_target(&TestKeychain::External, index);
         assert_eq!(
-            txout_index
-                .reveal_to_target(&TestKeychain::External, index)
-                .1
-                .as_inner(),
+            revealed_spks.map(Iterator::collect),
+            Some(vec![(index, spk_at_index(&external_desc, index))]),
+        );
+        assert_eq!(
+            revealed_additions.as_inner(),
             &[(TestKeychain::External, index)].into()
         );
 
@@ -103,11 +113,18 @@ fn test_lookahead() {
     // - derivation index is set ahead of current derivation index + lookahead
     // expect:
     // - scripts cached in spk_txout_index should increase correctly, a.k.a. no scripts are skipped
+    let (revealed_spks, revealed_additions) =
+        txout_index.reveal_to_target(&TestKeychain::Internal, 24);
     assert_eq!(
-        txout_index
-            .reveal_to_target(&TestKeychain::Internal, 24)
-            .1
-            .as_inner(),
+        revealed_spks.map(Iterator::collect),
+        Some(
+            (0..=24)
+                .map(|index| (index, spk_at_index(&internal_desc, index)))
+                .collect::<Vec<_>>()
+        ),
+    );
+    assert_eq!(
+        revealed_additions.as_inner(),
         &[(TestKeychain::Internal, 24)].into()
     );
     assert_eq!(

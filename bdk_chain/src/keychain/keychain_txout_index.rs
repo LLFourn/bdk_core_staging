@@ -374,7 +374,10 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 let _old_index = self.last_revealed.insert(keychain.clone(), index);
                 debug_assert!(_old_index < Some(index));
                 (
-                    Some(range_descriptor_spks(descriptor.clone(), next_index..index)),
+                    Some(range_descriptor_spks(
+                        descriptor.clone(),
+                        next_index..=index,
+                    )),
                     DerivationAdditions([(keychain.clone(), index)].into()),
                 )
             }
