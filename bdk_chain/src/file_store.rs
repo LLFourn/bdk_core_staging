@@ -1,6 +1,8 @@
+use bitcoin::Transaction;
+
 use crate::{
     keychain::{KeychainChangeSet, KeychainTracker},
-    sparse_chain,
+    sparse_chain, AsTransaction,
 };
 use core::marker::PhantomData;
 use std::{
@@ -18,16 +20,17 @@ pub const MAGIC_BYTES: [u8; MAGIC_BYTES_LEN] = [98, 100, 107, 102, 115, 48, 48, 
 /// Persists an append only list of `KeychainChangeSet<K,P>` to a single file.
 /// [`KeychainChangeSet<K,P>`] record the changes made to a [`KeychainTracker<K,P>`].
 #[derive(Debug)]
-pub struct KeychainStore<K, P> {
+pub struct KeychainStore<K, P, T = Transaction> {
     db_file: File,
-    chain_index: core::marker::PhantomData<(K, P)>,
+    changeset_type_params: core::marker::PhantomData<(K, P, T)>,
 }
 
-impl<K, P> KeychainStore<K, P>
+impl<K, P, T> KeychainStore<K, P, T>
 where
     K: Ord + Clone + core::fmt::Debug,
     P: sparse_chain::ChainPosition,
-    KeychainChangeSet<K, P>: serde::Serialize + serde::de::DeserializeOwned,
+    T: Ord + AsTransaction + Clone,
+    KeychainChangeSet<K, P, T>: serde::Serialize + serde::de::DeserializeOwned,
 {
     /// Creates a new store from a [`File`].
     ///
@@ -46,7 +49,7 @@ where
 
         Ok(Self {
             db_file: file,
-            chain_index: Default::default(),
+            changeset_type_params: Default::default(),
         })
     }
 
@@ -76,7 +79,9 @@ where
     /// **WARNING**: This method changes the write position in the underlying file. You should
     /// always iterate over all entries until `None` is returned if you want your next write to go
     /// at the end, otherwise you writing over existing enties.
-    pub fn iter_changesets(&mut self) -> Result<EntryIter<'_, KeychainChangeSet<K, P>>, io::Error> {
+    pub fn iter_changesets(
+        &mut self,
+    ) -> Result<EntryIter<'_, KeychainChangeSet<K, P, T>>, io::Error> {
         self.db_file
             .seek(io::SeekFrom::Start(MAGIC_BYTES_LEN as _))?;
 
@@ -95,7 +100,7 @@ where
     ///
     /// **WARNING**: This method changes the write position of the underlying file. The next
     /// changeset will be written over the erroring entry (or the end of the file if none existed).
-    pub fn aggregate_changeset(&mut self) -> (KeychainChangeSet<K, P>, Result<(), IterError>) {
+    pub fn aggregate_changeset(&mut self) -> (KeychainChangeSet<K, P, T>, Result<(), IterError>) {
         let mut changeset = KeychainChangeSet::default();
         let result = (|| {
             let iter_changeset = self.iter_changesets()?;
@@ -115,7 +120,7 @@ where
     /// changeset will be written over the erroring entry (or the end of the file if none existed).
     pub fn load_into_keychain_tracker(
         &mut self,
-        tracker: &mut KeychainTracker<K, P>,
+        tracker: &mut KeychainTracker<K, P, T>,
     ) -> Result<(), IterError> {
         for changeset in self.iter_changesets()? {
             tracker.apply_changeset(changeset?)
@@ -129,7 +134,7 @@ where
     /// directly after the appended changeset.
     pub fn append_changeset(
         &mut self,
-        changeset: &KeychainChangeSet<K, P>,
+        changeset: &KeychainChangeSet<K, P, T>,
     ) -> Result<(), io::Error> {
         if changeset.is_empty() {
             return Ok(());

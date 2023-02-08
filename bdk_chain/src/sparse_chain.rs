@@ -3,7 +3,7 @@ use core::{
     ops::{Bound, RangeBounds},
 };
 
-use crate::{collections::*, tx_graph::TxGraph, BlockId, FullTxOut, TxHeight};
+use crate::{collections::*, tx_graph::TxGraph, AsTransaction, BlockId, FullTxOut, TxHeight};
 use bitcoin::{hashes::Hash, BlockHash, OutPoint, Txid};
 
 /// This is a non-monotone structure that tracks relevant [`Txid`]s that are ordered by position `P`.
@@ -548,12 +548,16 @@ impl<P: ChainPosition> SparseChain<P> {
     /// Given a transaction graph and a particular outpoint attempts to retrieve a `FullTxOut`. This
     /// function will return `Some(full_txout)` only if the output's transaction is in `self` and
     /// the graph.
-    pub fn full_txout(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<FullTxOut<P>> {
+    pub fn full_txout(
+        &self,
+        graph: &TxGraph<impl AsTransaction>,
+        outpoint: OutPoint,
+    ) -> Option<FullTxOut<P>> {
         let chain_pos = self.tx_position(outpoint.txid)?;
 
         let tx = graph.get_tx(outpoint.txid)?;
-        let is_on_coinbase = tx.is_coin_base();
-        let txout = tx.output.get(outpoint.vout as usize)?.clone();
+        let is_on_coinbase = tx.as_tx().is_coin_base();
+        let txout = tx.as_tx().output.get(outpoint.vout as usize)?.clone();
 
         let spent_by = self
             .spent_by(graph, outpoint)
@@ -609,7 +613,7 @@ impl<P: ChainPosition> SparseChain<P> {
     /// Finds the transaction in the chain that spends `outpoint` given the input/output
     /// relationships in `graph`. Note that the transaction including `outpoint` does not need to be
     /// in the `graph` or the `chain` for this to return `Some(_)`.
-    pub fn spent_by(&self, graph: &TxGraph, outpoint: OutPoint) -> Option<(&P, Txid)> {
+    pub fn spent_by<T>(&self, graph: &TxGraph<T>, outpoint: OutPoint) -> Option<(&P, Txid)> {
         graph
             .outspends(outpoint)
             .iter()
