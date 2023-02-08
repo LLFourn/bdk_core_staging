@@ -3,7 +3,7 @@ use crate::{
     miniscript::{Descriptor, DescriptorPublicKey},
     ForEachTxOut, SpkTxOutIndex,
 };
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec::Vec};
 use bitcoin::{secp256k1::Secp256k1, OutPoint, Script, TxOut};
 use core::{fmt::Debug, ops::Deref};
 
@@ -186,9 +186,10 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         let next_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1);
         let lookahead = self.lookahead.get(keychain).map_or(0, |v| *v);
 
-        for (new_index, new_spk) in
-            range_descriptor_spks(descriptor.clone(), next_index..next_index + lookahead)
-        {
+        for (new_index, new_spk) in range_descriptor_spks(
+            Cow::Borrowed(descriptor),
+            next_index..next_index + lookahead,
+        ) {
             let _inserted = self
                 .inner
                 .insert_script_pubkey((keychain.clone(), new_index), new_spk);
@@ -204,7 +205,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .map(|(keychain, descriptor)| {
                 (
                     keychain.clone(),
-                    range_descriptor_spks(descriptor.clone(), 0..),
+                    range_descriptor_spks(Cow::Owned(descriptor.clone()), 0..),
                 )
             })
             .collect()
@@ -222,7 +223,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .get(keychain)
             .expect("keychain must exist")
             .clone();
-        range_descriptor_spks(descriptor, 0..)
+        range_descriptor_spks(Cow::Owned(descriptor), 0..)
     }
 
     /// Convenience method to get [`revealed_spks`] of all keychains.
@@ -357,7 +358,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         // we range over indexes that are not stored
         let range = next_index + lookahead..=target_index + lookahead;
 
-        for (new_index, new_spk) in range_descriptor_spks(descriptor.clone(), range) {
+        for (new_index, new_spk) in range_descriptor_spks(Cow::Borrowed(descriptor), range) {
             let _inserted = self
                 .inner
                 .insert_script_pubkey((keychain.clone(), new_index), new_spk);
@@ -375,7 +376,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 debug_assert!(_old_index < Some(index));
                 (
                     Some(range_descriptor_spks(
-                        descriptor.clone(),
+                        Cow::Owned(descriptor.clone()),
                         next_index..=index,
                     )),
                     DerivationAdditions([(keychain.clone(), index)].into()),
@@ -507,11 +508,11 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 }
 
 fn range_descriptor_spks<'a, R>(
-    descriptor: Descriptor<DescriptorPublicKey>,
+    descriptor: Cow<'a, Descriptor<DescriptorPublicKey>>,
     range: R,
-) -> impl Iterator<Item = (u32, Script)> + Clone + Send
+) -> impl Iterator<Item = (u32, Script)> + Clone + Send + 'a
 where
-    R: Iterator<Item = u32> + Clone + Send,
+    R: Iterator<Item = u32> + Clone + Send + 'a,
 {
     let secp = Secp256k1::verification_only();
     let has_wildcard = descriptor.has_wildcard();
