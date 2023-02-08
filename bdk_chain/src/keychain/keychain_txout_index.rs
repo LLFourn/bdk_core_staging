@@ -115,7 +115,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// If it matches the index will store and index it.
     pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) -> DerivationAdditions<K> {
         match self.inner.scan_txout(op, txout).cloned() {
-            Some((keychain, index)) => self.reveal_to(&keychain, index),
+            Some((keychain, index)) => self.reveal_to(&keychain, index).1,
             None => DerivationAdditions::default(),
         }
     }
@@ -301,12 +301,25 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     }
 
     /// Convenience method to call [`Self::reveal_to`] on several keychains.
-    pub fn reveal_all_to(&mut self, keychains: &BTreeMap<K, u32>) -> DerivationAdditions<K> {
+    pub fn reveal_all_to(
+        &mut self,
+        keychains: &BTreeMap<K, u32>,
+    ) -> (
+        BTreeMap<K, impl Iterator<Item = (u32, Script)>>,
+        DerivationAdditions<K>,
+    ) {
         let mut additions = DerivationAdditions::default();
+        let mut spks = BTreeMap::new();
+
         for (keychain, &index) in keychains {
-            additions.append(self.reveal_to(keychain, index));
+            let (new_spks, new_additions) = self.reveal_to(&keychain, index);
+            if let Some(new_spks) = new_spks {
+                spks.insert(keychain.clone(), new_spks);
+                additions.append(new_additions);
+            }
         }
-        additions
+
+        (spks, additions)
     }
 
     /// Reveals script pubkeys from the descriptor **up to and including** `index`, unless the
@@ -318,7 +331,14 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// # Panics
     ///
     /// Panics if `keychain` does not exist.
-    pub fn reveal_to(&mut self, keychain: &K, target_index: u32) -> DerivationAdditions<K> {
+    pub fn reveal_to(
+        &mut self,
+        keychain: &K,
+        target_index: u32,
+    ) -> (
+        Option<impl Iterator<Item = (u32, Script)>>,
+        DerivationAdditions<K>,
+    ) {
         let descriptor = self.keychains.get(keychain).expect("keychain must exist");
         let has_wildcard = descriptor.has_wildcard();
 
@@ -331,7 +351,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 
         // if target is already surpassed, there is nothing to be done
         if target_index < next_index {
-            return DerivationAdditions::default();
+            return (None, DerivationAdditions::default());
         }
 
         // if target is already stored (due to lookahead), this can be our new revealed index
@@ -358,9 +378,12 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             Some(index) => {
                 let _old_index = self.last_revealed.insert(keychain.clone(), index);
                 debug_assert!(_old_index < Some(index));
-                DerivationAdditions([(keychain.clone(), index)].into())
+                (
+                    Some(range_descriptor_spks(descriptor.clone(), next_index..index)),
+                    DerivationAdditions([(keychain.clone(), index)].into()),
+                )
             }
-            None => DerivationAdditions::default(),
+            None => (None, DerivationAdditions::default()),
         }
     }
 
@@ -383,7 +406,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         keychain: &K,
     ) -> ((u32, &Script), DerivationAdditions<K>) {
         let (next_index, _) = self.next_index(keychain);
-        let additions = self.reveal_to(keychain, next_index);
+        let additions = self.reveal_to(keychain, next_index).1;
         let script = self
             .inner
             .spk_at_index(&(keychain.clone(), next_index))
