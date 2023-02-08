@@ -14,7 +14,10 @@ pub use tx_data_traits::*;
 #[cfg(feature = "miniscript")]
 pub use miniscript;
 #[cfg(feature = "miniscript")]
-pub mod descriptor_ext;
+mod descriptor_ext;
+#[cfg(feature = "miniscript")]
+pub use descriptor_ext::DescriptorExt;
+
 #[cfg(feature = "file_store")]
 pub mod file_store;
 
