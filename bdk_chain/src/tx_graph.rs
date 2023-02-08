@@ -1,4 +1,4 @@
-use crate::{collections::*, AsTransaction, ForEachTxout, IntoOwned};
+use crate::{collections::*, AsTransaction, ForEachTxOut, IntoOwned};
 use alloc::vec::Vec;
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
 use core::ops::RangeInclusive;
@@ -411,14 +411,14 @@ impl AsRef<TxGraph> for TxGraph {
     }
 }
 
-impl<T: AsTransaction> ForEachTxout for Additions<T> {
-    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+impl<T: AsTransaction> ForEachTxOut for Additions<T> {
+    fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut))) {
         self.txouts().for_each(f)
     }
 }
 
-impl<T: AsTransaction> ForEachTxout for TxGraph<T> {
-    fn for_each_txout(&self, f: &mut impl FnMut((OutPoint, &TxOut))) {
+impl<T: AsTransaction> ForEachTxOut for TxGraph<T> {
+    fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut))) {
         self.all_txouts().for_each(f)
     }
 }

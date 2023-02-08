@@ -1,4 +1,4 @@
-//! Modules for keychain based structures.
+//! Module for keychain based structures.
 //!
 //! A keychain here is a set of application defined indexes for a minscript descriptor where we can
 //! derive script pubkeys at a particular derivation index. The application's index is simply
@@ -9,7 +9,7 @@ use crate::{
     collections::BTreeMap,
     sparse_chain::ChainPosition,
     tx_graph::TxGraph,
-    AsTransaction, ForEachTxout,
+    AsTransaction, ForEachTxOut,
 };
 
 #[cfg(feature = "miniscript")]
@@ -184,8 +184,8 @@ impl<K, P, T> AsRef<TxGraph<T>> for KeychainScan<K, P, T> {
     }
 }
 
-impl<K, P, T: AsTransaction> ForEachTxout for KeychainChangeSet<K, P, T> {
-    fn for_each_txout(&self, f: &mut impl FnMut((bitcoin::OutPoint, &bitcoin::TxOut))) {
+impl<K, P, T: AsTransaction> ForEachTxOut for KeychainChangeSet<K, P, T> {
+    fn for_each_txout(&self, f: impl FnMut((bitcoin::OutPoint, &bitcoin::TxOut))) {
         self.chain_graph.for_each_txout(f)
     }
 }
