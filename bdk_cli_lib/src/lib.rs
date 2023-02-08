@@ -136,7 +136,20 @@ pub enum AddressCmd {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum TxOutCmd {
-    List,
+    List {
+        /// Return only spent outputs
+        #[clap(short, long)]
+        spent: bool,
+        /// Return only unspent outputs
+        #[clap(short, long)]
+        unspent: bool,
+        /// Return only confirmed outputs
+        #[clap(long)]
+        confirmed: bool,
+        /// Return only unconfirmed outputs
+        #[clap(long)]
+        unconfirmed: bool,
+    },
 }
 
 #[derive(
@@ -250,9 +263,36 @@ pub fn run_txo_cmd<K: Debug + Clone + Ord, P: ChainPosition>(
     network: Network,
 ) {
     match txout_cmd {
-        TxOutCmd::List => {
+        TxOutCmd::List {
+            unspent,
+            spent,
+            confirmed,
+            unconfirmed,
+        } => {
             let tracker = tracker.lock().unwrap();
-            for (spk_index, full_txout) in tracker.full_txouts() {
+            let txouts: Box<dyn Iterator<Item = (&(K, u32), FullTxOut<P>)>> = match (unspent, spent)
+            {
+                (true, false) => Box::new(tracker.full_utxos()),
+                (false, true) => Box::new(
+                    tracker
+                        .full_txouts()
+                        .filter(|(_, txout)| txout.spent_by.is_some()),
+                ),
+                _ => Box::new(tracker.full_txouts()),
+            };
+
+            let txouts: Box<dyn Iterator<Item = (&(K, u32), FullTxOut<P>)>> =
+                match (confirmed, unconfirmed) {
+                    (true, false) => Box::new(
+                        txouts.filter(|(_, txout)| txout.chain_position.height().is_confirmed()),
+                    ),
+                    (false, true) => Box::new(
+                        txouts.filter(|(_, txout)| !txout.chain_position.height().is_confirmed()),
+                    ),
+                    _ => txouts,
+                };
+
+            for (spk_index, full_txout) in txouts {
                 let address =
                     Address::from_script(&full_txout.txout.script_pubkey, network).unwrap();
 
