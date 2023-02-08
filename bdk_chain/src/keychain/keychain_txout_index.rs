@@ -19,10 +19,10 @@ const DERIVED_KEY_COUNT: u32 = 1 << 31;
 /// Script pubkeys for a descriptor are revealed chronologically from index 0. I.e. If the last
 /// revealed index of a descriptor is 5, scripts of indices 0 to 4 are guaranteed to already be
 /// revealed. In addition to revealed scripts, we have a `lookahead` parameter for each keychain
-/// which defines the number of scripts to store ahead of last revealed.
+/// which defines the number of script pubkeys to store ahead of the last revealed index.
 ///
-/// Methods that may result in changes to the number of stored script pubkeys will return
-/// [`DerivationAdditions`] to reflect the changes. This can be persisted for future recovery.
+/// Methods that could update the last revealed index will return [`DerivationAdditions`] to report
+/// these changes. This can be persisted for future recovery.
 ///
 /// ## Synopsis
 ///
@@ -318,11 +318,16 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         (spks, additions)
     }
 
-    /// Reveals script pubkeys from the descriptor **up to and including** `index`, unless the
-    /// script pubkey is already revealed.
+    /// Reveals script pubkeys of the `keychain`'s descriptor **up to and including** the
+    /// `target_index`.
     ///
-    /// Returns [`DerivationAdditions`] for new script pubkeys that have been revealed. If no
-    /// script pubkeys are revealed, [`DerivationAdditions`] will be empty.
+    /// If the `target_index` cannot be reached (due to the descriptor having no wildcard, and/or
+    /// the `target_index` is in the hardened index range), this method will do a best-effort and
+    /// reveal up to the last possible index.
+    ///
+    /// This returns an iterator of newly revealed indices (along side their scripts), and a
+    /// [`DerivationAdditions`] which reports updates to the latest revealed index. If no new script
+    /// pubkeys are revealed, both of these will be empty.
     ///
     /// # Panics
     ///

@@ -1,4 +1,4 @@
-//! Modules for keychain based structures.
+//! Module for keychain based structures.
 //!
 //! A keychain here is a set of application defined indexes for a minscript descriptor where we can
 //! derive script pubkeys at a particular derivation index. The application's index is simply
