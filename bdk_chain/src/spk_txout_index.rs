@@ -2,7 +2,7 @@ use core::ops::RangeBounds;
 
 use crate::{
     collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
-    ForEachTxout,
+    ForEachTxOut,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
@@ -31,7 +31,7 @@ pub struct SpkTxOutIndex<I> {
     /// script pubkeys ordered by index
     script_pubkeys: BTreeMap<I, Script>,
     /// A reverse lookup from spk to spk index
-    spk_indexes: HashMap<Script, I>,
+    spk_indices: HashMap<Script, I>,
     /// The set of unused indexes.
     unused: BTreeSet<I>,
     /// Lookup index and txout by outpoint.
@@ -45,11 +45,26 @@ impl<I> Default for SpkTxOutIndex<I> {
         Self {
             txouts: Default::default(),
             script_pubkeys: Default::default(),
-            spk_indexes: Default::default(),
+            spk_indices: Default::default(),
             spk_txouts: Default::default(),
             unused: Default::default(),
         }
     }
+}
+
+/// This macro is used instead of a member function of `SpkTxOutIndex` which would result in a
+/// compiler error[E0521]: "borrowed data escapes out of closure" when we attempt to take a
+/// reference out of the `FprEachTxOut` closure during scanning.
+macro_rules! scan_txout {
+    ($self:ident, $op:expr, $txout:expr) => {{
+        let spk_i = $self.spk_indices.get(&$txout.script_pubkey);
+        if let Some(spk_i) = spk_i {
+            $self.txouts.insert($op, (spk_i.clone(), $txout.clone()));
+            $self.spk_txouts.insert((spk_i.clone(), $op));
+            $self.unused.remove(&spk_i);
+        }
+        spk_i
+    }};
 }
 
 impl<I: Clone + Ord> SpkTxOutIndex<I> {
@@ -63,19 +78,13 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     ///
     /// See [`ForEachTxout`] for the types that support this.
     ///
-    /// [`ForEachTxout`]: crate::ForEachTxout
-    pub fn scan(&mut self, txouts: &impl ForEachTxout) -> BTreeSet<&I> {
+    /// [`ForEachTxout`]: crate::ForEachTxOut
+    pub fn scan(&mut self, txouts: &impl ForEachTxOut) -> BTreeSet<&I> {
+        // let scanner = &mut SpkTxOutScanner::new(self);
         let mut scanned_indices = BTreeSet::new();
 
         txouts.for_each_txout(|(op, txout)| {
-            // The follow is copied from `scan_txout` because of lifetime issues.
-            let spk_i = self.spk_indexes.get(&txout.script_pubkey);
-
-            if let Some(spk_i) = spk_i {
-                self.txouts.insert(op, (spk_i.clone(), txout.clone()));
-                self.spk_txouts.insert((spk_i.clone(), op));
-                self.unused.remove(&spk_i);
-
+            if let Some(spk_i) = scan_txout!(self, op, txout) {
                 scanned_indices.insert(spk_i);
             }
         });
@@ -86,15 +95,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// Scan a single `TxOut` for a matching script pubkey, and returns the index that matched the
     /// script pubkey (if any).
     pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) -> Option<&I> {
-        let spk_i = self.spk_indexes.get(&txout.script_pubkey);
-
-        if let Some(spk_i) = spk_i {
-            self.txouts.insert(op, (spk_i.clone(), txout.clone()));
-            self.spk_txouts.insert((spk_i.clone(), op));
-            self.unused.remove(&spk_i);
-        }
-
-        spk_i
+        scan_txout!(self, op, txout)
     }
 
     /// Iterate over all known txouts that spend to tracked script pubkeys.
@@ -172,7 +173,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     ///
     /// the index will look for outputs spending to whenever it scans new data.
     pub fn insert_script_pubkey(&mut self, index: I, spk: Script) -> bool {
-        match self.spk_indexes.entry(spk.clone()) {
+        match self.spk_indices.entry(spk.clone()) {
             Entry::Vacant(value) => {
                 value.insert(index.clone());
                 self.script_pubkeys.insert(index.clone(), spk);
@@ -251,7 +252,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
 
     /// Returns the index associated with the script pubkey.
     pub fn index_of_spk(&self, script: &Script) -> Option<&I> {
-        self.spk_indexes.get(script)
+        self.spk_indices.get(script)
     }
 
     /// Computes total input value going from script pubkeys in the index (sent) and total output
@@ -303,7 +304,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
         let output_matches = tx
             .output
             .iter()
-            .find(|output| self.spk_indexes.contains_key(&output.script_pubkey))
+            .find(|output| self.spk_indices.contains_key(&output.script_pubkey))
             .is_some();
         input_matches || output_matches
     }

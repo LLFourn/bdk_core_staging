@@ -2,7 +2,7 @@ use crate::{
     collections::HashSet,
     sparse_chain::{self, ChainPosition, SparseChain},
     tx_graph::{self, TxGraph},
-    AsTransaction, BlockId, ForEachTxout, FullTxOut, IntoOwned, TxHeight,
+    AsTransaction, BlockId, ForEachTxOut, FullTxOut, IntoOwned, TxHeight,
 };
 use alloc::{borrow::Cow, string::ToString, vec::Vec};
 use bitcoin::{OutPoint, Transaction, TxOut, Txid};
@@ -450,13 +450,13 @@ impl<P, T> AsRef<TxGraph<T>> for ChainGraph<P, T> {
     }
 }
 
-impl<P, T: AsTransaction> ForEachTxout for ChainGraph<P, T> {
+impl<P, T: AsTransaction> ForEachTxOut for ChainGraph<P, T> {
     fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut))) {
         self.graph.for_each_txout(f)
     }
 }
 
-impl<P, T: AsTransaction> ForEachTxout for ChangeSet<P, T> {
+impl<P, T: AsTransaction> ForEachTxOut for ChangeSet<P, T> {
     fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut))) {
         self.graph.for_each_txout(f)
     }

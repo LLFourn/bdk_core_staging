@@ -1,7 +1,7 @@
 use crate::{
     collections::*,
     miniscript::{Descriptor, DescriptorPublicKey},
-    ForEachTxout, SpkTxOutIndex,
+    ForEachTxOut, SpkTxOutIndex,
 };
 use alloc::vec::Vec;
 use bitcoin::{
@@ -104,8 +104,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// See [`ForEachTxout`] for the types that support this.
     ///
-    /// [`ForEachTxout`]: crate::ForEachTxout
-    pub fn scan(&mut self, txouts: &impl ForEachTxout) -> DerivationAdditions<K> {
+    /// [`ForEachTxout`]: crate::ForEachTxOut
+    pub fn scan(&mut self, txouts: &impl ForEachTxOut) -> DerivationAdditions<K> {
         let mut additions = DerivationAdditions::<K>::default();
         txouts.for_each_txout(|(op, txout)| additions.append(self.scan_txout(op, txout)));
         additions

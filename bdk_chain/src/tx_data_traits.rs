@@ -7,11 +7,11 @@ use bitcoin::{Block, OutPoint, Transaction, TxOut};
 ///
 /// We would prefer just work with things that can give us a `Iterator<Item=(OutPoint, &TxOut)>`
 /// here but rust's type system makes it extremely hard to do this (without trait objects).
-pub trait ForEachTxout {
+pub trait ForEachTxOut {
     fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut)));
 }
 
-impl ForEachTxout for Block {
+impl ForEachTxOut for Block {
     fn for_each_txout(&self, mut f: impl FnMut((OutPoint, &TxOut))) {
         for tx in self.txdata.iter() {
             tx.for_each_txout(&mut f)
@@ -62,7 +62,7 @@ impl<'a, T: AsTransaction + Clone> AsTransaction for Cow<'a, T> {
     }
 }
 
-impl<T> ForEachTxout for T
+impl<T> ForEachTxOut for T
 where
     T: AsTransaction,
 {
