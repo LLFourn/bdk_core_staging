@@ -55,9 +55,9 @@ impl<T: AsTransaction> TxGraph<T> {
     }
 
     /// Iterate over all full transactions in the graph.
-    pub fn full_transactions(&self) -> impl Iterator<Item = &Transaction> {
+    pub fn full_transactions(&self) -> impl Iterator<Item = &T> {
         self.txs.iter().filter_map(|(_, tx)| match tx {
-            TxNode::Whole(tx) => Some(tx.as_tx()),
+            TxNode::Whole(tx) => Some(tx),
             TxNode::Partial(_) => None,
         })
     }
