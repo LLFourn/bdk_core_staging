@@ -192,8 +192,8 @@ where
     let txout_index = &mut tracker.txout_index;
 
     let addr_cmmd_output = match addr_cmd {
-        AddressCmd::Next => Some(txout_index.next_unused_script_pubkey(&Keychain::External)),
-        AddressCmd::New => Some(txout_index.reveal_next_script_pubkey(&Keychain::External)),
+        AddressCmd::Next => Some(txout_index.next_unused_spk(&Keychain::External)),
+        AddressCmd::New => Some(txout_index.reveal_next_spk(&Keychain::External)),
         _ => None,
     };
 
@@ -225,7 +225,7 @@ where
                 true => Keychain::Internal,
                 false => Keychain::External,
             };
-            for (index, spk) in txout_index.revealed_script_pubkeys(&target_keychain) {
+            for (index, spk) in txout_index.revealed_spks(&target_keychain) {
                 let address = Address::from_script(&spk, network)
                     .expect("should always be able to derive address");
                 println!(
@@ -374,7 +374,7 @@ pub fn create_tx<P: ChainPosition>(
 
     let ((change_index, change_script), change_additions) = keychain_tracker
         .txout_index
-        .next_unused_script_pubkey(&internal_keychain);
+        .next_unused_spk(&internal_keychain);
     additions.append(change_additions);
 
     // Clone to drop the immutable reference.

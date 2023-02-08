@@ -51,7 +51,7 @@ const DERIVED_KEY_COUNT: u32 = 1 << 31;
 /// txout_index.add_keychain(MyKeychain::Internal, internal_descriptor);
 /// txout_index.add_keychain(MyKeychain::MyAppUser { user_id: 42 }, descriptor_for_user_42);
 ///
-/// let new_spk_for_user = txout_index.reveal_next_script_pubkey(&MyKeychain::MyAppUser{ user_id: 42 });
+/// let new_spk_for_user = txout_index.reveal_next_spk(&MyKeychain::MyAppUser{ user_id: 42 });
 /// ```
 ///
 /// [`Ord`]: core::cmp::Ord
@@ -115,7 +115,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// If it matches the index will store and index it.
     pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) -> DerivationAdditions<K> {
         match self.inner.scan_txout(op, txout).cloned() {
-            Some((keychain, index)) => self.reveal_to(&keychain, index).1,
+            Some((keychain, index)) => self.reveal_to_target(&keychain, index).1,
             None => DerivationAdditions::default(),
         }
     }
@@ -158,7 +158,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Convenience method to call [`set_lookahead`] for all keychains.
     ///
     /// [`set_lookahead`]: Self::set_lookahead
-    pub fn set_all_lookaheads(&mut self, lookahead: u32) {
+    pub fn set_lookahead_for_all(&mut self, lookahead: u32) {
         for keychain in &self.keychains.keys().cloned().collect::<Vec<_>>() {
             self.lookahead.insert(keychain.clone(), lookahead);
             self.replenish_lookahead(&keychain);
@@ -198,9 +198,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 
     /// Generates script pubkey iterators for every `keychain`. The iterators iterate over all
     /// derivable script pubkeys.
-    pub fn all_keychain_script_pubkeys(
-        &self,
-    ) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
+    pub fn keychain_spks_of_all(&self) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
         self.keychains
             .iter()
             .map(|(keychain, descriptor)| {
@@ -218,10 +216,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// # Panics
     ///
     /// This will panic if `keychain` does not exist.
-    pub fn keychain_script_pubkeys(
-        &self,
-        keychain: &K,
-    ) -> impl Iterator<Item = (u32, Script)> + Clone {
+    pub fn keychain_spks(&self, keychain: &K) -> impl Iterator<Item = (u32, Script)> + Clone {
         let descriptor = self
             .keychains
             .get(keychain)
@@ -230,20 +225,20 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         range_descriptor_spks(descriptor, 0..)
     }
 
-    /// Convenience method to get [`revealed_script_pubkeys`] for all keychains.
+    /// Convenience method to get [`revealed_spks`] of all keychains.
     ///
-    /// [`revealed_script_pubkeys`]: Self::revealed_script_pubkeys
-    pub fn all_revealed_script_pubkeys(
+    /// [`revealed_spks`]: Self::revealed_spks
+    pub fn revealed_spks_of_all(
         &self,
     ) -> BTreeMap<K, impl Iterator<Item = (u32, &Script)> + Clone> {
         self.keychains
             .keys()
-            .map(|keychain| (keychain.clone(), self.revealed_script_pubkeys(keychain)))
+            .map(|keychain| (keychain.clone(), self.revealed_spks(keychain)))
             .collect()
     }
 
     /// Iterates over the script pubkeys revealed by this index under `keychain`.
-    pub fn revealed_script_pubkeys(
+    pub fn revealed_spks(
         &self,
         keychain: &K,
     ) -> impl DoubleEndedIterator<Item = (u32, &Script)> + Clone {
@@ -300,8 +295,8 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         self.last_revealed.get(keychain).cloned()
     }
 
-    /// Convenience method to call [`Self::reveal_to`] on several keychains.
-    pub fn reveal_all_to(
+    /// Convenience method to call [`Self::reveal_to_target`] on multiple keychains.
+    pub fn reveal_to_target_multi(
         &mut self,
         keychains: &BTreeMap<K, u32>,
     ) -> (
@@ -312,7 +307,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         let mut spks = BTreeMap::new();
 
         for (keychain, &index) in keychains {
-            let (new_spks, new_additions) = self.reveal_to(&keychain, index);
+            let (new_spks, new_additions) = self.reveal_to_target(&keychain, index);
             if let Some(new_spks) = new_spks {
                 spks.insert(keychain.clone(), new_spks);
                 additions.append(new_additions);
@@ -331,7 +326,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// # Panics
     ///
     /// Panics if `keychain` does not exist.
-    pub fn reveal_to(
+    pub fn reveal_to_target(
         &mut self,
         keychain: &K,
         target_index: u32,
@@ -401,12 +396,9 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// # Panics
     ///
     /// Panics if the `keychain` does not exist.
-    pub fn reveal_next_script_pubkey(
-        &mut self,
-        keychain: &K,
-    ) -> ((u32, &Script), DerivationAdditions<K>) {
+    pub fn reveal_next_spk(&mut self, keychain: &K) -> ((u32, &Script), DerivationAdditions<K>) {
         let (next_index, _) = self.next_index(keychain);
-        let additions = self.reveal_to(keychain, next_index).1;
+        let additions = self.reveal_to_target(keychain, next_index).1;
         let script = self
             .inner
             .spk_at_index(&(keychain.clone(), next_index))
@@ -426,17 +418,14 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// # Panics
     ///
     /// Panics if `keychain` has never been added to the index
-    pub fn next_unused_script_pubkey(
-        &mut self,
-        keychain: &K,
-    ) -> ((u32, &Script), DerivationAdditions<K>) {
-        let need_new = self.unused_script_pubkeys(keychain).next().is_none();
+    pub fn next_unused_spk(&mut self, keychain: &K) -> ((u32, &Script), DerivationAdditions<K>) {
+        let need_new = self.unused_spks(keychain).next().is_none();
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
-            self.reveal_next_script_pubkey(keychain)
+            self.reveal_next_spk(keychain)
         } else {
             (
-                self.unused_script_pubkeys(keychain)
+                self.unused_spks(keychain)
                     .next()
                     .expect("we already know next exists"),
                 DerivationAdditions::default(),
@@ -470,10 +459,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     }
 
     /// Iterates over all unused script pubkeys for a `keychain` that have been stored in the index.
-    pub fn unused_script_pubkeys(
-        &self,
-        keychain: &K,
-    ) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
+    pub fn unused_spks(&self, keychain: &K) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
         let next_index = self.last_revealed.get(keychain).map_or(0, |&v| v + 1);
         let range = (keychain.clone(), u32::MIN)..(keychain.clone(), next_index);
         self.inner
@@ -513,7 +499,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Applies the derivation additions to the [`KeychainTxOutIndex`], extending the number of
     /// derived scripts per keychain, as specified in the `additions`.
     pub fn apply_additions(&mut self, additions: DerivationAdditions<K>) {
-        let _ = self.reveal_all_to(&additions.0);
+        let _ = self.reveal_to_target_multi(&additions.0);
     }
 }
 

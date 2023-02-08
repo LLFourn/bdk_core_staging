@@ -119,7 +119,10 @@ fn append_changeset_truncates_invalid_bytes() {
     let mut tracker = KeychainTracker::<TestKeychain, TxHeight, Transaction>::default();
     tracker.add_keychain(TestKeychain::External, descriptor);
     let changeset = KeychainChangeSet {
-        derivation_indices: tracker.txout_index.reveal_to(&TestKeychain::External, 21).1,
+        derivation_indices: tracker
+            .txout_index
+            .reveal_to_target(&TestKeychain::External, 21)
+            .1,
         chain_graph: Default::default(),
     };
 

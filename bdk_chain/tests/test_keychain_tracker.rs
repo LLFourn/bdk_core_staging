@@ -29,7 +29,7 @@ fn test_insert_tx() {
         output: vec![txout],
     };
 
-    let _ = tracker.txout_index.reveal_to(&(), 5);
+    let _ = tracker.txout_index.reveal_to_target(&(), 5);
 
     let changeset = tracker
         .insert_tx_preview(tx.clone(), ConfirmationTime::Unconfirmed)
@@ -77,7 +77,7 @@ fn test_balance() {
             value: 13_000,
             script_pubkey: tracker
                 .txout_index
-                .reveal_next_script_pubkey(&Keychain::One)
+                .reveal_next_spk(&Keychain::One)
                 .0
                  .1
                 .clone(),
@@ -92,7 +92,7 @@ fn test_balance() {
             value: 7_000,
             script_pubkey: tracker
                 .txout_index
-                .reveal_next_script_pubkey(&Keychain::Two)
+                .reveal_next_spk(&Keychain::Two)
                 .0
                  .1
                 .clone(),
@@ -107,7 +107,7 @@ fn test_balance() {
             value: 11_000,
             script_pubkey: tracker
                 .txout_index
-                .reveal_next_script_pubkey(&Keychain::Two)
+                .reveal_next_spk(&Keychain::Two)
                 .0
                  .1
                 .clone(),

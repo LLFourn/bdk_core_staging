@@ -85,7 +85,7 @@ fn main() -> anyhow::Result<()> {
                 let tracker = &*tracker.lock().unwrap();
                 let spk_iterators = tracker
                     .txout_index
-                    .all_keychain_script_pubkeys()
+                    .keychain_spks_of_all()
                     .into_iter()
                     .map(|(keychain, iter)| {
                         let mut first = true;
