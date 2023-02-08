@@ -4,10 +4,7 @@ use crate::{
     ForEachTxOut, SpkTxOutIndex,
 };
 use alloc::vec::Vec;
-use bitcoin::{
-    secp256k1::{self, Secp256k1},
-    OutPoint, Script, TxOut,
-};
+use bitcoin::{secp256k1::Secp256k1, OutPoint, Script, TxOut};
 use core::{fmt::Debug, ops::Deref};
 
 use super::DerivationAdditions;
@@ -19,8 +16,10 @@ const DERIVED_KEY_COUNT: u32 = 1 << 31;
 ///
 /// Descriptors are referenced by the provided keychain generic (`K`).
 ///
-/// Script pubkeys for a descriptor are stored chronologically from index 0. I.e. If the last stored
-/// index of a descriptor is 5, scripts of indices 0 to 4 are also guaranteed to be stored.
+/// Script pubkeys for a descriptor are revealed chronologically from index 0. I.e. If the last
+/// revealed index of a descriptor is 5, scripts of indices 0 to 4 are guaranteed to already be
+/// revealed. In addition to revealed scripts, we have a `lookahead` parameter for each keychain
+/// which defines the number of scripts to store ahead of last revealed.
 ///
 /// Methods that may result in changes to the number of stored script pubkeys will return
 /// [`DerivationAdditions`] to reflect the changes. This can be persisted for future recovery.
@@ -52,7 +51,7 @@ const DERIVED_KEY_COUNT: u32 = 1 << 31;
 /// txout_index.add_keychain(MyKeychain::Internal, internal_descriptor);
 /// txout_index.add_keychain(MyKeychain::MyAppUser { user_id: 42 }, descriptor_for_user_42);
 ///
-/// let new_spk_for_user = txout_index.new_script(&MyKeychain::MyAppUser{ user_id: 42 });
+/// let new_spk_for_user = txout_index.reveal_next_script_pubkey(&MyKeychain::MyAppUser{ user_id: 42 });
 /// ```
 ///
 /// [`Ord`]: core::cmp::Ord
@@ -64,7 +63,7 @@ pub struct KeychainTxOutIndex<K> {
     // descriptors of each keychain
     keychains: BTreeMap<K, Descriptor<DescriptorPublicKey>>,
     // last stored indexes
-    last_stored: BTreeMap<K, u32>,
+    last_revealed: BTreeMap<K, u32>,
     // lookahead settings for each keychain
     lookahead: BTreeMap<K, u32>,
 }
@@ -74,7 +73,7 @@ impl<K> Default for KeychainTxOutIndex<K> {
         Self {
             inner: SpkTxOutIndex::default(),
             keychains: BTreeMap::default(),
-            last_stored: BTreeMap::default(),
+            last_revealed: BTreeMap::default(),
             lookahead: BTreeMap::default(),
         }
     }
@@ -115,11 +114,10 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// If it matches the index will store and index it.
     pub fn scan_txout(&mut self, op: OutPoint, txout: &TxOut) -> DerivationAdditions<K> {
-        let mut additions = DerivationAdditions::default();
-        if let Some((keychain, index)) = self.inner.scan_txout(op, txout).cloned() {
-            additions.append(self.store_up_to(&keychain, index));
+        match self.inner.scan_txout(op, txout).cloned() {
+            Some((keychain, index)) => self.reveal_to(&keychain, index),
+            None => DerivationAdditions::default(),
         }
-        additions
     }
 
     /// Return a reference to the internal [`SpkTxOutIndex`].
@@ -144,7 +142,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         let old_descriptor = &*self.keychains.entry(keychain).or_insert(descriptor.clone());
         assert_eq!(
             &descriptor, old_descriptor,
-            "keychain already contains a different keychain"
+            "keychain already contains a different descriptor"
         );
     }
 
@@ -161,10 +159,9 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// [`set_lookahead`]: Self::set_lookahead
     pub fn set_all_lookaheads(&mut self, lookahead: u32) {
-        let secp = Secp256k1::verification_only();
         for keychain in &self.keychains.keys().cloned().collect::<Vec<_>>() {
             self.lookahead.insert(keychain.clone(), lookahead);
-            self.replenish_lookahead(&secp, &keychain);
+            self.replenish_lookahead(&keychain);
         }
     }
 
@@ -181,41 +178,35 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// [`scan_txout`]: Self::scan_txout
     pub fn set_lookahead(&mut self, keychain: &K, lookahead: u32) {
         self.lookahead.insert(keychain.clone(), lookahead);
-        self.replenish_lookahead(&Secp256k1::verification_only(), keychain);
+        self.replenish_lookahead(keychain);
     }
 
-    fn replenish_lookahead<C>(&mut self, secp: &Secp256k1<C>, keychain: &K)
-    where
-        C: secp256k1::Verification,
-    {
+    fn replenish_lookahead(&mut self, keychain: &K) {
         let descriptor = self.keychains.get(keychain).expect("keychain must exist");
-        let next_index = self.last_stored.get(keychain).map_or(0, |v| *v + 1);
+        let next_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1);
         let lookahead = self.lookahead.get(keychain).map_or(0, |v| *v);
 
-        for index in next_index..next_index + lookahead {
-            let spk = descriptor
-                .at_derivation_index(index)
-                .derived_descriptor(secp)
-                .map(|desc| desc.script_pubkey());
-
-            match spk {
-                Ok(spk) => self
-                    .inner
-                    .insert_script_pubkey((keychain.clone(), index), spk),
-                Err(_) => break,
-            };
+        for (new_index, new_spk) in
+            range_descriptor_spks(descriptor.clone(), next_index..next_index + lookahead)
+        {
+            let _inserted = self
+                .inner
+                .insert_script_pubkey((keychain.clone(), new_index), new_spk);
+            debug_assert!(_inserted, "must not have existing spk");
         }
     }
 
     /// Generates script pubkey iterators for every `keychain`. The iterators iterate over all
-    /// derivable scripts.
-    pub fn all_keychain_scripts(&self) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
+    /// derivable script pubkeys.
+    pub fn all_keychain_script_pubkeys(
+        &self,
+    ) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
         self.keychains
             .iter()
             .map(|(keychain, descriptor)| {
                 (
                     keychain.clone(),
-                    descriptor_into_script_iter(descriptor.clone()),
+                    range_descriptor_spks(descriptor.clone(), 0..),
                 )
             })
             .collect()
@@ -227,44 +218,50 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// # Panics
     ///
     /// This will panic if `keychain` does not exist.
-    pub fn keychain_scripts(&self, keychain: &K) -> impl Iterator<Item = (u32, Script)> + Clone {
+    pub fn keychain_script_pubkeys(
+        &self,
+        keychain: &K,
+    ) -> impl Iterator<Item = (u32, Script)> + Clone {
         let descriptor = self
             .keychains
             .get(keychain)
             .expect("keychain must exist")
             .clone();
-        descriptor_into_script_iter(descriptor)
+        range_descriptor_spks(descriptor, 0..)
     }
 
-    /// Convenience method to get [`stored_scripts`] for all keychains.
+    /// Convenience method to get [`revealed_script_pubkeys`] for all keychains.
     ///
-    /// [`stored_scripts`]: Self::stored_scripts
-    pub fn all_stored_scripts(&self) -> BTreeMap<K, impl Iterator<Item = (u32, &Script)> + Clone> {
+    /// [`revealed_script_pubkeys`]: Self::revealed_script_pubkeys
+    pub fn all_revealed_script_pubkeys(
+        &self,
+    ) -> BTreeMap<K, impl Iterator<Item = (u32, &Script)> + Clone> {
         self.keychains
             .keys()
-            .map(|keychain| (keychain.clone(), self.stored_scripts(keychain)))
+            .map(|keychain| (keychain.clone(), self.revealed_script_pubkeys(keychain)))
             .collect()
     }
 
-    /// Iterates over the script pubkeys derived and stored by this index under `keychain`.
-    pub fn stored_scripts(
+    /// Iterates over the script pubkeys revealed by this index under `keychain`.
+    pub fn revealed_script_pubkeys(
         &self,
         keychain: &K,
     ) -> impl DoubleEndedIterator<Item = (u32, &Script)> + Clone {
-        let next_index = self.last_stored.get(keychain).map_or(0, |v| *v + 1);
+        let next_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1);
         self.inner
             .script_pubkeys()
             .range((keychain.clone(), u32::MIN)..(keychain.clone(), next_index))
             .map(|((_, derivation_index), spk)| (*derivation_index, spk))
     }
 
-    /// Get the next derivation index for `keychain`. This is the index after the last stored index.
+    /// Get the next derivation index for `keychain`. This is the index after the last revealed
+    /// derivation index.
     ///
     /// The second field in the returned tuple represents whether the next derivation index is new.
     /// There are two scenarios where the next derivation index is reused (not new):
     ///
-    /// 1. The keychain's descriptor has no wildcard, and a script has already been derived.
-    /// 2. The number of derived scripts has already reached 2^31 (refer to BIP-32).
+    /// 1. The keychain's descriptor has no wildcard, and a script has already been revealed.
+    /// 2. The number of revealed scripts has already reached 2^31 (refer to BIP-32).
     ///
     /// Not checking the second field of the tuple may result in address reuse.
     ///
@@ -273,7 +270,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Panics if the `keychain` does not exist.
     pub fn next_index(&self, keychain: &K) -> (u32, bool) {
         let descriptor = self.keychains.get(keychain).expect("keychain must exist");
-        let last_index = self.last_stored.get(keychain).cloned();
+        let last_index = self.last_revealed.get(keychain).cloned();
 
         // we can only get the next index if wildcard exists
         let has_wildcard = descriptor.has_wildcard();
@@ -291,98 +288,102 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         }
     }
 
-    /// Get the last derivation index for each keychain.
+    /// Get the last derivation index that is revealed for each keychain.
     ///
-    /// Keychains with no stored indices will not be included in the returned [`BTreeMap`].
-    pub fn last_stored_indices(&self) -> &BTreeMap<K, u32> {
-        &self.last_stored
+    /// Keychains with no revealed indices will not be included in the returned [`BTreeMap`].
+    pub fn last_revealed_indices(&self) -> &BTreeMap<K, u32> {
+        &self.last_revealed
     }
 
-    /// Get the last derivation index for `keychain`.
-    ///
-    /// This is the highest index we have stored for `keychain`.
-    pub fn last_stored_index(&self, keychain: &K) -> Option<u32> {
-        self.last_stored.get(keychain).cloned()
+    /// Get the last derivation index revealed for `keychain`.
+    pub fn last_revealed_index(&self, keychain: &K) -> Option<u32> {
+        self.last_revealed.get(keychain).cloned()
     }
 
-    /// Convenience method to call [`Self::store_up_to`] on several keychains.
-    pub fn store_all_up_to(&mut self, keychains: &BTreeMap<K, u32>) -> DerivationAdditions<K> {
+    /// Convenience method to call [`Self::reveal_to`] on several keychains.
+    pub fn reveal_all_to(&mut self, keychains: &BTreeMap<K, u32>) -> DerivationAdditions<K> {
         let mut additions = DerivationAdditions::default();
         for (keychain, &index) in keychains {
-            additions.append(self.store_up_to(keychain, index));
+            additions.append(self.reveal_to(keychain, index));
         }
         additions
     }
 
-    /// Stores script pubkeys from the descriptor **up to and including** `index`, unless the script
-    /// pubkey is already stored.
+    /// Reveals script pubkeys from the descriptor **up to and including** `index`, unless the
+    /// script pubkey is already revealed.
     ///
-    /// Returns [`DerivationAdditions`] for new script pubkeys that have been stored. If no
-    /// script pubkeys are stored, [`DerivationAdditions`] will be empty.
+    /// Returns [`DerivationAdditions`] for new script pubkeys that have been revealed. If no
+    /// script pubkeys are revealed, [`DerivationAdditions`] will be empty.
     ///
     /// # Panics
     ///
     /// Panics if `keychain` does not exist.
-    pub fn store_up_to(&mut self, keychain: &K, index: u32) -> DerivationAdditions<K> {
+    pub fn reveal_to(&mut self, keychain: &K, target_index: u32) -> DerivationAdditions<K> {
         let descriptor = self.keychains.get(keychain).expect("keychain must exist");
+        let has_wildcard = descriptor.has_wildcard();
 
-        let next_index = self.last_stored.get(keychain).map_or(0, |v| *v + 1);
-        if index < next_index {
+        let target_index = if has_wildcard { target_index } else { 0 };
+        let next_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1);
+        let lookahead = self.lookahead.get(keychain).map_or(0, |v| *v);
+
+        // if we are able to reveal new indexes, the latest revealed index goes here
+        let mut revealed_index = None;
+
+        // if target is already surpassed, there is nothing to be done
+        if target_index < next_index {
             return DerivationAdditions::default();
         }
 
-        let lookahead = self.lookahead.get(keychain).map_or(0, |v| *v);
+        // if target is already stored (due to lookahead), this can be our new revealed index
+        if target_index < next_index + lookahead {
+            revealed_index = Some(target_index);
+        }
 
-        let secp = Secp256k1::verification_only();
-        let mut last_derived = None;
+        // we range over indexes that are not stored
+        let range = next_index + lookahead..=target_index + lookahead;
 
-        if index < next_index + lookahead {
-            last_derived = Some(index);
-        } else {
-            for new_index in next_index + lookahead..=index {
-                let spk = match descriptor
-                    .at_derivation_index(new_index)
-                    .derived_descriptor(&secp)
-                {
-                    Ok(derived_desciptor) => derived_desciptor.script_pubkey(),
-                    Err(_) => break,
-                };
-                if self
-                    .inner
-                    .insert_script_pubkey((keychain.clone(), new_index), spk)
-                {
-                    last_derived = Some(new_index);
-                }
+        for (new_index, new_spk) in range_descriptor_spks(descriptor.clone(), range) {
+            let _inserted = self
+                .inner
+                .insert_script_pubkey((keychain.clone(), new_index), new_spk);
+            debug_assert!(_inserted, "must not have existing spk",);
+
+            // everything after `target_index` is stored for lookahead only
+            if new_index <= target_index {
+                revealed_index = Some(new_index);
             }
         }
 
-        match last_derived {
+        match revealed_index {
             Some(index) => {
-                self.last_stored.insert(keychain.clone(), index);
-                self.replenish_lookahead(&secp, keychain);
+                let _old_index = self.last_revealed.insert(keychain.clone(), index);
+                debug_assert!(_old_index < Some(index));
                 DerivationAdditions([(keychain.clone(), index)].into())
             }
             None => DerivationAdditions::default(),
         }
     }
 
-    /// Derives a new script pubkey for `keychain`.
+    /// Attempts to reveal the next script pubkey for `keychain`. This is the script pubkey
     ///
-    /// Returns the derivation index of the derived script pubkey, the derived script pubkey and a
-    /// [`DerivationAdditions`] which represents changes in the internal index (if any).
+    /// Returns the derivation index of the revealed script pubkey, the revealed script pubkey and a
+    /// [`DerivationAdditions`] which represents changes in the last revealed index (if any).
     ///
-    /// When a new script cannot be derived, we return the last derived script and an empty
+    /// When a new script cannot be revealed, we return the last revealed script and an empty
     /// [`DerivationAdditions`]. There are two scenarios when a new script pubkey cannot be derived:
     ///
-    ///  1. The descriptor has no wildcard and already has one script derived.
-    ///  2. The descriptor has already derived scripts up to the numeric bound.
+    ///  1. The descriptor has no wildcard and already has one script revealed.
+    ///  2. The descriptor has already revealed scripts up to the numeric bound.
     ///
     /// # Panics
     ///
     /// Panics if the `keychain` does not exist.
-    pub fn new_script(&mut self, keychain: &K) -> ((u32, &Script), DerivationAdditions<K>) {
+    pub fn reveal_next_script_pubkey(
+        &mut self,
+        keychain: &K,
+    ) -> ((u32, &Script), DerivationAdditions<K>) {
         let (next_index, _) = self.next_index(keychain);
-        let additions = self.store_up_to(keychain, next_index);
+        let additions = self.reveal_to(keychain, next_index);
         let script = self
             .inner
             .spk_at_index(&(keychain.clone(), next_index))
@@ -393,7 +394,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Gets the next unused script pubkey in the keychain. I.e. the script pubkey with the lowest
     /// index that has not been used yet.
     ///
-    /// This will derive and store a new script pubkey if no more unused script pubkeys exist.
+    /// This will derive and reveal a new script pubkey if no more unused script pubkeys exist.
     ///
     /// If the descriptor has no wildcard and already has a used script pubkey, or if a descriptor
     /// has used all scripts up to the derivation bounds, the last derived script pubkey will be
@@ -402,14 +403,17 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// # Panics
     ///
     /// Panics if `keychain` has never been added to the index
-    pub fn next_unused_script(&mut self, keychain: &K) -> ((u32, &Script), DerivationAdditions<K>) {
-        let need_new = self.unused_scripts(keychain).next().is_none();
+    pub fn next_unused_script_pubkey(
+        &mut self,
+        keychain: &K,
+    ) -> ((u32, &Script), DerivationAdditions<K>) {
+        let need_new = self.unused_script_pubkeys(keychain).next().is_none();
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
-            self.new_script(keychain)
+            self.reveal_next_script_pubkey(keychain)
         } else {
             (
-                self.unused_scripts(keychain)
+                self.unused_script_pubkeys(keychain)
                     .next()
                     .expect("we already know next exists"),
                 DerivationAdditions::default(),
@@ -443,8 +447,11 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     }
 
     /// Iterates over all unused script pubkeys for a `keychain` that have been stored in the index.
-    pub fn unused_scripts(&self, keychain: &K) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
-        let next_index = self.last_stored.get(keychain).map_or(0, |&v| v + 1);
+    pub fn unused_script_pubkeys(
+        &self,
+        keychain: &K,
+    ) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
+        let next_index = self.last_revealed.get(keychain).map_or(0, |&v| v + 1);
         let range = (keychain.clone(), u32::MIN)..(keychain.clone(), next_index);
         self.inner
             .unused(range)
@@ -483,29 +490,30 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Applies the derivation additions to the [`KeychainTxOutIndex`], extending the number of
     /// derived scripts per keychain, as specified in the `additions`.
     pub fn apply_additions(&mut self, additions: DerivationAdditions<K>) {
-        let _ = self.store_all_up_to(&additions.0);
+        let _ = self.reveal_all_to(&additions.0);
     }
 }
 
-fn descriptor_into_script_iter(
+fn range_descriptor_spks<'a, R>(
     descriptor: Descriptor<DescriptorPublicKey>,
-) -> impl Iterator<Item = (u32, Script)> + Clone + Send {
+    range: R,
+) -> impl Iterator<Item = (u32, Script)> + Clone + Send
+where
+    R: Iterator<Item = u32> + Clone + Send,
+{
     let secp = Secp256k1::verification_only();
-    let end = if descriptor.has_wildcard() {
-        // we only iterate over non-hardened indexes
-        DERIVED_KEY_COUNT - 1
-    } else {
-        0
-    };
-
-    (0..=end).map(move |i| {
-        (
-            i,
+    let has_wildcard = descriptor.has_wildcard();
+    range
+        .into_iter()
+        // non-wildcard descriptors can only have one derivation index (0)
+        .take_while(move |&index| has_wildcard || index == 0)
+        // we can only iterate over non-hardened indices
+        .take_while(|&index| index < DERIVED_KEY_COUNT)
+        // take until failure
+        .map_while(move |index| {
             descriptor
-                .at_derivation_index(i)
-                .derived_descriptor(&secp)
-                .expect("the descritpor cannot need hardened derivation")
-                .script_pubkey(),
-        )
-    })
+                .derived_descriptor(&secp, index)
+                .map(|desc| (index, desc.script_pubkey()))
+                .ok()
+        })
 }
