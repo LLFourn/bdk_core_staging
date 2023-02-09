@@ -77,8 +77,8 @@ fn test_lookahead() {
         let (revealed_spks, revealed_additions) =
             txout_index.reveal_to_target(&TestKeychain::External, index);
         assert_eq!(
-            revealed_spks.map(Iterator::collect),
-            Some(vec![(index, spk_at_index(&external_desc, index))]),
+            revealed_spks.collect::<Vec<_>>(),
+            vec![(index, spk_at_index(&external_desc, index))],
         );
         assert_eq!(
             revealed_additions.as_inner(),
@@ -116,12 +116,10 @@ fn test_lookahead() {
     let (revealed_spks, revealed_additions) =
         txout_index.reveal_to_target(&TestKeychain::Internal, 24);
     assert_eq!(
-        revealed_spks.map(Iterator::collect),
-        Some(
-            (0..=24)
-                .map(|index| (index, spk_at_index(&internal_desc, index)))
-                .collect::<Vec<_>>()
-        ),
+        revealed_spks.collect::<Vec<_>>(),
+        (0..=24)
+            .map(|index| (index, spk_at_index(&internal_desc, index)))
+            .collect::<Vec<_>>(),
     );
     assert_eq!(
         revealed_additions.as_inner(),
@@ -304,6 +302,6 @@ fn test_non_wildcard_derivations() {
     assert_eq!(changeset.as_inner(), &[].into());
     let (revealed_spks, revealed_additions) =
         txout_index.reveal_to_target(&TestKeychain::External, 200);
-    assert!(revealed_spks.is_none());
+    assert_eq!(revealed_spks.count(), 0);
     assert!(revealed_additions.is_empty());
 }

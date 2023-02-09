@@ -309,7 +309,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
 
         for (keychain, &index) in keychains {
             let (new_spks, new_additions) = self.reveal_to_target(&keychain, index);
-            if let Some(new_spks) = new_spks {
+            if !new_additions.is_empty() {
                 spks.insert(keychain.clone(), new_spks);
                 additions.append(new_additions);
             }
@@ -336,10 +336,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         &mut self,
         keychain: &K,
         target_index: u32,
-    ) -> (
-        Option<impl Iterator<Item = (u32, Script)>>,
-        DerivationAdditions<K>,
-    ) {
+    ) -> (impl Iterator<Item = (u32, Script)>, DerivationAdditions<K>) {
         let descriptor = self.keychains.get(keychain).expect("keychain must exist");
         let has_wildcard = descriptor.has_wildcard();
 
@@ -350,13 +347,11 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         // if we are able to reveal new indexes, the latest revealed index goes here
         let mut revealed_index = None;
 
-        // if target is already surpassed, there is nothing to be done
-        if target_index < next_index {
-            return (None, DerivationAdditions::default());
-        }
-
-        // if target is already stored (due to lookahead), this can be our new revealed index
-        if target_index < next_index + lookahead {
+        // if target is already surpassed, we have nothing to reveal
+        if next_index <= target_index
+            // if target is already stored (due to lookahead), this can be our new revealed index
+            && target_index < next_index + lookahead
+        {
             revealed_index = Some(target_index);
         }
 
@@ -380,14 +375,14 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 let _old_index = self.last_revealed.insert(keychain.clone(), index);
                 debug_assert!(_old_index < Some(index));
                 (
-                    Some(range_descriptor_spks(
-                        Cow::Owned(descriptor.clone()),
-                        next_index..=index,
-                    )),
+                    range_descriptor_spks(Cow::Owned(descriptor.clone()), next_index..index + 1),
                     DerivationAdditions([(keychain.clone(), index)].into()),
                 )
             }
-            None => (None, DerivationAdditions::default()),
+            None => (
+                range_descriptor_spks(Cow::Owned(descriptor.clone()), next_index..next_index),
+                DerivationAdditions::default(),
+            ),
         }
     }
 
