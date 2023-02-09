@@ -63,7 +63,7 @@ fn test_lookahead() {
 
     txout_index.set_lookahead(&TestKeychain::External, 10);
     txout_index.set_lookahead(&TestKeychain::Internal, 20);
-    assert_eq!(txout_index.inner().script_pubkeys().len(), 30);
+    assert_eq!(txout_index.inner().all_spks().len(), 30);
 
     // given:
     // - external lookahead set to 10
@@ -86,24 +86,35 @@ fn test_lookahead() {
         );
 
         assert_eq!(
-            txout_index.inner().script_pubkeys().len(),
+            txout_index.inner().all_spks().len(),
             10 /* external lookahead */ +
             20 /* internal lookahead */ +
             index as usize + 1 /* `derived` count */
         );
         assert_eq!(
-            txout_index.revealed_spks(&TestKeychain::External).count(),
+            txout_index
+                .revealed_spks_of_keychain(&TestKeychain::External)
+                .count(),
             index as usize + 1,
         );
         assert_eq!(
-            txout_index.revealed_spks(&TestKeychain::Internal).count(),
+            txout_index
+                .revealed_spks_of_keychain(&TestKeychain::Internal)
+                .count(),
             0,
         );
         assert_eq!(
-            txout_index.unused_spks(&TestKeychain::External).count(),
+            txout_index
+                .unused_spks_of_keychain(&TestKeychain::External)
+                .count(),
             index as usize + 1,
         );
-        assert_eq!(txout_index.unused_spks(&TestKeychain::Internal).count(), 0,);
+        assert_eq!(
+            txout_index
+                .unused_spks_of_keychain(&TestKeychain::Internal)
+                .count(),
+            0,
+        );
     }
 
     // given:
@@ -126,14 +137,16 @@ fn test_lookahead() {
         &[(TestKeychain::Internal, 24)].into()
     );
     assert_eq!(
-        txout_index.inner().script_pubkeys().len(),
+        txout_index.inner().all_spks().len(),
         10 /* external lookahead */ +
         20 /* internal lookahead */ +
         20 /* external stored index count */ +
         25 /* internal stored index count */
     );
     assert_eq!(
-        txout_index.revealed_spks(&TestKeychain::Internal).count(),
+        txout_index
+            .revealed_spks_of_keychain(&TestKeychain::Internal)
+            .count(),
         25,
     );
 
@@ -181,11 +194,15 @@ fn test_lookahead() {
             Some(last_internal_index)
         );
         assert_eq!(
-            txout_index.revealed_spks(&TestKeychain::External).count(),
+            txout_index
+                .revealed_spks_of_keychain(&TestKeychain::External)
+                .count(),
             last_external_index as usize + 1,
         );
         assert_eq!(
-            txout_index.revealed_spks(&TestKeychain::Internal).count(),
+            txout_index
+                .revealed_spks_of_keychain(&TestKeychain::Internal)
+                .count(),
             last_internal_index as usize + 1,
         );
     }
