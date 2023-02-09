@@ -192,14 +192,16 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         ) {
             let _inserted = self
                 .inner
-                .insert_script_pubkey((keychain.clone(), new_index), new_spk);
+                .insert_spk((keychain.clone(), new_index), new_spk);
             debug_assert!(_inserted, "must not have existing spk");
         }
     }
 
     /// Generates script pubkey iterators for every `keychain`. The iterators iterate over all
     /// derivable script pubkeys.
-    pub fn keychain_spks_of_all(&self) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
+    pub fn spks_of_all_keychains(
+        &self,
+    ) -> BTreeMap<K, impl Iterator<Item = (u32, Script)> + Clone> {
         self.keychains
             .iter()
             .map(|(keychain, descriptor)| {
@@ -217,7 +219,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// # Panics
     ///
     /// This will panic if `keychain` does not exist.
-    pub fn keychain_spks(&self, keychain: &K) -> impl Iterator<Item = (u32, Script)> + Clone {
+    pub fn spks_of_keychain(&self, keychain: &K) -> impl Iterator<Item = (u32, Script)> + Clone {
         let descriptor = self
             .keychains
             .get(keychain)
@@ -226,26 +228,26 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         range_descriptor_spks(Cow::Owned(descriptor), 0..)
     }
 
-    /// Convenience method to get [`revealed_spks`] of all keychains.
+    /// Convenience method to get [`revealed_spks_of_keychain`] of all keychains.
     ///
-    /// [`revealed_spks`]: Self::revealed_spks
-    pub fn revealed_spks_of_all(
+    /// [`revealed_spks_of_keychain`]: Self::revealed_spks_of_keychain
+    pub fn revealed_spks_of_all_keychains(
         &self,
     ) -> BTreeMap<K, impl Iterator<Item = (u32, &Script)> + Clone> {
         self.keychains
             .keys()
-            .map(|keychain| (keychain.clone(), self.revealed_spks(keychain)))
+            .map(|keychain| (keychain.clone(), self.revealed_spks_of_keychain(keychain)))
             .collect()
     }
 
     /// Iterates over the script pubkeys revealed by this index under `keychain`.
-    pub fn revealed_spks(
+    pub fn revealed_spks_of_keychain(
         &self,
         keychain: &K,
     ) -> impl DoubleEndedIterator<Item = (u32, &Script)> + Clone {
         let next_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1);
         self.inner
-            .script_pubkeys()
+            .all_spks()
             .range((keychain.clone(), u32::MIN)..(keychain.clone(), next_index))
             .map(|((_, derivation_index), spk)| (*derivation_index, spk))
     }
@@ -361,7 +363,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         for (new_index, new_spk) in range_descriptor_spks(Cow::Borrowed(descriptor), range) {
             let _inserted = self
                 .inner
-                .insert_script_pubkey((keychain.clone(), new_index), new_spk);
+                .insert_spk((keychain.clone(), new_index), new_spk);
             debug_assert!(_inserted, "must not have existing spk",);
 
             // everything after `target_index` is stored for lookahead only
@@ -423,13 +425,13 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     ///
     /// Panics if `keychain` has never been added to the index
     pub fn next_unused_spk(&mut self, keychain: &K) -> ((u32, &Script), DerivationAdditions<K>) {
-        let need_new = self.unused_spks(keychain).next().is_none();
+        let need_new = self.unused_spks_of_keychain(keychain).next().is_none();
         // this rather strange branch is needed because of some lifetime issues
         if need_new {
             self.reveal_next_spk(keychain)
         } else {
             (
-                self.unused_spks(keychain)
+                self.unused_spks_of_keychain(keychain)
                     .next()
                     .expect("we already know next exists"),
                 DerivationAdditions::default(),
@@ -463,17 +465,20 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     }
 
     /// Iterates over all unused script pubkeys for a `keychain` that have been stored in the index.
-    pub fn unused_spks(&self, keychain: &K) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
+    pub fn unused_spks_of_keychain(
+        &self,
+        keychain: &K,
+    ) -> impl DoubleEndedIterator<Item = (u32, &Script)> {
         let next_index = self.last_revealed.get(keychain).map_or(0, |&v| v + 1);
         let range = (keychain.clone(), u32::MIN)..(keychain.clone(), next_index);
         self.inner
-            .unused(range)
+            .unused_spks(range)
             .map(|((_, i), script)| (*i, script))
     }
 
     /// Iterates over all the [`OutPoint`] that have a `TxOut` with a script pubkey derived from
     /// `keychain`.
-    pub fn keychain_txouts(
+    pub fn txouts_of_keychain(
         &self,
         keychain: &K,
     ) -> impl DoubleEndedIterator<Item = (u32, OutPoint)> + '_ {
@@ -485,7 +490,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
     /// Returns the highest derivation index of the `keychain` where [`KeychainTxOutIndex`] has
     /// found a [`TxOut`] with it's script pubkey.
     pub fn last_used_index(&self, keychain: &K) -> Option<u32> {
-        self.keychain_txouts(keychain).last().map(|(i, _)| i)
+        self.txouts_of_keychain(keychain).last().map(|(i, _)| i)
     }
 
     /// Returns the highest derivation index of each keychain that [`KeychainTxOutIndex`] has found

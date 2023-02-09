@@ -225,7 +225,7 @@ where
                 true => Keychain::Internal,
                 false => Keychain::External,
             };
-            for (index, spk) in txout_index.revealed_spks(&target_keychain) {
+            for (index, spk) in txout_index.revealed_spks_of_keychain(&target_keychain) {
                 let address = Address::from_script(&spk, network)
                     .expect("should always be able to derive address");
                 println!(

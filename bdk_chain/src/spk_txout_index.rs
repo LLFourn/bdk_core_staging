@@ -8,8 +8,8 @@ use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
 /// An index storing [`TxOut`]s that have a script pubkey that matches those in a list.
 ///
-/// The basic idea is that you insert script pubkeys you care about into the index with [`add_spk`]
-/// and then when you call [`scan`] the index will look at any txouts you pass in and
+/// The basic idea is that you insert script pubkeys you care about into the index with
+/// [`insert_spk`] and then when you call [`scan`] the index will look at any txouts you pass in and
 /// store and index any txouts matching one of its script pubkeys.
 ///
 /// Each script pubkey is associated with a application defined index script index `I` which must be
@@ -22,14 +22,14 @@ use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 /// chain or unspent etc you must use other sources of information like a [`SparseChain`].
 ///
 /// [`TxOut`]: bitcoin::TxOut
-/// [`add_spk`]: Self::insert_script_pubkey
+/// [`insert_spk`]: Self::insert_spk
 /// [`Ord`]: core::cmp::Ord
 /// [`scan`]: Self::scan
 /// [`SparseChain`]: crate::sparse_chain::SparseChain
 #[derive(Clone, Debug)]
 pub struct SpkTxOutIndex<I> {
     /// script pubkeys ordered by index
-    script_pubkeys: BTreeMap<I, Script>,
+    spks: BTreeMap<I, Script>,
     /// A reverse lookup from spk to spk index
     spk_indices: HashMap<Script, I>,
     /// The set of unused indexes.
@@ -44,7 +44,7 @@ impl<I> Default for SpkTxOutIndex<I> {
     fn default() -> Self {
         Self {
             txouts: Default::default(),
-            script_pubkeys: Default::default(),
+            spks: Default::default(),
             spk_indices: Default::default(),
             spk_txouts: Default::default(),
             unused: Default::default(),
@@ -161,22 +161,22 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     ///
     /// If that index hasn't been inserted yet it will return `None`.
     pub fn spk_at_index(&self, index: &I) -> Option<&Script> {
-        self.script_pubkeys.get(index)
+        self.spks.get(index)
     }
 
     /// The script pubkeys being tracked by the index.
-    pub fn script_pubkeys(&self) -> &BTreeMap<I, Script> {
-        &self.script_pubkeys
+    pub fn all_spks(&self) -> &BTreeMap<I, Script> {
+        &self.spks
     }
 
     /// Adds a script pubkey to scan for. Returns `false` and does nothing if spk already exists in the map
     ///
     /// the index will look for outputs spending to whenever it scans new data.
-    pub fn insert_script_pubkey(&mut self, index: I, spk: Script) -> bool {
+    pub fn insert_spk(&mut self, index: I, spk: Script) -> bool {
         match self.spk_indices.entry(spk.clone()) {
             Entry::Vacant(value) => {
                 value.insert(index.clone());
-                self.script_pubkeys.insert(index.clone(), spk);
+                self.spks.insert(index.clone(), spk);
                 self.unused.insert(index);
                 true
             }
@@ -200,7 +200,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// let change_index = 1;
     /// let unused_change_spks = txout_index.unused((change_index, u32::MIN)..(change_index, u32::MAX));
     /// ```
-    pub fn unused<R>(&self, range: R) -> impl DoubleEndedIterator<Item = (&I, &Script)>
+    pub fn unused_spks<R>(&self, range: R) -> impl DoubleEndedIterator<Item = (&I, &Script)>
     where
         R: RangeBounds<I>,
     {
@@ -240,7 +240,7 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// [`mark_used`]: Self::mark_used
     pub fn unmark_used(&mut self, index: &I) -> bool {
         // we cannot set index as unused when it does not exist
-        if !self.script_pubkeys.contains_key(index) {
+        if !self.spks.contains_key(index) {
             return false;
         }
         // we cannot set index as unused when txouts are indexed under it
