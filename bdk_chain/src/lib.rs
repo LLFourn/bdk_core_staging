@@ -11,6 +11,9 @@ mod tx_data_traits;
 pub mod tx_graph;
 pub use tx_data_traits::*;
 
+#[doc(hidden)]
+pub mod example_utils;
+
 #[cfg(feature = "miniscript")]
 pub use miniscript;
 #[cfg(feature = "miniscript")]
