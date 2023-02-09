@@ -9,7 +9,8 @@ use core::{fmt::Debug, ops::Deref};
 
 use super::DerivationAdditions;
 
-const DERIVED_KEY_COUNT: u32 = 1 << 31;
+/// Maximum [BIP32](https://bips.xyz/32) derivation index.
+pub const BIP32_MAX_INDEX: u32 = 1 << 31 - 1;
 
 /// A convenient wrapper around [`SpkTxOutIndex`] that relates script pubkeys to miniscript public
 /// [`Descriptor`]s.
@@ -277,8 +278,10 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             // descriptors without wildcards can only have one index
             Some(_) if !has_wildcard => (0, false),
             // derivation index must be < 2^31 (BIP-32)
-            Some(index) if index >= DERIVED_KEY_COUNT => unreachable!("index is out of bounds"),
-            Some(index) if index == DERIVED_KEY_COUNT - 1 => (index, false),
+            Some(index) if index > BIP32_MAX_INDEX => {
+                unreachable!("index is out of bounds")
+            }
+            Some(index) if index == BIP32_MAX_INDEX => (index, false),
             // get next derivation index
             Some(index) => (index + 1, true),
         }
@@ -526,7 +529,7 @@ where
         // non-wildcard descriptors can only have one derivation index (0)
         .take_while(move |&index| has_wildcard || index == 0)
         // we can only iterate over non-hardened indices
-        .take_while(|&index| index < DERIVED_KEY_COUNT)
+        .take_while(|&index| index <= BIP32_MAX_INDEX)
         // take until failure
         .map_while(move |index| {
             descriptor
