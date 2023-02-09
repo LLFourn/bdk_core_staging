@@ -8,6 +8,7 @@ use bitcoin::{Block, OutPoint, Transaction, TxOut};
 /// We would prefer just work with things that can give us a `Iterator<Item=(OutPoint, &TxOut)>`
 /// here but rust's type system makes it extremely hard to do this (without trait objects).
 pub trait ForEachTxOut {
+    /// The provided closure `f` will called with each `outpoint/txout` pair.
     fn for_each_txout(&self, f: impl FnMut((OutPoint, &TxOut)));
 }
 
@@ -29,6 +30,7 @@ impl ForEachTxOut for Block {
 /// [`Transaction`]: bitcoin::Transaction
 /// [`TxGraph<T>`]: crate::tx_graph::TxGraph
 pub trait AsTransaction {
+    /// Get a reference to the transaction.
     fn as_tx(&self) -> &Transaction;
 }
 
@@ -90,6 +92,7 @@ where
 ///
 /// [`Cow<'a, T>`]: std::borrow::Cow
 pub trait IntoOwned<T> {
+    /// Converts the provided type into another (owned) type.
     fn into_owned(self) -> T;
 }
 
