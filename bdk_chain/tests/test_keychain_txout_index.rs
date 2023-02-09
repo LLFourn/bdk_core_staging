@@ -63,7 +63,7 @@ fn test_lookahead() {
 
     txout_index.set_lookahead(&TestKeychain::External, 10);
     txout_index.set_lookahead(&TestKeychain::Internal, 20);
-    assert_eq!(txout_index.inner().script_pubkeys().len(), 30);
+    assert_eq!(txout_index.inner().all_spks().len(), 30);
 
     // given:
     // - external lookahead set to 10
@@ -77,8 +77,8 @@ fn test_lookahead() {
         let (revealed_spks, revealed_additions) =
             txout_index.reveal_to_target(&TestKeychain::External, index);
         assert_eq!(
-            revealed_spks.map(Iterator::collect),
-            Some(vec![(index, spk_at_index(&external_desc, index))]),
+            revealed_spks.collect::<Vec<_>>(),
+            vec![(index, spk_at_index(&external_desc, index))],
         );
         assert_eq!(
             revealed_additions.as_inner(),
@@ -86,24 +86,35 @@ fn test_lookahead() {
         );
 
         assert_eq!(
-            txout_index.inner().script_pubkeys().len(),
+            txout_index.inner().all_spks().len(),
             10 /* external lookahead */ +
             20 /* internal lookahead */ +
             index as usize + 1 /* `derived` count */
         );
         assert_eq!(
-            txout_index.revealed_spks(&TestKeychain::External).count(),
+            txout_index
+                .revealed_spks_of_keychain(&TestKeychain::External)
+                .count(),
             index as usize + 1,
         );
         assert_eq!(
-            txout_index.revealed_spks(&TestKeychain::Internal).count(),
+            txout_index
+                .revealed_spks_of_keychain(&TestKeychain::Internal)
+                .count(),
             0,
         );
         assert_eq!(
-            txout_index.unused_spks(&TestKeychain::External).count(),
+            txout_index
+                .unused_spks_of_keychain(&TestKeychain::External)
+                .count(),
             index as usize + 1,
         );
-        assert_eq!(txout_index.unused_spks(&TestKeychain::Internal).count(), 0,);
+        assert_eq!(
+            txout_index
+                .unused_spks_of_keychain(&TestKeychain::Internal)
+                .count(),
+            0,
+        );
     }
 
     // given:
@@ -116,26 +127,26 @@ fn test_lookahead() {
     let (revealed_spks, revealed_additions) =
         txout_index.reveal_to_target(&TestKeychain::Internal, 24);
     assert_eq!(
-        revealed_spks.map(Iterator::collect),
-        Some(
-            (0..=24)
-                .map(|index| (index, spk_at_index(&internal_desc, index)))
-                .collect::<Vec<_>>()
-        ),
+        revealed_spks.collect::<Vec<_>>(),
+        (0..=24)
+            .map(|index| (index, spk_at_index(&internal_desc, index)))
+            .collect::<Vec<_>>(),
     );
     assert_eq!(
         revealed_additions.as_inner(),
         &[(TestKeychain::Internal, 24)].into()
     );
     assert_eq!(
-        txout_index.inner().script_pubkeys().len(),
+        txout_index.inner().all_spks().len(),
         10 /* external lookahead */ +
         20 /* internal lookahead */ +
         20 /* external stored index count */ +
         25 /* internal stored index count */
     );
     assert_eq!(
-        txout_index.revealed_spks(&TestKeychain::Internal).count(),
+        txout_index
+            .revealed_spks_of_keychain(&TestKeychain::Internal)
+            .count(),
         25,
     );
 
@@ -183,11 +194,15 @@ fn test_lookahead() {
             Some(last_internal_index)
         );
         assert_eq!(
-            txout_index.revealed_spks(&TestKeychain::External).count(),
+            txout_index
+                .revealed_spks_of_keychain(&TestKeychain::External)
+                .count(),
             last_external_index as usize + 1,
         );
         assert_eq!(
-            txout_index.revealed_spks(&TestKeychain::Internal).count(),
+            txout_index
+                .revealed_spks_of_keychain(&TestKeychain::Internal)
+                .count(),
             last_internal_index as usize + 1,
         );
     }
@@ -304,6 +319,6 @@ fn test_non_wildcard_derivations() {
     assert_eq!(changeset.as_inner(), &[].into());
     let (revealed_spks, revealed_additions) =
         txout_index.reveal_to_target(&TestKeychain::External, 200);
-    assert!(revealed_spks.is_none());
+    assert_eq!(revealed_spks.count(), 0);
     assert!(revealed_additions.is_empty());
 }

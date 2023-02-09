@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
                 let tracker = &*keychain_tracker.lock().unwrap();
                 let spk_iterators = tracker
                     .txout_index
-                    .keychain_spks_of_all()
+                    .spks_of_all_keychains()
                     .into_iter()
                     .map(|(keychain, iter)| {
                         let mut first = true;
@@ -123,7 +123,7 @@ fn main() -> anyhow::Result<()> {
 
                 if all {
                     let all_spks = txout_index
-                        .script_pubkeys()
+                        .all_spks()
                         .iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect::<Vec<_>>();
@@ -135,7 +135,7 @@ fn main() -> anyhow::Result<()> {
 
                 if unused {
                     let unused_spks = txout_index
-                        .unused(..)
+                        .unused_spks(..)
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect::<Vec<_>>();
                     spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {

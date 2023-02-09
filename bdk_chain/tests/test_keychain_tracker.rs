@@ -44,7 +44,10 @@ fn test_insert_tx() {
     );
 
     assert_eq!(
-        tracker.txout_index.keychain_txouts(&()).collect::<Vec<_>>(),
+        tracker
+            .txout_index
+            .txouts_of_keychain(&())
+            .collect::<Vec<_>>(),
         vec![(
             5,
             OutPoint {
