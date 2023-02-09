@@ -1,4 +1,4 @@
-//! Module for storing transactions and traversing a spend graph.
+//! Module for structures that store and traverse transactions.
 //!
 //! [`TxGraph`] is a monotone structure that inserts transactions and indexes spends. The
 //! [`Additions`] structure reports changes of [`TxGraph`], but can also be applied on to a

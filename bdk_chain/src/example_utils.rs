@@ -1,7 +1,12 @@
 #![allow(unused)]
-
 use alloc::vec::Vec;
-use bitcoin::{consensus, hashes::hex::FromHex, Transaction};
+use bitcoin::{
+    consensus,
+    hashes::{hex::FromHex, Hash},
+    Transaction,
+};
+
+use crate::BlockId;
 
 pub const RAW_TX_1: &'static str = "0200000000010116d6174da7183d70d0a7d4dc314d517a7d135db79ad63515028b293a76f4f9d10000000000feffffff023a21fc8350060000160014531c405e1881ef192294b8813631e258bf98ea7a1027000000000000225120a60869f0dbcf1dc659c9cecbaf8050135ea9e8cdc487053f1dc6880949dc684c024730440220591b1a172a122da49ba79a3e79f98aaa03fd7a372f9760da18890b6a327e6010022013e82319231da6c99abf8123d7c07e13cf9bd8d76e113e18dc452e5024db156d012102318a2d558b2936c52e320decd6d92a88d7f530be91b6fe0af5caf41661e77da3ef2e0100";
 pub const RAW_TX_2: &'static str = "02000000000101a688607020cfae91a61e7c516b5ef1264d5d77f17200c3866826c6c808ebf1620000000000feffffff021027000000000000225120a60869f0dbcf1dc659c9cecbaf8050135ea9e8cdc487053f1dc6880949dc684c20fd48ff530600001600146886c525e41d4522042bd0b159dfbade2504a6bb024730440220740ff7e665cd20565d4296b549df8d26b941be3f1e3af89a0b60e50c0dbeb69a02206213ab7030cf6edc6c90d4ccf33010644261e029950a688dc0b1a9ebe6ddcc5a012102f2ac6b396a97853cb6cd62242c8ae4842024742074475023532a51e9c53194253e760100";
@@ -11,4 +16,15 @@ pub const RAW_TX_4: &'static str = "02000000000101d00e8f76ed313e19b339ee293c0f52
 pub fn tx_from_hex(s: &str) -> Transaction {
     let raw = Vec::from_hex(s).expect("data must be in hex");
     consensus::deserialize(raw.as_slice()).expect("must deserialize")
+}
+
+pub fn new_hash<H: Hash>(s: &str) -> H {
+    <H as bitcoin::hashes::Hash>::hash(s.as_bytes())
+}
+
+pub fn new_block_id(height: u32, hash: &str) -> BlockId {
+    BlockId {
+        height,
+        hash: new_hash(hash),
+    }
 }
