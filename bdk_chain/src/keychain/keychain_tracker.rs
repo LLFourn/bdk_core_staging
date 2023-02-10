@@ -12,12 +12,10 @@ use crate::{
 
 use super::{Balance, DerivationAdditions};
 
-/// A convenient combination of a `KeychainTxOutIndex<K>` and a `ChainGraph<P>`.
+/// A convenient combination of a [`KeychainTxOutIndex`] and a [`ChainGraph`].
 ///
-/// The `KeychainTracker<K, P>` atomically updates its `KeychainTxOutIndex<K>` whenever new chain data is
-/// incorporated into its internal `chain_graph`.
-///
-/// [`KeychainTxOutIndex<K>`]: crate::KeychainTxOutIndex
+/// The [`KeychainTracker`] atomically updates its [`KeychainTxOutIndex`] whenever new chain data is
+/// incorporated into its internal [`ChainGraph`].
 #[derive(Clone, Debug)]
 pub struct KeychainTracker<K, P, T = Transaction> {
     /// Index between script pubkeys to transaction outputs
@@ -47,14 +45,24 @@ where
         self.txout_index.keychains()
     }
 
+    /// Get the checkpoint limit of the internal [`SparseChain`].
+    ///
+    /// Refer to [`SparseChain::checkpoint_limit`] for more.
     pub fn checkpoint_limit(&self) -> Option<usize> {
         self.chain_graph.checkpoint_limit()
     }
 
+    /// Set the checkpoint limit of the internal [`SparseChain`].
+    ///
+    /// Refer to [`SparseChain::set_checkpoint_limit`] for more.
     pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
         self.chain_graph.set_checkpoint_limit(limit)
     }
 
+    /// Determines the resultant [`KeychainChangeSet`] if the given [`KeychainScan`] is applied.
+    ///
+    /// Internally, we call [`ChainGraph::determine_changeset`] and also determine the additions of
+    /// [`KeychainTxOutIndex`].
     pub fn determine_changeset<T2>(
         &self,
         scan: &KeychainScan<K, P, T2>,
@@ -62,6 +70,7 @@ where
     where
         T2: IntoOwned<T> + Clone,
     {
+        // TODO: `KeychainTxOutIndex::determine_additions`
         let mut derivation_indices = scan.last_active_indices.clone();
         derivation_indices.retain(|keychain, index| {
             match self.txout_index.last_revealed_index(keychain) {
@@ -76,6 +85,12 @@ where
         })
     }
 
+    /// Directly applies a [`KeychainScan`] on [`KeychainTracker`].
+    ///
+    /// This is equivilant to calling [`determine_changeset`] and [`apply_changeset`] in sequence.
+    ///
+    /// [`determine_changeset`]: Self::determine_changeset
+    /// [`apply_changeset`]: Self::apply_changeset
     pub fn apply_update<T2>(
         &mut self,
         scan: KeychainScan<K, P, T2>,
@@ -88,6 +103,10 @@ where
         Ok(changeset)
     }
 
+    /// Applies the changes in `changeset` to [`KeychainTracker`].
+    ///
+    /// Internally, this calls [`KeychainTxOutIndex::apply_additions`] and
+    /// [`ChainGraph::apply_changeset`] in sequence.
     pub fn apply_changeset(&mut self, changeset: KeychainChangeSet<K, P, T>) {
         let KeychainChangeSet {
             derivation_indices,
@@ -98,33 +117,49 @@ where
         self.chain_graph.apply_changeset(chain_graph)
     }
 
+    /// Iterates through [`FullTxOut`]s that are considered to exist in our representation of the
+    /// blockchain/mempool.
+    ///
+    /// In other words, these are `txout`s of confirmed and in-mempool transactions, based on our
+    /// view of the blockchain/mempool.
     pub fn full_txouts(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<P>)> + '_ {
         self.txout_index
             .txouts()
             .filter_map(|(spk_i, op, _)| Some((spk_i, self.chain_graph.full_txout(op)?)))
     }
 
+    /// Iterates through [`FullTxOut`]s that are unspent outputs.
+    ///
+    /// Refer to [`full_txouts`] for more.
+    ///
+    /// [`full_txouts`]: Self::full_txouts
     pub fn full_utxos(&self) -> impl Iterator<Item = (&(K, u32), FullTxOut<P>)> + '_ {
         self.full_txouts()
             .filter(|(_, txout)| txout.spent_by.is_none())
     }
 
+    /// Returns a reference to the internal [`ChainGraph`].
     pub fn chain_graph(&self) -> &ChainGraph<P, T> {
         &self.chain_graph
     }
 
+    /// Returns a reference to the internal [`TxGraph`] (which is part of the [`ChainGraph`]).
     pub fn graph(&self) -> &TxGraph<T> {
         &self.chain_graph().graph()
     }
 
+    /// Returns a reference to the internal [`SparseChain`] (which is part of the [`ChainGraph`]).
     pub fn chain(&self) -> &SparseChain<P> {
         &self.chain_graph().chain()
     }
 
-    /// Insert a `block_id` (a height and block hash) into the chain. The caller is responsible for
-    /// guaranteeing that a block exists at that height. If a checkpoint already exists at that
-    /// height with a different hash this will return an error. Otherwise it will return `Ok(true)`
-    /// if the checkpoint didn't already exist or `Ok(false)` if it did.
+    /// Determines the changes as result of inserting `block_id` (a height and block hash) into the
+    /// tracker.
+    ///
+    /// The caller is responsible for guaranteeing that a block exists at that height. If a
+    /// checkpoint already exists at that height with a different hash this will return an error.
+    /// Otherwise it will return `Ok(true)` if the checkpoint didn't already exist or `Ok(false)`
+    /// if it did.
     ///
     /// **Warning**: This function modifies the internal state of the tracker. You are responsible
     /// for persisting these changes to disk if you need to restore them.
@@ -138,6 +173,13 @@ where
         })
     }
 
+    /// Directly insert a `block_id` into the tracker.
+    ///
+    /// This is equivalent of calling [`insert_checkpoint_preview`] and [`apply_changeset`] in
+    /// sequence.
+    ///
+    /// [`insert_checkpoint_preview`]: Self::insert_checkpoint_preview
+    /// [`apply_changeset`]: Self::apply_changeset
     pub fn insert_checkpoint(
         &mut self,
         block_id: BlockId,
@@ -147,8 +189,8 @@ where
         Ok(changeset)
     }
 
-    /// Inserts a transaction into the inner [`ChainGraph`] and optionally into the inner chain at
-    /// `position`.
+    /// Determines the changes as result of inserting a transaction into the inner [`ChainGraph`]
+    /// and optionally into the inner chain at `position`.
     ///
     /// **Warning**: This function modifies the internal state of the chain graph. You are
     /// responsible for persisting these changes to disk if you need to restore them.
@@ -163,6 +205,13 @@ where
         })
     }
 
+    /// Directly insert a transaction into the inner [`ChainGraph`] and optionally into the inner
+    /// chain at `position`.
+    ///
+    /// This is equivilant of calling [`insert_tx_preview`] and [`apply_changeset`] in sequence.
+    ///
+    /// [`insert_tx_preview`]: Self::insert_tx_preview
+    /// [`apply_changeset`]: Self::apply_changeset
     pub fn insert_tx(
         &mut self,
         tx: T,
@@ -174,6 +223,7 @@ where
     }
 
     /// Returns the *balance* of the keychain i.e. the value of unspent transaction outputs tracked.
+    ///
     /// The caller provides a `should_trust` predicate which must decide whether the value of
     /// unconfirmed outputs on this keychain are guaranteed to be realized or not. For example:
     ///

@@ -88,10 +88,10 @@ where
         Ok(Self { chain, graph })
     }
 
-    /// Take an update in the form of a [`SparseChain<P>`][`SparseChain`] and attempt to turn it into a chain graph
-    /// by filling in full transactions from `self` and from `new_txs`. This returns a
-    /// `ChainGraph<P, Cow<T>>` where the [`Cow<'a, T>`] will borrow the transaction if it got it
-    /// from `self`.
+    /// Take an update in the form of a [`SparseChain<P>`][`SparseChain`] and attempt to turn it
+    /// into a chain graph by filling in full transactions from `self` and from `new_txs`. This
+    /// returns a `ChainGraph<P, Cow<T>>` where the [`Cow<'a, T>`] will borrow the transaction if it
+    /// got it from `self`.
     ///
     /// This is useful when interacting with services like an electrum server which returns a list
     /// of txids and heights when calling [`script_get_history`] which can easily be inserted into a
@@ -154,9 +154,10 @@ where
         changeset
     }
 
-    /// Get a transaction that is currently in the underlying [`SparseChain`]. This doesn't
-    /// necessarily mean that it is *confirmed* in the blockchain, it might just be in the
-    /// unconfirmed transaction list within the [`SparseChain`].
+    /// Get a transaction that is currently in the underlying [`SparseChain`].
+    ///
+    /// This does not necessarily mean that it is *confirmed* in the blockchain, it might just be in
+    /// the unconfirmed transaction list within the [`SparseChain`].
     pub fn get_tx_in_chain(&self, txid: Txid) -> Option<(&P, &T)> {
         let position = self.chain.tx_position(txid)?;
         let full_tx = self.graph.get_tx(txid).expect("must exist");
