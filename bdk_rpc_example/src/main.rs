@@ -10,7 +10,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use bdk_chain::keychain::KeychainChangeSet;
+use bdk_chain::keychain::{DerivationAdditions, KeychainChangeSet};
 use bdk_chain::{chain_graph::ChainGraph, BlockId, TxHeight};
 use bdk_cli::{
     anyhow,
@@ -103,11 +103,24 @@ fn main() -> anyhow::Result<()> {
             live,
         } => {
             let (chan, recv) = sync_channel::<RpcData>(CHANNEL_BOUND);
-            let mut local_cps = keychain_tracker.chain().checkpoints().clone();
+            let mut local_cps = keychain_tracker
+                .lock()
+                .unwrap()
+                .chain()
+                .checkpoints()
+                .clone();
+
+            keychain_tracker
+                .lock()
+                .unwrap()
+                .txout_index
+                .set_lookahead_for_all(lookahead);
 
             // emit blocks thread
             let thread_flag = sigterm_flag.clone();
             let cp_limit = keychain_tracker
+                .lock()
+                .unwrap()
                 .checkpoint_limit()
                 .unwrap_or(FALLBACK_CP_LIMIT);
             let join_handle = std::thread::spawn(move || loop {
@@ -128,6 +141,7 @@ fn main() -> anyhow::Result<()> {
                 }
 
                 let mut update = ChainGraph::<TxHeight>::default();
+                let mut keychain_update = DerivationAdditions::default();
 
                 let txs = match data {
                     RpcData::Start {
@@ -147,6 +161,8 @@ fn main() -> anyhow::Result<()> {
                     }
                     RpcData::Synced => {
                         let balance = keychain_tracker
+                            .lock()
+                            .unwrap()
                             .full_utxos()
                             .map(|(_, utxo)| utxo.txout.value)
                             .sum::<u64>();
@@ -184,40 +200,24 @@ fn main() -> anyhow::Result<()> {
                         .collect::<Vec<_>>(),
                 };
 
-                let old_indexes = keychain_tracker.txout_index.derivation_indices();
-
                 for (height, tx) in txs {
-                    keychain_tracker.txout_index.pad_all_with_unused(lookahead);
-                    if keychain_tracker.txout_index.is_relevant(&tx) {
+                    if keychain_tracker
+                        .lock()
+                        .unwrap()
+                        .txout_index
+                        .is_relevant(&tx)
+                    {
                         println!("* adding tx to update: {} @ {}", tx.txid(), height);
                         let _ = update.insert_tx(tx.clone(), height)?;
                     }
-                    keychain_tracker.txout_index.scan(&tx);
+                    keychain_update.append(keychain_tracker.lock().unwrap().txout_index.scan(&tx));
                 }
 
-                // TODO: We either need to prune here, or maintain 2 "indexes" in `KeychainTxOut`.
-                // 2 indexes meaning one for user-derived scripts, one for maintaining the stop gap.
-
-                let new_indexes = keychain_tracker.txout_index.last_active_indicies();
-
                 let changeset = KeychainChangeSet {
-                    derivation_indices: keychain_tracker
-                        .txout_index
-                        .keychains()
-                        .keys()
-                        .filter_map(|keychain| {
-                            let old_index = old_indexes.get(keychain);
-                            let new_index = new_indexes.get(keychain);
-
-                            match new_index {
-                                Some(new_ind) if new_index > old_index => {
-                                    Some((keychain.clone(), *new_ind))
-                                }
-                                _ => None,
-                            }
-                        })
-                        .collect(),
+                    derivation_indices: keychain_update,
                     chain_graph: keychain_tracker
+                        .lock()
+                        .unwrap()
                         .chain_graph()
                         .determine_changeset(&update)?,
                 };
@@ -231,8 +231,8 @@ fn main() -> anyhow::Result<()> {
                     tip,
                 );
 
-                db.append_changeset(&changeset)?;
-                keychain_tracker.apply_changeset(changeset);
+                db.lock().unwrap().append_changeset(&changeset)?;
+                keychain_tracker.lock().unwrap().apply_changeset(changeset);
             }
 
             join_handle
