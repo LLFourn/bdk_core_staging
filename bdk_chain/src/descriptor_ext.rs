@@ -1,7 +1,8 @@
 use crate::miniscript::{Descriptor, DescriptorPublicKey};
 
+/// A trait to extend the functionality of a miniscript descriptor.
 pub trait DescriptorExt {
-    /// Iterates over all the script pubkeys of a descriptor.
+    /// Returns the minimum value (in satoshis) that an output should have to be broadcastable.
     fn dust_value(&self) -> u64;
 }
 

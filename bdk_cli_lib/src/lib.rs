@@ -7,7 +7,6 @@ use bdk_chain::{
         Address, LockTime, Network, Sequence, Transaction, TxIn, TxOut,
     },
     chain_graph::InsertTxError,
-    descriptor_ext::DescriptorExt,
     file_store::KeychainStore,
     keychain::{DerivationAdditions, KeychainChangeSet, KeychainTracker},
     miniscript::{
@@ -15,7 +14,7 @@ use bdk_chain::{
         Descriptor, DescriptorPublicKey,
     },
     sparse_chain::{self, ChainPosition},
-    FullTxOut,
+    DescriptorExt, FullTxOut,
 };
 use bdk_coin_select::{coin_select_bnb, CoinSelector, CoinSelectorOpt, WeightedValue};
 pub use clap;

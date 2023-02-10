@@ -2,8 +2,18 @@
 //!
 //! A keychain here is a set of application defined indexes for a minscript descriptor where we can
 //! derive script pubkeys at a particular derivation index. The application's index is simply
-//! anything that implemetns `Ord`.
-
+//! anything that implements `Ord`.
+//!
+//! [`KeychainTxOutIndex`] indexes script pubkeys of keychains and scans in relevant outpoints (that
+//! has a `txout` containing an indexed script pubkey). Internally, this uses [`SpkTxOutIndex`], but
+//! also maintains "revealed" and "lookahead" index count per keychain.
+//!
+//! [`KeychainTracker`] combines [`ChainGraph`] and [`KeychainTxOutIndex`] and enforces atomic
+//! changes between both these structures. [`KeychainScan`] is a structure used to update to
+//! [`KeychainTracker`] and changes made on a [`KeychainTracker`] are reported by
+//! [`KeychainChangeSet`]s.
+//!
+//! [`SpkTxOutIndex`]: crate::SpkTxOutIndex
 use crate::{
     chain_graph::{self, ChainGraph},
     collections::BTreeMap,
@@ -22,9 +32,10 @@ mod keychain_txout_index;
 #[cfg(feature = "miniscript")]
 pub use keychain_txout_index::*;
 
-/// Represents updates to the derivation index of a [`KeychainTxOutIndex`]. It can be applied with
-/// [`apply_additions`]. Note these changes are monotone in that they will never decrease the
-/// derivation index.
+/// Represents updates to the derivation index of a [`KeychainTxOutIndex`].
+///
+/// It can be applied to [`KeychainTxOutIndex`] with [`apply_additions`]. [`DerivationAdditions] are
+/// monotone in that they will never decrease the revealed derivation index.
 ///
 /// [`KeychainTxOutIndex`]: crate::keychain::KeychainTxOutIndex
 /// [`apply_additions`]: crate::keychain::KeychainTxOutIndex::apply_additions
@@ -44,17 +55,22 @@ pub use keychain_txout_index::*;
 pub struct DerivationAdditions<K>(BTreeMap<K, u32>);
 
 impl<K> DerivationAdditions<K> {
-    /// Returns `true` if the additions are empty.
+    /// Returns whether the additions are empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Get the inner map of keychain to its new derivation index.
+    pub fn as_inner(&self) -> &BTreeMap<K, u32> {
+        &self.0
     }
 }
 
 impl<K: Ord> DerivationAdditions<K> {
     /// Append another [`DerivationAdditions`] into self.
     ///
-    /// If keychain already exists, increases the index, if other's index > self's index
-    /// If keychain didn't exist, appends the new keychain
+    /// If keychain already exists, increases the index when other's index > self's index.
+    /// If keychain did not exist, append the new keychain.
     pub fn append(&mut self, mut other: Self) {
         self.0.iter_mut().for_each(|(key, index)| {
             if let Some(other_index) = other.0.remove(key) {
@@ -63,11 +79,6 @@ impl<K: Ord> DerivationAdditions<K> {
         });
 
         self.0.append(&mut other.0);
-    }
-
-    /// Gets the inner map from the keychain to its new derivation index.
-    pub fn as_inner(&self) -> &BTreeMap<K, u32> {
-        &self.0
     }
 }
 
@@ -110,6 +121,9 @@ impl<K, P, T> From<ChainGraph<P, T>> for KeychainScan<K, P, T> {
     }
 }
 
+/// Represents changes to a [`KeychainTracker`].
+///
+/// This is essentially a combination of [`DerivationAdditions`] and [`chain_graph::ChangeSet`].
 #[derive(Clone, Debug)]
 #[cfg_attr(
     feature = "serde",
@@ -140,6 +154,7 @@ impl<K, P, T> Default for KeychainChangeSet<K, P, T> {
 }
 
 impl<K, P, T> KeychainChangeSet<K, P, T> {
+    /// Returns whether the [`KeychainChangeSet`] is empty (no changes recorded).
     pub fn is_empty(&self) -> bool {
         self.chain_graph.is_empty() && self.derivation_indices.is_empty()
     }
@@ -190,7 +205,7 @@ impl<K, P, T: AsTransaction> ForEachTxOut for KeychainChangeSet<K, P, T> {
     }
 }
 
-/// Balance differentiated in various categories
+/// Balance differentiated in various categories.
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 #[cfg_attr(
     feature = "serde",
