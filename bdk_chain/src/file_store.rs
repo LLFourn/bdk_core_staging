@@ -1,3 +1,7 @@
+//! Module for persisting data on-disk.
+//!
+//! The star of the show is [`KeychainStore`] which maintains an append-only file of
+//! [`KeychainChangeSet`]s which can be used to restore a [`KeychainTracker`].
 use bitcoin::Transaction;
 
 use crate::{
@@ -166,6 +170,7 @@ where
     }
 }
 
+/// Error that occurs due to problems encountered with the file.
 #[derive(Debug)]
 pub enum FileError {
     /// IO error, this may mean that the file is too short.
@@ -195,9 +200,12 @@ impl From<io::Error> for FileError {
 
 impl std::error::Error for FileError {}
 
+/// Error type for [`EntryIter`].
 #[derive(Debug)]
 pub enum IterError {
+    /// Failure to read from file.
     Io(io::Error),
+    /// Failure to decode data from file.
     Bincode(bincode::error::DecodeError),
 }
 
