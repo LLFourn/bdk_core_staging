@@ -1,3 +1,4 @@
+//! Module for structures that combine the features of [`sparse_chain`] and [`tx_graph`].
 use crate::{
     collections::HashSet,
     sparse_chain::{self, ChainPosition, SparseChain},
@@ -39,10 +40,12 @@ impl<P, T> Default for ChainGraph<P, T> {
 }
 
 impl<P, T> ChainGraph<P, T> {
-    pub fn chain(&self) -> &sparse_chain::SparseChain<P> {
+    /// Returns a reference to the internal [`SparseChain`].
+    pub fn chain(&self) -> &SparseChain<P> {
         &self.chain
     }
 
+    /// Returns a reference to the internal [`TxGraph`].
     pub fn graph(&self) -> &TxGraph<T> {
         &self.graph
     }
@@ -123,10 +126,16 @@ where
         ChainGraph::new(update, inflated_graph)
     }
 
+    /// Sets the checkpoint limit.
+    ///
+    /// Refer to [`SparseChain::checkpoint_limit`] for more.
     pub fn checkpoint_limit(&self) -> Option<usize> {
         self.chain.checkpoint_limit()
     }
 
+    /// Sets the checkpoint limit.
+    ///
+    /// Refer to [`SparseChain::set_checkpoint_limit`] for more.
     pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
         self.chain.set_checkpoint_limit(limit)
     }
@@ -143,8 +152,8 @@ where
     /// Invalidate checkpoints `from_height` (inclusive) and above. Displaced transactions will be
     /// re-positioned to [`TxHeight::Unconfirmed`].
     ///
-    /// This is equivalent to calling [`Self::invalidate_checkpoints_preview()`] and
-    /// [`Self::apply_changeset()`] in sequence.
+    /// This is equivalent to calling [`Self::invalidate_checkpoints_preview`] and
+    /// [`Self::apply_changeset`] in sequence.
     pub fn invalidate_checkpoints(&mut self, from_height: u32) -> ChangeSet<P, T>
     where
         ChangeSet<P, T>: Clone,
@@ -178,8 +187,10 @@ where
         Ok(changeset)
     }
 
-    /// Inserts [`Transaction`] at given chain position. This is equivalent to calling
-    /// [`Self::insert_tx_preview()`] and [`Self::apply_changeset()`] in sequence.
+    /// Inserts [`Transaction`] at given chain position.
+    ///
+    /// This is equivalent to calling [`Self::insert_tx_preview`] and [`Self::apply_changeset`] in
+    /// sequence.
     pub fn insert_tx(&mut self, tx: T, pos: P) -> Result<ChangeSet<P, T>, InsertTxError<P>> {
         let changeset = self.insert_tx_preview(tx, pos)?;
         self.apply_changeset(changeset.clone());
@@ -194,8 +205,10 @@ where
         }
     }
 
-    /// Inserts a [`TxOut`] into the internal [`TxGraph`]. This is equivalent to calling
-    /// [`Self::insert_txout_preview()`] and [`Self::apply_changeset`] in sequence.
+    /// Inserts a [`TxOut`] into the internal [`TxGraph`].
+    ///
+    /// This is equivalent to calling [`Self::insert_txout_preview`] and [`Self::apply_changeset`]
+    /// in sequence.
     pub fn insert_txout(&mut self, outpoint: OutPoint, txout: TxOut) -> ChangeSet<P, T> {
         let changeset = self.insert_txout_preview(outpoint, txout);
         self.apply_changeset(changeset.clone());
@@ -219,8 +232,10 @@ where
             })
     }
 
-    /// Inserts checkpoint into [`Self`]. This is equivalent to calling
-    /// [`Self::insert_checkpoint_preview()`] and [`Self::apply_changeset()] in sequence.
+    /// Inserts checkpoint into [`Self`].
+    ///
+    /// This is equivalent to calling [`Self::insert_checkpoint_preview`] and
+    /// [`Self::apply_changeset`] in sequence.
     pub fn insert_checkpoint(
         &mut self,
         block_id: BlockId,
@@ -394,6 +409,9 @@ where
     }
 }
 
+/// Represents changes to [`ChainGraph`].
+///
+/// This is essentially a combination of [`sparse_chain::ChangeSet`] and [`tx_graph::Additions`].
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -413,10 +431,12 @@ pub struct ChangeSet<P, T> {
 }
 
 impl<P, T> ChangeSet<P, T> {
+    /// Returns `true` if this [`ChangeSet`] records no changes.
     pub fn is_empty(&self) -> bool {
         self.chain.is_empty() && self.graph.is_empty()
     }
 
+    /// Returns `true` if this [`ChangeSet`] contains transaction evictions.
     pub fn contains_eviction(&self) -> bool {
         self.chain
             .txids
@@ -463,6 +483,7 @@ impl<P, T: AsTransaction> ForEachTxOut for ChangeSet<P, T> {
     }
 }
 
+/// Error that may occur when calling [`ChainGraph::new`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum NewError<P> {
     /// Two transactions within the sparse chain conflicted with each other
@@ -495,6 +516,9 @@ impl<P: core::fmt::Debug> core::fmt::Display for NewError<P> {
 #[cfg(feature = "std")]
 impl<P: core::fmt::Debug> std::error::Error for NewError<P> {}
 
+/// Error that may occur when inserting a transaction.
+///
+/// Refer to [`ChainGraph::insert_tx_preview`] and [`ChainGraph::insert_tx`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum InsertTxError<P> {
     Chain(sparse_chain::InsertTxError<P>),
@@ -519,6 +543,7 @@ impl<P> From<sparse_chain::InsertTxError<P>> for InsertTxError<P> {
 #[cfg(feature = "std")]
 impl<P: core::fmt::Debug> std::error::Error for InsertTxError<P> {}
 
+/// A nice alias of [`sparse_chain::InsertCheckpointError`].
 pub type InsertCheckpointError = sparse_chain::InsertCheckpointError;
 
 /// Represents an update failure.
