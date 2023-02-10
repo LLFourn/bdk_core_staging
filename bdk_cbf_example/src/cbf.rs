@@ -7,28 +7,49 @@ use nakamoto::client::Handle as ClientHandle;
 use nakamoto::client::{chan, Client, Config, Domain, Event, Network};
 use nakamoto::net::poll;
 
-use bdk_cli::{anyhow, Keychain};
+use bdk_cli::anyhow::{self, anyhow};
 
-use bdk_chain::bitcoin::Transaction;
-use bdk_chain::chain_graph::ChainGraph;
-use bdk_chain::keychain::KeychainChangeSet;
-use bdk_chain::keychain::KeychainTracker;
+use bdk_chain::bitcoin::{BlockHash, Script, Transaction};
 use bdk_chain::{BlockId, TxHeight};
+
+use crate::Domains;
 
 type Reactor = poll::Reactor<net::TcpStream>;
 
 // Things to handle:
-// Block disconnected before filter processed, what to do?
+// - Block disconnected before filter processed, what to do?
+// - Rescan from 0
 
 pub struct CbfClient {
     pub handle: ClientHandle<poll::reactor::Waker>,
+    pub setup: Option<CbfSetup>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CbfEvent {
+    BlockMatched(BlockId, Vec<(Transaction, TxHeight)>),
+    BlockDisconnected(BlockId),
+    ChainSynced(Option<BlockId>),
+}
+
+pub struct CbfSetup {
+    pub events: chan::Receiver<Event>,
+    pub processed_height: Option<BlockId>,
+    pub blocks_matched: HashSet<BlockHash>,
+    pub peer_height: Option<u32>,
 }
 
 impl CbfClient {
-    pub fn new(network: Network) -> anyhow::Result<Self> {
+    pub fn new(network: Network, domains: Domains) -> anyhow::Result<Self> {
+        let domains = match domains {
+            Domains::IPv4 => vec![Domain::IPV4],
+            Domains::IPv6 => vec![Domain::IPV6],
+            Domains::Both => vec![Domain::IPV4, Domain::IPV6],
+        };
+
         let config = Config {
             network,
-            domains: vec![Domain::IPV4],
+            domains,
             ..Config::default()
         };
 
@@ -40,109 +61,88 @@ impl CbfClient {
         // so it's not a problem if the client is running in the background
         thread::spawn(|| client.run(config).unwrap());
 
-        Ok(CbfClient { handle })
+        Ok(CbfClient {
+            handle,
+            setup: None,
+        })
     }
 
-    pub fn sync(
+    pub fn sync_setup(
         &mut self,
-        keychain_tracker: &mut KeychainTracker<Keychain, TxHeight>,
-        stop_gap: u32,
-    ) -> anyhow::Result<KeychainChangeSet<Keychain, TxHeight>> {
+        scripts: impl Iterator<Item = Script>,
+        processed_height: Option<BlockId>,
+    ) -> anyhow::Result<()> {
         println!("Looking for peers...");
         self.handle.wait_for_peers(1, Services::default())?;
         println!("Connected to at least one peer");
 
-        let client_recv = self.handle.events();
+        let events = self.handle.events();
+        let blocks_matched = HashSet::new();
+        let peer_height = None;
 
-        let mut blocks_matched = HashSet::new();
-        let mut peer_height = 0;
-        let mut update = ChainGraph::<TxHeight>::default();
-        let mut txs = vec![];
+        self.setup = Some(CbfSetup {
+            events,
+            processed_height,
+            blocks_matched,
+            peer_height,
+        });
 
-        // indexing logic!
-        let old_indexes = keychain_tracker.txout_index.derivation_indices();
-        keychain_tracker.txout_index.pad_all_with_unused(stop_gap);
+        let processed_height = processed_height.map(|h| h.height as u64).unwrap_or(0);
 
-        // find scripts!
-        let scripts = keychain_tracker
-            .txout_index
-            .stored_scripts_of_all_keychains()
-            .into_values()
-            .flatten()
-            .map(|(_, spk)| spk.clone());
-
-        let mut processed_height = keychain_tracker
-            .chain_graph()
-            .chain()
-            .latest_checkpoint()
-            .map(|c| c.height)
-            .unwrap_or(0) as u64; // TODO: We should check point of last agreeement
+        // TODO: maybe we should check our latest point of agreement?
         self.handle.rescan(processed_height.., scripts)?;
         println!("Rescanning chain from height {:?}", processed_height);
+        Ok(())
+    }
 
+    pub fn next_event(&mut self) -> anyhow::Result<CbfEvent> {
+        if self.setup.is_none() {
+            return Err(anyhow!("Need to call sync_setup first".to_string()));
+        }
+        let mut setup = self.setup.as_mut().expect("We check above");
         loop {
             chan::select! {
-                recv(client_recv) -> event => {
+                recv(setup.events) -> event => {
                     let event = event?;
                     match event {
                         Event::PeerNegotiated { height, .. } => {
-                            println!("Peer negotiated with height {:?}", height);
-                            if peer_height < height {
-                                peer_height = height;
+                            println!("* peer negotiated with height {:?}", height);
+                            let height = height as u32;
+                            if setup.peer_height < Some(height) {
+                                setup.peer_height = Some(height);
                             }
-                            if processed_height == peer_height {
+                            if setup.processed_height.map(|h| h.height) == setup.peer_height && setup.blocks_matched.is_empty() {
                                 // TODO: improve this!
                                 // It might be that both me and this peer
                                 // are lagging behind
-                                break;
+                                return Ok(CbfEvent::ChainSynced(setup.processed_height));
                             }
                         }
                         Event::PeerHeightUpdated { height, .. } => {
-                            if peer_height < height {
-                                peer_height = height;
-                            }
-                        }
-                        Event::BlockConnected { height, .. } => {
-                            if height % 10000 == 0 {
-                                println!("Connected block with height {:?}", height);
+                            let height = height as u32;
+                            if setup.peer_height < Some(height) {
+                                setup.peer_height = Some(height);
                             }
                         }
                         Event::BlockDisconnected { height, hash, .. } => {
-                            println!("Disconnected block with height {:?}", height);
-                            // TODO: what happens if a block gets disconnected before I process its
-                            // filter?
-                            let _ = update.invalidate_checkpoints(height as u32);
-                            blocks_matched.remove(&hash);
+                            setup.blocks_matched.remove(&hash);
+                            return Ok(CbfEvent::BlockDisconnected(BlockId { hash, height: height as u32 }));
                         }
                         Event::BlockMatched { height, hash, transactions, .. } => {
-                            println!("Block matched {:?}", height);
+                            let txs = transactions.into_iter().map(|tx| (tx, TxHeight::Confirmed(height as u32))).collect();
+                            setup.blocks_matched.remove(&hash);
 
-                            let _ = update.insert_checkpoint(BlockId { height: height as u32, hash })?;
-
-                            for tx in transactions {
-                                txs.push((tx, TxHeight::Confirmed(height as u32)));
-                            }
-
-                            blocks_matched.remove(&hash);
-
-                            if processed_height >= peer_height && blocks_matched.is_empty() {
-                                break;
-                            }
-                        }
-                        Event::TxStatusChanged { .. } => {
-                            println!("Tx status changed {:?}", &event);
+                            return Ok(CbfEvent::BlockMatched(BlockId { hash, height: height as u32 }, txs));
                         }
                         Event::FilterProcessed { matched, height, block, .. } => {
-                            let _ = update.insert_checkpoint(BlockId { height: height as u32, hash: block })?;
-
-                            processed_height = height;
+                            setup.processed_height = Some(BlockId { height: height as u32, hash: block});
                             if matched {
-                                println!("Filter matched @ height {} : {:?}", height, &event);
-                                blocks_matched.insert(block);
+                                println!("* filter matched @ height {} : {:?}", height, &event);
+                                setup.blocks_matched.insert(block);
                             }
 
-                            if processed_height == peer_height && blocks_matched.is_empty() {
-                                break;
+                            if setup.processed_height.map(|h| h.height) == setup.peer_height && setup.blocks_matched.is_empty() {
+                                return Ok(CbfEvent::ChainSynced(setup.processed_height));
                             }
                         }
                         _ => {}
@@ -150,46 +150,6 @@ impl CbfClient {
                 }
             }
         }
-
-        for (tx, height) in txs {
-            keychain_tracker.txout_index.pad_all_with_unused(stop_gap);
-            if keychain_tracker.txout_index.is_relevant(&tx) {
-                println!("* adding tx to update: {} @ {}", tx.txid(), height);
-                let _ = update.insert_tx(tx.clone(), height)?;
-            }
-            keychain_tracker.txout_index.scan(&tx);
-        }
-
-        let new_indexes = keychain_tracker.txout_index.last_active_indicies();
-        println!("new indexes: {:#?}", new_indexes);
-
-        let changeset = KeychainChangeSet {
-            derivation_indices: keychain_tracker
-                .txout_index
-                .keychains()
-                .keys()
-                .filter_map(|keychain| {
-                    let old_index = old_indexes.get(keychain);
-                    let new_index = new_indexes.get(keychain);
-                    println!(
-                        "getting derivation_indices: old={:?}, new={:?}",
-                        old_index, new_index
-                    );
-
-                    match new_index {
-                        Some(new_ind) if new_index > old_index => {
-                            Some((keychain.clone(), *new_ind))
-                        }
-                        _ => None,
-                    }
-                })
-                .collect(),
-            chain_graph: keychain_tracker
-                .chain_graph()
-                .determine_changeset(&update)?,
-        };
-
-        Ok(changeset)
     }
 }
 
