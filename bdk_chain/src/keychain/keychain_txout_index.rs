@@ -253,6 +253,38 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
             .map(|((_, derivation_index), spk)| (*derivation_index, spk))
     }
 
+    /// Convenience method to get [`revealed_and_lookahead_spks_of_keychain`]
+    /// of all keychains.
+    ///
+    /// [`revealed_and_lookahead_spks_of_keychain`]: Self::revealed_and_lookahead_spks_of_keychain
+    pub fn revealed_and_lookahead_spks_of_all_keychains(
+        &self,
+    ) -> BTreeMap<K, impl Iterator<Item = (u32, &Script)> + Clone> {
+        self.keychains
+            .keys()
+            .map(|keychain| {
+                (
+                    keychain.clone(),
+                    self.revealed_and_lookahead_spks_of_keychain(keychain),
+                )
+            })
+            .collect()
+    }
+
+    /// Iterates over the script pubkeys revealed and the ones contained in
+    /// the lookahead under `keychain`.
+    pub fn revealed_and_lookahead_spks_of_keychain(
+        &self,
+        keychain: &K,
+    ) -> impl DoubleEndedIterator<Item = (u32, &Script)> + Clone {
+        let lookahead = self.lookahead.get(keychain).unwrap_or(&0);
+        let next_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1) + lookahead;
+        self.inner
+            .all_spks()
+            .range((keychain.clone(), u32::MIN)..(keychain.clone(), next_index))
+            .map(|((_, derivation_index), spk)| (*derivation_index, spk))
+    }
+
     /// Get the next derivation index for `keychain`. This is the index after the last revealed
     /// derivation index.
     ///
