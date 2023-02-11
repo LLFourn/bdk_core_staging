@@ -391,7 +391,7 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         }
     }
 
-    /// Attempts to reveal the next script pubkey for `keychain`. This is the script pubkey
+    /// Attempts to reveal the next script pubkey for `keychain`.
     ///
     /// Returns the derivation index of the revealed script pubkey, the revealed script pubkey and a
     /// [`DerivationAdditions`] which represents changes in the last revealed index (if any).
