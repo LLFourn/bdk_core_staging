@@ -182,20 +182,55 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         self.replenish_lookahead(keychain);
     }
 
+    /// Convenience method to call [`lookahead_to_target`] for multiple keychains.
+    ///
+    /// [`lookahead_to_target`]: Self::lookahead_to_target
+    pub fn lookahead_to_target_multi(&mut self, target_indexes: BTreeMap<K, u32>) {
+        for (keychain, target_index) in target_indexes {
+            self.lookahead_to_target(&keychain, target_index)
+        }
+    }
+
+    /// Store lookahead scripts until `target_index`.
+    ///
+    /// This does not change the `lookahead` setting.
+    pub fn lookahead_to_target(&mut self, keychain: &K, target_index: u32) {
+        let next_index = self.next_store_index(keychain);
+        if let Some(temp_lookahead) = target_index.checked_sub(next_index).filter(|&v| v > 0) {
+            let old_lookahead = self.lookahead.insert(keychain.clone(), temp_lookahead);
+            self.replenish_lookahead(keychain);
+
+            // revert
+            match old_lookahead {
+                Some(lookahead) => self.lookahead.insert(keychain.clone(), lookahead),
+                None => self.lookahead.remove(keychain),
+            };
+        }
+    }
+
     fn replenish_lookahead(&mut self, keychain: &K) {
         let descriptor = self.keychains.get(keychain).expect("keychain must exist");
-        let next_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1);
+        let next_store_index = self.next_store_index(keychain);
+        let next_reveal_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1);
         let lookahead = self.lookahead.get(keychain).map_or(0, |v| *v);
 
         for (new_index, new_spk) in range_descriptor_spks(
             Cow::Borrowed(descriptor),
-            next_index..next_index + lookahead,
+            next_store_index..next_reveal_index + lookahead,
         ) {
             let _inserted = self
                 .inner
                 .insert_spk((keychain.clone(), new_index), new_spk);
-            debug_assert!(_inserted, "must not have existing spk");
+            debug_assert!(_inserted, "replenish lookahead: must not have existing spk: keychain={:?}, lookahead={}, next_store_index={}, next_reveal_index={}", keychain, lookahead, next_store_index, next_reveal_index);
         }
+    }
+
+    fn next_store_index(&self, keychain: &K) -> u32 {
+        self.inner()
+            .all_spks()
+            .range((keychain.clone(), u32::MIN)..(keychain.clone(), u32::MAX))
+            .last()
+            .map_or(0, |((_, v), _)| *v + 1)
     }
 
     /// Generates script pubkey iterators for every `keychain`. The iterators iterate over all
@@ -346,28 +381,32 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         let has_wildcard = descriptor.has_wildcard();
 
         let target_index = if has_wildcard { target_index } else { 0 };
-        let next_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1);
+        let next_store_index = self.next_store_index(keychain);
+        let next_reveal_index = self.last_revealed.get(keychain).map_or(0, |v| *v + 1);
         let lookahead = self.lookahead.get(keychain).map_or(0, |v| *v);
 
         // if we are able to reveal new indexes, the latest revealed index goes here
         let mut revealed_index = None;
 
         // if target is already surpassed, we have nothing to reveal
-        if next_index <= target_index
+        if next_reveal_index <= target_index
             // if target is already stored (due to lookahead), this can be our new revealed index
-            && target_index < next_index + lookahead
+            && target_index < next_reveal_index + lookahead
         {
             revealed_index = Some(target_index);
         }
 
         // we range over indexes that are not stored
-        let range = next_index + lookahead..=target_index + lookahead;
+        let range = next_reveal_index + lookahead..=target_index + lookahead;
 
         for (new_index, new_spk) in range_descriptor_spks(Cow::Borrowed(descriptor), range) {
-            let _inserted = self
-                .inner
-                .insert_spk((keychain.clone(), new_index), new_spk);
-            debug_assert!(_inserted, "must not have existing spk",);
+            // no need to store if already stored
+            if new_index >= next_store_index {
+                let _inserted = self
+                    .inner
+                    .insert_spk((keychain.clone(), new_index), new_spk);
+                debug_assert!(_inserted, "must not have existing spk",);
+            }
 
             // everything after `target_index` is stored for lookahead only
             if new_index <= target_index {
@@ -380,12 +419,18 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 let _old_index = self.last_revealed.insert(keychain.clone(), index);
                 debug_assert!(_old_index < Some(index));
                 (
-                    range_descriptor_spks(Cow::Owned(descriptor.clone()), next_index..index + 1),
+                    range_descriptor_spks(
+                        Cow::Owned(descriptor.clone()),
+                        next_reveal_index..index + 1,
+                    ),
                     DerivationAdditions([(keychain.clone(), index)].into()),
                 )
             }
             None => (
-                range_descriptor_spks(Cow::Owned(descriptor.clone()), next_index..next_index),
+                range_descriptor_spks(
+                    Cow::Owned(descriptor.clone()),
+                    next_reveal_index..next_reveal_index,
+                ),
                 DerivationAdditions::default(),
             ),
         }
