@@ -1,10 +1,13 @@
 mod electrum;
-use bdk_chain::{bitcoin::Network, keychain::KeychainScan};
+use bdk_chain::{
+    bitcoin::{Network, Script},
+    TxHeight,
+};
 use bdk_cli::{
     anyhow::{self, Context},
     clap::{self, Parser, Subcommand},
 };
-use electrum::ElectrumClient;
+use electrum::{ElectrumClient, ScanParams};
 use std::{collections::BTreeMap, fmt::Debug, io, io::Write};
 
 use electrum_client::{Client, ConfigBuilder, ElectrumApi};
@@ -33,6 +36,10 @@ enum ElectrumCommands {
         #[clap(flatten)]
         scan_option: ScanOption,
     },
+    /// Scan unspent outpoints for spends or changes to confirmation status of residing tx
+    SyncUnspent,
+    /// Scan unconfirmed transactions for updates
+    SyncUnconfirmed,
 }
 
 #[derive(Parser, Debug, Clone, PartialEq)]
@@ -58,7 +65,7 @@ fn main() -> anyhow::Result<()> {
         })
         .build();
 
-    let client = ElectrumClient::new(Client::from_config(electrum_url, config)?)?;
+    let client = ElectrumClient::<TxHeight>::new(Client::from_config(electrum_url, config)?)?;
 
     let electrum_cmd = match args.command {
         bdk_cli::Commands::ChainSpecific(electrum_cmd) => electrum_cmd,
@@ -74,7 +81,7 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let (chain_update, last_active_indices) = match electrum_cmd {
+    let response = match electrum_cmd {
         ElectrumCommands::Scan {
             stop_gap,
             scan_option,
@@ -102,23 +109,20 @@ fn main() -> anyhow::Result<()> {
                             }),
                         )
                     })
-                    .collect();
-
+                    .collect::<BTreeMap<_, _>>();
                 let local_chain = tracker.chain().checkpoints().clone();
                 (spk_iterators, local_chain)
             };
 
-            // we scan the spks **wihtout** a lock on the tracker
-            let (new_sparsechain, last_active_indices) = client.wallet_txid_scan(
-                spk_iterators,
-                Some(stop_gap),
-                &local_chain,
-                scan_option.batch_size,
-            )?;
+            let params = ScanParams {
+                keychain_spks: spk_iterators,
+                stop_gap,
+                batch_size: scan_option.batch_size,
+                ..Default::default()
+            };
 
-            eprintln!();
-
-            (new_sparsechain, last_active_indices)
+            // we scan the spks **without** a lock on the tracker
+            client.scan(&local_chain, params)?
         }
         ElectrumCommands::Sync {
             mut unused,
@@ -181,45 +185,70 @@ fn main() -> anyhow::Result<()> {
             };
 
             // we scan the spks **without** a lock on the tracker
-            let new_sparsechain = client
-                .spk_txid_scan(spks, &local_chain, scan_option.batch_size)
-                .context("scanning the blockchain")?;
+            let params = ScanParams::<bdk_cli::Keychain, Vec<(u32, Script)>> {
+                arbitary_spks: spks.collect(),
+                batch_size: scan_option.batch_size,
+                ..Default::default()
+            };
+            client
+                .scan(&local_chain, params)
+                .context("scanning the blockchain")?
+        }
+        ElectrumCommands::SyncUnspent => {
+            // get all utxo outpoints
+            let tracker = tracker.lock().unwrap();
+            let local_chain = tracker.checkpoints().clone();
+            let utxo_outpoints = tracker
+                .full_utxos()
+                .map(|(_, txo)| txo.outpoint)
+                .collect::<Vec<_>>();
+            drop(tracker);
 
-            (new_sparsechain, BTreeMap::default())
+            println!("utxos: {}", utxo_outpoints.len());
+
+            let params = ScanParams::<bdk_cli::Keychain, Vec<(u32, Script)>> {
+                outpoints: utxo_outpoints,
+                ..Default::default()
+            };
+            client
+                .scan(&local_chain, params)
+                .context("scaning unspents")?
+        }
+        ElectrumCommands::SyncUnconfirmed => {
+            let tracker = tracker.lock().unwrap();
+            let local_chain = tracker.checkpoints().clone();
+            let unconfirmed_txs = tracker
+                .chain()
+                .range_txids_by_height(TxHeight::Unconfirmed..)
+                .filter_map(|(_, txid)| tracker.graph().get_tx(*txid))
+                .cloned()
+                .collect::<Vec<_>>();
+            drop(tracker);
+
+            let params = ScanParams::<bdk_cli::Keychain, Vec<(u32, Script)>> {
+                full_txs: unconfirmed_txs,
+                ..Default::default()
+            };
+            client
+                .scan(&local_chain, params)
+                .context("scanning unconfirmed")?
         }
     };
 
-    let new_txids = {
-        let tracker = &*tracker.lock().unwrap();
-        chain_update
-            .txids()
-            .filter(|(_, txid)| tracker.graph().get_tx(*txid).is_none())
-            .map(|&(_, txid)| txid)
-            .collect::<Vec<_>>()
-    };
+    let missing_txids = tracker.lock().unwrap().find_missing_txids(&response);
 
     // fetch the missing full transactions **without** a lock on the tracker
     let new_txs = client
-        .batch_transaction_get(new_txids.iter())
+        .batch_transaction_get(&missing_txids)
         .context("fetching full transactions")?;
 
     {
         // Get a final short lock to apply the changes
-        let tracker = &mut *tracker.lock().unwrap();
-        let update = tracker
-            .chain_graph()
-            .inflate_update(chain_update, new_txs)
-            .context("inflating update")?;
-        let changeset = {
-            let keychain_scan = KeychainScan {
-                update: update,
-                last_active_indices,
-            };
-            tracker.determine_changeset(&keychain_scan)?
-        };
-        let db = &mut *db.lock().unwrap();
+        let mut tracker = tracker.lock().unwrap();
+        let changeset = response.apply(new_txs, &mut tracker)?;
+        let mut db = db.lock().unwrap();
         db.append_changeset(&changeset)?;
-        tracker.apply_changeset(changeset);
-    }
+    };
+
     Ok(())
 }

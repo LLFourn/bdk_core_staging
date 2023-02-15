@@ -11,4 +11,6 @@ bdk_cli = { path = "../bdk_cli_lib" }
 bdk_file_store = { path = "../bdk_file_store" }
 
 # Electrum
+# electrum-client = { git = "https://github.com/evanlinjin/rust-electrum-client", branch = "batch-raw" }
 electrum-client = { version = "0.12" }
+serde_json = { version = "1.0" }
