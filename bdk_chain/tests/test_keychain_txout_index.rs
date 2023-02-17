@@ -61,8 +61,12 @@ fn test_set_all_derivation_indices() {
 fn test_lookahead() {
     let (mut txout_index, external_desc, internal_desc) = init_txout_index();
 
-    txout_index.set_lookahead(&TestKeychain::External, 10);
-    txout_index.set_lookahead(&TestKeychain::Internal, 20);
+    // ensure it does not break anything if lookahead is set multiple times
+    (0..=10).for_each(|lookahead| txout_index.set_lookahead(&TestKeychain::External, lookahead));
+    (0..=20)
+        .filter(|v| v % 2 == 0)
+        .for_each(|lookahead| txout_index.set_lookahead(&TestKeychain::Internal, lookahead));
+
     assert_eq!(txout_index.inner().all_spks().len(), 30);
 
     // given:
