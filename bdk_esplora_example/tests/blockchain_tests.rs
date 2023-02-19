@@ -18,7 +18,7 @@ use electrsd::{
     ElectrsD,
 };
 use std::env;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn setup_test_servers() -> (BitcoinD, ElectrsD) {
     let bitcoin_daemon: BitcoinD = {
@@ -45,6 +45,24 @@ fn setup_test_servers() -> (BitcoinD, ElectrsD) {
     };
 
     (bitcoin_daemon, electrs_daemon)
+}
+
+fn wait_for_tx_appears_in_esplora(wait_seconds: u64, electrs_daemon: &ElectrsD, txid: &bdk_chain::bitcoin::Txid) -> bool {
+    //let mut runs = 0;
+    //while runs < wait_seconds {
+    let instant = Instant::now();
+    loop {
+        let wait_tx = electrs_daemon.client.transaction_get(txid);
+        if wait_tx.is_ok() {
+            return true;
+        }
+        //std::thread::sleep(Duration::from_secs(1));
+        //runs = runs + 1;
+        if instant.elapsed() >= Duration::from_secs(wait_seconds) {
+            return false;
+        }
+    }
+    //return false;
 }
 
 fn generate_blocks_and_wait(num: usize, bitcoin_daemon: &BitcoinD, electrs_daemon: &ElectrsD) {
@@ -195,8 +213,8 @@ fn test_unconfirmed_balance() -> Result<()> {
         )
         .unwrap();
 
-    generate_blocks_and_wait(0, &bitcoin_daemon, &electrs_daemon);
-
+    wait_for_tx_appears_in_esplora(5, &electrs_daemon, &txid);
+    
     bdk_esplora_example::run_sync(false, false, true, &keychain_tracker, &db, &client)?;
 
     //check balance of wallet
