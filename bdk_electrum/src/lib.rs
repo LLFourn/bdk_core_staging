@@ -1,9 +1,87 @@
+//! This crate is used for updating [`KeychainTracker`] (from the [`bdk_chain`] crate) with data
+//! from an electrum server.
+//!
+//! The star of the show is the [`ElectrumClient::scan`] method, which scans for relevant blockchain
+//! data (via electrum). `scan` takes in [`ScanParams`], and outputs a [`ScanUpdate`].
+//!
+//! A [`ScanUpdate`] only includes `txid`s and no full transactions. The caller is responsible for
+//! obtaining full transactions before applying it to [`KeychainTracker`]. This can be done with
+//! these steps:
+//!
+//! 1. Determine which full transactions are missing from [`KeychainTracker`]. The method
+//! [`find_missing_txids`] of [`KeychainTracker`] can be used.
+//!
+//! 2. Obtaining the full transactions. To do this via electrum, the method
+//! [`batch_transaction_get`] can be used.
+//!
+//! ```
+//! # #[cfg(feature = "example_utils")]
+//! # {
+//! # use bdk_chain::example_utils::*;
+//! # use bdk_chain::collections::BTreeMap;
+//! # use bdk_chain::keychain::KeychainTracker;
+//! # use bdk_chain::TxHeight;
+//! # use bdk_chain::bitcoin::{BlockHash, Script, Transaction};
+//! # use bdk_electrum::*;
+//! # use bdk_electrum::example_utils::*;
+//! # use electrum_client::{Config, ElectrumApi};
+//! # let external_descriptor = new_external_descriptor();
+//! # let internal_descriptor = new_internal_descriptor();
+//! # let example_env = Environment::new();
+//! # let url = example_env.electrum_url();
+//! # let config = Config::builder().validate_domain(false).build();
+//! # #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
+//! # enum MyKeychain {
+//! #     External,
+//! #     Internal,
+//! # }
+//! // Create our electrum client.
+//! let client = ElectrumClient::<TxHeight>::from_config(url, config).expect("must connect");
+//!
+//! // Initialize our tracker (we want to update this).
+//! let mut tracker = KeychainTracker::<MyKeychain, TxHeight, Transaction>::default();
+//! tracker.add_keychain(MyKeychain::External, external_descriptor);
+//! tracker.add_keychain(MyKeychain::Internal, internal_descriptor);
+//!
+//! // Prepare parameters for scanning the blockchain (via electrum).
+//! let scan_params = ScanParams::<MyKeychain, _> {
+//!     keychain_spks: tracker.txout_index.spks_of_all_keychains(),
+//!     stop_gap: 10,
+//!     ..Default::default()
+//! };
+//!
+//! // Do the actual scan.
+//! let scan_update = client
+//!     .scan(tracker.chain().checkpoints(), scan_params)
+//!     .expect("must scan");
+//!
+//! // Find txids of full transactions that are still missing before applying the update.
+//! let missing_txids = tracker.find_missing_txids(&scan_update);
+//!
+//! // Fetch the full transactions.
+//! let new_txs = client.batch_transaction_get(&missing_txids).expect("txs must exist");
+//!
+//! // Apply the update to the tracker.
+//! let _ = scan_update.apply(new_txs, &mut tracker).expect("must apply");
+//!
+//! # }
+//! ```
+//!
+//! [`KeychainTracker`]: bdk_chain::keychain::KeychainTracker
+//! [`ElectrumClient::scan`]: ElectrumClient::scan
+//! [`find_missing_txids`]: KeychainTracker::find_missing_txids
+//! [`batch_transaction_get`]: ElectrumApi::batch_transaction_get
+
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Debug,
     marker::PhantomData,
     ops::Deref,
 };
+
+#[doc(hidden)]
+#[cfg(feature = "example_utils")]
+pub mod example_utils;
 
 use bdk_chain::{
     bitcoin::{BlockHash, OutPoint, Script, Transaction, Txid},
@@ -14,8 +92,13 @@ use bdk_chain::{
 };
 use electrum_client::{Client, ElectrumApi, GetHistoryRes};
 
+/// Represents a [`ChainPosition`] that can be created via [`ElectrumClient`].
+///
+/// This is used internally within [`ElectrumClient`] so updates can be created for any
+/// [`ChainPosition`] that implements [`ElectrumChainPosition`].
 pub trait ElectrumChainPosition: ChainPosition + Sized {
-    fn get_chain_position(
+    /// Construct a [`ChainPosition`] implementation from the provided `txid` and `height`.
+    fn position_from_electrum(
         client: &ElectrumClient<Self>,
         txid: Txid,
         height: TxHeight,
@@ -23,7 +106,7 @@ pub trait ElectrumChainPosition: ChainPosition + Sized {
 }
 
 impl ElectrumChainPosition for TxHeight {
-    fn get_chain_position(
+    fn position_from_electrum(
         _: &ElectrumClient<Self>,
         _: Txid,
         height: TxHeight,
@@ -33,7 +116,7 @@ impl ElectrumChainPosition for TxHeight {
 }
 
 impl ElectrumChainPosition for ConfirmationTime {
-    fn get_chain_position(
+    fn position_from_electrum(
         client: &ElectrumClient<Self>,
         _: Txid,
         height: TxHeight,
@@ -48,6 +131,9 @@ impl ElectrumChainPosition for ConfirmationTime {
     }
 }
 
+/// Structure to get data from electrum to update [`KeychainTracker`].
+///
+/// This uses [`electrum_client::Client`] internally.
 pub struct ElectrumClient<P> {
     inner: Client,
     pos_marker: PhantomData<P>,
@@ -64,18 +150,34 @@ impl<P> ElectrumClient<P>
 where
     P: ChainPosition + ElectrumChainPosition,
 {
-    pub fn new(client: Client) -> Result<Self, ElectrumError> {
+    pub fn new(url: &str) -> Result<Self, ElectrumError> {
         Ok(Self {
-            inner: client,
+            inner: electrum_client::Client::new(url)?,
             pos_marker: Default::default(),
         })
     }
 
-    pub fn get_chain_position(&self, txid: Txid, height: TxHeight) -> Result<P, ElectrumError> {
-        P::get_chain_position(self, txid, height)
+    pub fn from_config(url: &str, config: electrum_client::Config) -> Result<Self, ElectrumError> {
+        Ok(Self {
+            inner: electrum_client::Client::from_config(url, config)?,
+            pos_marker: Default::default(),
+        })
     }
 
-    /// Fetch latest block height.
+    /// Create a new [`ElectrumClient`] from the provided [`electrum_client::Client`].
+    pub fn from_client(client: Client) -> Self {
+        Self {
+            inner: client,
+            pos_marker: Default::default(),
+        }
+    }
+
+    /// This publicly exposes [`ElectrumChainPosition::position_from_electrum`].
+    pub fn get_chain_position(&self, txid: Txid, height: TxHeight) -> Result<P, ElectrumError> {
+        P::position_from_electrum(self, txid, height)
+    }
+
+    /// Fetch the latest block height.
     pub fn get_tip(&self) -> Result<(u32, BlockHash), electrum_client::Error> {
         // TODO: unsubscribe when added to the client, or is there a better call to use here?
         Ok(self
@@ -389,10 +491,13 @@ where
         })
     }
 
-    /// Scan for a keychain tracker, and create an initial [`bdk_chain::sparse_chain::SparseChain`] update candidate.
-    /// This will only contain [`Txid`]s in SparseChain, and no actual transaction data.
+    /// Scan the blockchain (via electrum) for data specified by [`ScanParams`]. This returns a
+    /// [`ScanUpdate`] which can be applied to a [`KeychainTracker`] after we find all the missing
+    /// full transactions.
     ///
-    /// User needs to fetch the required transaction data and create the final [`bdk_chain::keychain::KeychainChangeSet`] before applying it.
+    /// Refer to [crate-level documentation] for more.
+    ///
+    /// [crate-level documentation]: crate
     pub fn scan<K, S>(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
@@ -512,13 +617,24 @@ where
     }
 }
 
+/// Parameters for [`ElectrumClient::scan`].
 pub struct ScanParams<K, S: IntoIterator<Item = (u32, Script)>> {
+    /// Indexed script pubkeys of each keychain to scan transaction histories for.
     pub keychain_spks: BTreeMap<K, S>,
+    /// Arbitary script pubkeys to scan transaction histories for, which are not associated to a
+    /// keychain.
     pub arbitary_spks: Vec<Script>,
+    /// Txids to scan for. The update will update the [`ChainPosition`]s for these.
     pub txids: Vec<Txid>,
+    /// Full transactions to scan for. The update will update the [`ChainPosition`]s for these.
     pub full_txs: Vec<Transaction>,
+    /// Outpoints to scan for. The update will try include the transaction that spends this outpoint
+    /// alongside the transaction which contains this outpoint.
     pub outpoints: Vec<OutPoint>,
+    /// The theshold number of [`ScanParams::keychain_spks`] that return empty histories before we
+    /// stop scanning for `keychain_spks`.
     pub stop_gap: usize,
+    /// The batch size to use for requests that can be batched.
     pub batch_size: usize,
 }
 
@@ -530,8 +646,8 @@ impl<K, S: IntoIterator<Item = (u32, Script)>> Default for ScanParams<K, S> {
             txids: Default::default(),
             full_txs: Default::default(),
             outpoints: Default::default(),
-            stop_gap: 0,
-            batch_size: 1,
+            stop_gap: 10,
+            batch_size: 10,
         }
     }
 }
@@ -545,8 +661,11 @@ impl<K, S: IntoIterator<Item = (u32, Script)>> From<BTreeMap<K, S>> for ScanPara
     }
 }
 
+/// The result of [`ElectrumClient::scan`].
 pub struct ScanUpdate<K, P> {
+    /// The internal [`SparseChain`] update.
     pub update: SparseChain<P>,
+    /// The last keychain script pubkey indices which had transaction histories.
     pub last_active_indices: BTreeMap<K, u32>,
 }
 
@@ -566,6 +685,9 @@ impl<K, P> AsRef<SparseChain<P>> for ScanUpdate<K, P> {
 }
 
 impl<K: Ord + Clone + Debug, P: ChainPosition> ScanUpdate<K, P> {
+    /// Apply the [`ScanUpdate`] to the `tracker`.
+    ///
+    /// This will fail if there are missing full transactions not provided via `new_txs`.
     pub fn apply(
         self,
         new_txs: Vec<Transaction>,
@@ -576,9 +698,13 @@ impl<K: Ord + Clone + Debug, P: ChainPosition> ScanUpdate<K, P> {
     }
 }
 
+/// Error type returned by [`ElectrumClient`].
 #[derive(Debug)]
 pub enum ElectrumError {
+    /// Error of the internal [`electrum_client::Client`].
     Client(electrum_client::Error),
+    /// Error that occurs when the provided outpoint (via [`ScanParams`]) does not exist on the
+    /// transaction (`vout` is too high).
     InvalidOutPoint(OutPoint),
 }
 

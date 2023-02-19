@@ -10,7 +10,7 @@ use bdk_cli::{
 use bdk_electrum::{ElectrumError, ScanParams};
 use std::{collections::BTreeMap, fmt::Debug, io, io::Write, ops::Deref};
 
-use electrum_client::{Client, ConfigBuilder, ElectrumApi};
+use electrum_client::{Config, ElectrumApi};
 
 #[derive(Subcommand, Debug, Clone)]
 enum ElectrumCommands {
@@ -61,8 +61,8 @@ impl Deref for WrappedClient {
 }
 
 impl WrappedClient {
-    fn new(client: Client) -> Result<Self, ElectrumError> {
-        bdk_electrum::ElectrumClient::new(client).map(Self)
+    fn new(url: &str, config: electrum_client::Config) -> Result<Self, ElectrumError> {
+        bdk_electrum::ElectrumClient::from_config(url, config).map(Self)
     }
 }
 
@@ -84,14 +84,14 @@ fn main() -> anyhow::Result<()> {
         Network::Regtest => "tcp://localhost:60401",
         Network::Signet => "tcp://signet-electrumx.wakiyamap.dev:50001",
     };
-    let config = ConfigBuilder::new()
+    let config = Config::builder()
         .validate_domain(match args.network {
             Network::Bitcoin => true,
             _ => false,
         })
         .build();
 
-    let client = WrappedClient::new(Client::from_config(electrum_url, config)?)?;
+    let client = WrappedClient::new(electrum_url, config)?;
 
     let electrum_cmd = match args.command {
         bdk_cli::Commands::ChainSpecific(electrum_cmd) => electrum_cmd,

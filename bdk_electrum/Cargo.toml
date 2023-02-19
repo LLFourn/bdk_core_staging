@@ -11,3 +11,7 @@ license = "MIT OR Apache-2.0"
 bdk_chain = { path = "../bdk_chain", features = ["serde", "miniscript"] }
 electrum-client = { version = "0.12" }
 serde_json = { version = "1.0" }
+electrsd = { version = "0.22", features = ["electrs_0_8_10", "bitcoind_22_0"], optional = true }
+
+[features]
+example_utils = ["electrsd"]
