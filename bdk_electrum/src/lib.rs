@@ -12,68 +12,7 @@ use bdk_chain::{
     sparse_chain::{self, ChainPosition, SparseChain},
     BlockId, ConfirmationTime, TxHeight,
 };
-use bdk_cli::Broadcast;
 use electrum_client::{Client, ElectrumApi, GetHistoryRes};
-
-#[derive(Debug)]
-pub enum ElectrumError {
-    Client(electrum_client::Error),
-    InvalidOutPoint(OutPoint),
-}
-
-impl core::fmt::Display for ElectrumError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ElectrumError::Client(e) => write!(f, "{}", e),
-            ElectrumError::InvalidOutPoint(op) => {
-                write!(f, "outpoint {}:{} does not exist", op.txid, op.vout)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ElectrumError {}
-
-impl From<electrum_client::Error> for ElectrumError {
-    fn from(e: electrum_client::Error) -> Self {
-        Self::Client(e)
-    }
-}
-
-impl From<serde_json::Error> for ElectrumError {
-    fn from(value: serde_json::Error) -> Self {
-        Self::Client(value.into())
-    }
-}
-
-#[derive(Debug)]
-enum InternalError {
-    ElectrumError(ElectrumError),
-    Reorg,
-}
-
-impl core::fmt::Display for InternalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            InternalError::ElectrumError(e) => core::fmt::Display::fmt(e, f),
-            InternalError::Reorg => write!(f, "reorg occured during update"),
-        }
-    }
-}
-
-impl std::error::Error for InternalError {}
-
-impl From<ElectrumError> for InternalError {
-    fn from(value: ElectrumError) -> Self {
-        Self::ElectrumError(value)
-    }
-}
-
-impl From<electrum_client::Error> for InternalError {
-    fn from(value: electrum_client::Error) -> Self {
-        Self::ElectrumError(value.into())
-    }
-}
 
 pub trait ElectrumChainPosition: ChainPosition + Sized {
     fn get_chain_position(
@@ -118,14 +57,6 @@ impl<P> Deref for ElectrumClient<P> {
     type Target = Client;
     fn deref(&self) -> &Self::Target {
         &self.inner
-    }
-}
-
-impl<P> Broadcast for ElectrumClient<P> {
-    type Error = electrum_client::Error;
-    fn broadcast(&self, tx: &bdk_chain::bitcoin::Transaction) -> Result<(), Self::Error> {
-        let _ = self.inner.transaction_broadcast(tx)?;
-        Ok(())
     }
 }
 
@@ -642,5 +573,65 @@ impl<K: Ord + Clone + Debug, P: ChainPosition> ScanUpdate<K, P> {
     ) -> Result<KeychainChangeSet<K, P, Transaction>, InflateAndUpdateError<P>> {
         tracker.set_lookahead_to_targets(self.last_active_indices);
         tracker.apply_sparsechain_update(self.update, new_txs)
+    }
+}
+
+#[derive(Debug)]
+pub enum ElectrumError {
+    Client(electrum_client::Error),
+    InvalidOutPoint(OutPoint),
+}
+
+impl core::fmt::Display for ElectrumError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ElectrumError::Client(e) => write!(f, "{}", e),
+            ElectrumError::InvalidOutPoint(op) => {
+                write!(f, "outpoint {}:{} does not exist", op.txid, op.vout)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ElectrumError {}
+
+impl From<electrum_client::Error> for ElectrumError {
+    fn from(e: electrum_client::Error) -> Self {
+        Self::Client(e)
+    }
+}
+
+impl From<serde_json::Error> for ElectrumError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Client(value.into())
+    }
+}
+
+#[derive(Debug)]
+enum InternalError {
+    ElectrumError(ElectrumError),
+    Reorg,
+}
+
+impl core::fmt::Display for InternalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InternalError::ElectrumError(e) => core::fmt::Display::fmt(e, f),
+            InternalError::Reorg => write!(f, "reorg occured during update"),
+        }
+    }
+}
+
+impl std::error::Error for InternalError {}
+
+impl From<ElectrumError> for InternalError {
+    fn from(value: ElectrumError) -> Self {
+        Self::ElectrumError(value)
+    }
+}
+
+impl From<electrum_client::Error> for InternalError {
+    fn from(value: electrum_client::Error) -> Self {
+        Self::ElectrumError(value.into())
     }
 }

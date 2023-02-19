@@ -1,4 +1,3 @@
-mod electrum;
 use bdk_chain::{
     bitcoin::{Network, Script},
     TxHeight,
@@ -6,9 +5,10 @@ use bdk_chain::{
 use bdk_cli::{
     anyhow::{self, Context},
     clap::{self, Parser, Subcommand},
+    Broadcast,
 };
-use electrum::{ElectrumClient, ScanParams};
-use std::{collections::BTreeMap, fmt::Debug, io, io::Write};
+use bdk_electrum::{ElectrumError, ScanParams};
+use std::{collections::BTreeMap, fmt::Debug, io, io::Write, ops::Deref};
 
 use electrum_client::{Client, ConfigBuilder, ElectrumApi};
 
@@ -49,6 +49,32 @@ pub struct ScanOption {
     pub batch_size: usize,
 }
 
+/// A wrapped [`bdk_electrum::ElectrumClient`] that implements [`bdk_cli::Broadcast`].
+struct WrappedClient(bdk_electrum::ElectrumClient<TxHeight>);
+
+impl Deref for WrappedClient {
+    type Target = bdk_electrum::ElectrumClient<TxHeight>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl WrappedClient {
+    fn new(client: Client) -> Result<Self, ElectrumError> {
+        bdk_electrum::ElectrumClient::new(client).map(Self)
+    }
+}
+
+impl Broadcast for WrappedClient {
+    type Error = ElectrumError;
+
+    fn broadcast(&self, tx: &bdk_chain::bitcoin::Transaction) -> anyhow::Result<(), Self::Error> {
+        self.transaction_broadcast(tx)?;
+        Ok(())
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let (args, keymap, mut tracker, mut db) = bdk_cli::init::<ElectrumCommands, _>()?;
 
@@ -65,7 +91,7 @@ fn main() -> anyhow::Result<()> {
         })
         .build();
 
-    let client = ElectrumClient::<TxHeight>::new(Client::from_config(electrum_url, config)?)?;
+    let client = WrappedClient::new(Client::from_config(electrum_url, config)?)?;
 
     let electrum_cmd = match args.command {
         bdk_cli::Commands::ChainSpecific(electrum_cmd) => electrum_cmd,

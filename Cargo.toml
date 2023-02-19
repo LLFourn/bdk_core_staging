@@ -5,6 +5,7 @@ members = [
     "bdk_file_store",
     "bdk_cli_lib",
     "bdk_esplora_example",
+    "bdk_electrum",
     "bdk_electrum_example",
     "bdk_tmp_plan",
     "bdk_coin_select"
