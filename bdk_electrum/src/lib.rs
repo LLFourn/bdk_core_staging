@@ -150,6 +150,8 @@ impl<P> ElectrumClient<P>
 where
     P: ChainPosition + ElectrumChainPosition,
 {
+    /// Create a new [`ElectrumClient`] that is connected to electrum server at `url` with default
+    /// [`electrum_client::Config`].
     pub fn new(url: &str) -> Result<Self, ElectrumError> {
         Ok(Self {
             inner: electrum_client::Client::new(url)?,
@@ -157,6 +159,7 @@ where
         })
     }
 
+    /// Create a new [`ElectrumClient`] from the provided [`electrum_client::Config`].
     pub fn from_config(url: &str, config: electrum_client::Config) -> Result<Self, ElectrumError> {
         Ok(Self {
             inner: electrum_client::Client::from_config(url, config)?,
