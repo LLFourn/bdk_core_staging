@@ -1,3 +1,3 @@
 # BDK Electrum
 
-BDK Electrum client library for updating the keychain tracker.
+BDK Electrum client library for updating [`bdk_chain`] structures.

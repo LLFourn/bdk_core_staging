@@ -1,13 +1,15 @@
-mod esplora;
-use crate::esplora::Client;
-use bdk_chain::bitcoin::Network;
+use bdk_chain::{bitcoin::Network, TxHeight};
+use bdk_esplora::esplora_client::{self, BlockingClient};
+use bdk_esplora::EsploraExt;
 
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    num::NonZeroU8,
+};
 
-const DEFAULT_PARALLEL_REQUESTS: u8 = 5;
 use bdk_cli::{
     anyhow::{self, Context},
-    clap::{self, Subcommand},
+    clap::{self, Parser, Subcommand},
 };
 
 #[derive(Subcommand, Debug, Clone)]
@@ -17,19 +19,63 @@ enum EsploraCommands {
         /// When a gap this large has been found for a keychain it will stop.
         #[clap(long, default_value = "5")]
         stop_gap: usize,
+
+        #[clap(flatten)]
+        scan_options: ScanOptions,
     },
     /// Scans particular addresses using esplora API
     Sync {
         /// Scan all the unused addresses
         #[clap(long)]
-        unused: bool,
+        unused_spks: bool,
         /// Scan the script addresses that have unspent outputs
         #[clap(long)]
-        unspent: bool,
+        unspent_spks: bool,
         /// Scan every address that you have derived
         #[clap(long)]
-        all: bool,
+        all_spks: bool,
+        /// Scan unspent outpoints for spends or changes to confirmation status of residing tx
+        #[clap(long)]
+        unspent_outpoints: bool,
+        /// Scan unconfirmed transactions for updates
+        #[clap(long)]
+        unconfirmed_txs: bool,
+
+        #[clap(flatten)]
+        scan_options: ScanOptions,
     },
+}
+
+#[derive(Parser, Debug, Clone, PartialEq)]
+pub struct ScanOptions {
+    #[clap(long, default_value = "5")]
+    pub parallel_requests: NonZeroU8,
+}
+
+struct WrappedClient(BlockingClient);
+
+impl std::ops::Deref for WrappedClient {
+    type Target = BlockingClient;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+// impl bdk_cli::Broadcast for WrappedClient {
+//     type Error = bdk_esplora::esplora_client::Error;
+
+//     fn broadcast(&self, tx: &bdk_chain::bitcoin::Transaction) -> anyhow::Result<(), Self::Error> {
+//         self.0.broadcast(tx)
+//     }
+// }
+
+impl WrappedClient {
+    pub fn new(base_url: &str) -> Result<Self, esplora_client::Error> {
+        esplora_client::Builder::new(base_url)
+            .build_blocking()
+            .map(Self)
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -41,14 +87,14 @@ fn main() -> anyhow::Result<()> {
         Network::Signet => "https://mempool.space/signet/api",
     };
 
-    let client = Client::new(esplora_url, DEFAULT_PARALLEL_REQUESTS)?;
+    let client = WrappedClient::new(esplora_url)?;
 
     let esplora_cmd = match args.command {
         bdk_cli::Commands::ChainSpecific(esplora_cmd) => esplora_cmd,
         general_command => {
             return bdk_cli::handle_commands(
                 general_command,
-                |transaction| Ok(client.client.broadcast(transaction)?),
+                |transaction| Ok(client.broadcast(transaction)?),
                 &keychain_tracker,
                 &db,
                 args.network,
@@ -58,7 +104,10 @@ fn main() -> anyhow::Result<()> {
     };
 
     match esplora_cmd {
-        EsploraCommands::Scan { stop_gap } => {
+        EsploraCommands::Scan {
+            stop_gap,
+            scan_options,
+        } => {
             let (spk_iterators, local_chain) = {
                 // Get a short lock on the tracker to get the spks iterators
                 // and local chain state
@@ -90,7 +139,14 @@ fn main() -> anyhow::Result<()> {
 
             // we scan the iterators **without** a lock on the tracker
             let wallet_scan = client
-                .wallet_scan(spk_iterators, &local_chain, Some(stop_gap))
+                .scan(
+                    &local_chain,
+                    spk_iterators,
+                    core::iter::empty(),
+                    core::iter::empty(),
+                    stop_gap,
+                    scan_options.parallel_requests,
+                )
                 .context("scanning the blockchain")?;
             eprintln!();
 
@@ -103,66 +159,90 @@ fn main() -> anyhow::Result<()> {
             }
         }
         EsploraCommands::Sync {
-            mut unused,
-            mut unspent,
-            all,
+            mut unused_spks,
+            mut unspent_spks,
+            all_spks,
+            unspent_outpoints,
+            unconfirmed_txs,
+            scan_options,
         } => {
-            let (spks, local_chain) = {
-                // Get a short lock on the tracker to get the spks we're interested in
-                let tracker = &*keychain_tracker.lock().unwrap();
-                let txout_index = &tracker.txout_index;
-                if !(all || unused || unspent) {
-                    unused = true;
-                    unspent = true;
-                } else if all {
-                    unused = false;
-                    unspent = false
-                }
-                let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
-                    Box::new(core::iter::empty());
+            // Get a short lock on the tracker to get the spks we're interested in
+            let tracker = keychain_tracker.lock().unwrap();
 
-                if all {
-                    let all_spks = txout_index
-                        .all_spks()
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>();
-                    spks = Box::new(spks.chain(all_spks.into_iter().map(|(index, script)| {
-                        eprintln!("scanning {:?}", index);
-                        script
-                    })));
-                }
+            if !(all_spks || unused_spks || unspent_spks || unspent_outpoints || unconfirmed_txs) {
+                unused_spks = true;
+                unspent_spks = true;
+            } else if all_spks {
+                unused_spks = false;
+                unspent_spks = false
+            }
 
-                if unused {
-                    let unused_spks = txout_index
-                        .unused_spks(..)
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>();
-                    spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {
-                        eprintln!("Checking if address at {:?} has been used", index);
-                        script
-                    })));
-                }
+            let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
+                Box::new(core::iter::empty());
+            if all_spks {
+                let all_spks = tracker
+                    .txout_index
+                    .all_spks()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>();
+                spks = Box::new(spks.chain(all_spks.into_iter().map(|(index, script)| {
+                    eprintln!("scanning {:?}", index);
+                    script
+                })));
+            }
+            if unused_spks {
+                let unused_spks = tracker
+                    .txout_index
+                    .unused_spks(..)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>();
+                spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {
+                    eprintln!("Checking if address at {:?} has been used", index);
+                    script
+                })));
+            }
+            if unspent_spks {
+                let unspent_txouts = tracker
+                    .full_utxos()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>();
+                spks = Box::new(
+                    spks.chain(unspent_txouts.into_iter().map(|(_index, ftxout)| {
+                        eprintln!("checking if {} has been spent", ftxout.outpoint);
+                        ftxout.txout.script_pubkey
+                    })),
+                );
+            }
 
-                if unspent {
-                    let unspent_txouts = tracker
-                        .full_utxos()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>();
-                    spks = Box::new(spks.chain(unspent_txouts.into_iter().map(
-                        |(_index, ftxout)| {
-                            eprintln!("checking if {} has been spent", ftxout.outpoint);
-                            ftxout.txout.script_pubkey
-                        },
-                    )));
-                }
-                let local_chain = tracker.chain().checkpoints().clone();
-
-                (spks, local_chain)
+            let outpoints: Vec<_> = match unspent_outpoints {
+                true => tracker.full_txouts().map(|(_, txo)| txo.outpoint).collect(),
+                false => Default::default(),
             };
+
+            let txids: Vec<_> = match unconfirmed_txs {
+                true => tracker
+                    .chain()
+                    .range_txids_by_height(TxHeight::Unconfirmed..)
+                    .map(|(_, txid)| *txid)
+                    .collect(),
+                false => Default::default(),
+            };
+
+            let local_chain = tracker.chain().checkpoints().clone();
+
+            // drop lock on tracker
+            drop(tracker);
+
             // we scan the desired spks **without** a lock on the tracker
             let scan = client
-                .spk_scan(spks, &local_chain, None)
+                .scan_without_keychain(
+                    &local_chain,
+                    spks,
+                    txids,
+                    outpoints,
+                    scan_options.parallel_requests,
+                )
                 .context("scanning the blockchain")?;
 
             {

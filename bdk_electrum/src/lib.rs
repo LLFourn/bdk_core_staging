@@ -56,6 +56,9 @@ pub trait ElectrumExt {
     /// - `txids`: transactions that we want updated [`ChainPosition`]s for
     /// - `outpoints`: transactions associated with these outpoints (residing, spending) that we
     ///     want to included in the update
+    ///
+    /// The scan for each keychain stops after a gap of `stop_gap` script pubkeys with no associated
+    /// transactions. `batch_size` specifies how many script pubkeys to request for in one request.
     fn scan<K: Ord + Clone>(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
