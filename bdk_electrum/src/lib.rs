@@ -15,56 +15,8 @@
 //! [`batch_transaction_get`] can be used.
 //!
 //! ```
-//! # #[cfg(feature = "example_utils")]
-//! # {
-//! # use bdk_chain::example_utils::*;
-//! # use bdk_chain::collections::BTreeMap;
-//! # use bdk_chain::keychain::KeychainTracker;
-//! # use bdk_chain::TxHeight;
-//! # use bdk_chain::bitcoin::{BlockHash, Script, Transaction};
-//! # use bdk_electrum::*;
-//! # use bdk_electrum::example_utils::*;
-//! # use electrum_client::{Config, ElectrumApi};
-//! # let external_descriptor = new_external_descriptor();
-//! # let internal_descriptor = new_internal_descriptor();
-//! # let example_env = Environment::new();
-//! # let url = example_env.electrum_url();
-//! # let config = Config::builder().validate_domain(false).build();
-//! # #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
-//! # enum MyKeychain {
-//! #     External,
-//! #     Internal,
-//! # }
-//! // Create our electrum client.
-//! let client = ElectrumClient::<TxHeight>::from_config(url, config).expect("must connect");
-//!
-//! // Initialize our tracker (we want to update this).
-//! let mut tracker = KeychainTracker::<MyKeychain, TxHeight, Transaction>::default();
-//! tracker.add_keychain(MyKeychain::External, external_descriptor);
-//! tracker.add_keychain(MyKeychain::Internal, internal_descriptor);
-//!
-//! // Prepare parameters for scanning the blockchain (via electrum).
-//! let scan_params = ScanParams::<MyKeychain, _> {
-//!     keychain_spks: tracker.txout_index.spks_of_all_keychains(),
-//!     stop_gap: 10,
-//!     ..Default::default()
-//! };
-//!
-//! // Do the actual scan.
-//! let scan_update = client
-//!     .scan(tracker.chain().checkpoints(), scan_params)
-//!     .expect("must scan");
-//!
-//! // Find txids of full transactions that are still missing before applying the update.
-//! let missing_txids = tracker.find_missing_txids(&scan_update);
-//!
-//! // Fetch the full transactions.
-//! let new_txs = client.batch_transaction_get(&missing_txids).expect("txs must exist");
-//!
-//! // Apply the update to the tracker.
-//! let _ = scan_update.apply(new_txs, &mut tracker).expect("must apply");
-//!
-//! # }
+//! // [TODO] Implement this!
+//! println!("hello world");
 //! ```
 //!
 //! [`KeychainTracker`]: bdk_chain::keychain::KeychainTracker
@@ -79,10 +31,6 @@ use std::{
     ops::Deref,
 };
 
-#[doc(hidden)]
-#[cfg(feature = "example_utils")]
-pub mod example_utils;
-
 use bdk_chain::{
     bitcoin::{BlockHash, OutPoint, Script, Transaction, Txid},
     chain_graph::InflateAndUpdateError,
@@ -90,6 +38,7 @@ use bdk_chain::{
     sparse_chain::{self, ChainPosition, SparseChain},
     BlockId, ConfirmationTime, TxHeight,
 };
+pub use electrum_client;
 use electrum_client::{Client, ElectrumApi, GetHistoryRes};
 
 /// Represents a [`ChainPosition`] that can be created via [`ElectrumClient`].
@@ -655,6 +604,8 @@ impl<K, S: IntoIterator<Item = (u32, Script)>> Default for ScanParams<K, S> {
     }
 }
 
+impl<K, S: IntoIterator<Item = (u32, Script)>> ScanParams<K, S> {}
+
 impl<K, S: IntoIterator<Item = (u32, Script)>> From<BTreeMap<K, S>> for ScanParams<K, S> {
     fn from(value: BTreeMap<K, S>) -> Self {
         Self {
@@ -730,12 +681,6 @@ impl From<electrum_client::Error> for ElectrumError {
     }
 }
 
-impl From<serde_json::Error> for ElectrumError {
-    fn from(value: serde_json::Error) -> Self {
-        Self::Client(value.into())
-    }
-}
-
 #[derive(Debug)]
 enum InternalError {
     ElectrumError(ElectrumError),
@@ -750,8 +695,6 @@ impl core::fmt::Display for InternalError {
         }
     }
 }
-
-impl std::error::Error for InternalError {}
 
 impl From<ElectrumError> for InternalError {
     fn from(value: ElectrumError) -> Self {

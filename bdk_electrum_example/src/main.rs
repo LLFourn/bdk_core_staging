@@ -7,10 +7,11 @@ use bdk_cli::{
     clap::{self, Parser, Subcommand},
     Broadcast,
 };
-use bdk_electrum::{ElectrumError, ScanParams};
+use bdk_electrum::{
+    electrum_client::{self, ElectrumApi},
+    ElectrumError, ScanParams,
+};
 use std::{collections::BTreeMap, fmt::Debug, io, io::Write, ops::Deref};
-
-use electrum_client::{Config, ElectrumApi};
 
 #[derive(Subcommand, Debug, Clone)]
 enum ElectrumCommands {
@@ -84,7 +85,7 @@ fn main() -> anyhow::Result<()> {
         Network::Regtest => "tcp://localhost:60401",
         Network::Signet => "tcp://signet-electrumx.wakiyamap.dev:50001",
     };
-    let config = Config::builder()
+    let config = electrum_client::Config::builder()
         .validate_domain(match args.network {
             Network::Bitcoin => true,
             _ => false,
