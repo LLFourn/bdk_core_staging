@@ -126,53 +126,6 @@ where
         ChainGraph::new(update, inflated_graph)
     }
 
-    /// Convenience method to inflate a [`SparseChain`] update with `new_txs` and determine the
-    /// resultant [`ChangeSet`] if the inflated update was applied.
-    ///
-    /// This is equivalent to calling [`inflate_update`] and [`determine_changeset`] in sequence.
-    ///
-    /// [`inflate_update`]: Self::inflate_update
-    /// [`determine_changeset`]: Self::determine_changeset
-    pub fn inflate_and_determine_changeset(
-        &self,
-        update: SparseChain<P>,
-        new_txs: impl IntoIterator<Item = T>,
-    ) -> Result<ChangeSet<P, T>, InflateAndUpdateError<P>> {
-        let update = self.inflate_update(update, new_txs)?;
-        let changeset = self.determine_changeset(&update)?;
-        Ok(changeset)
-    }
-
-    /// Convenience method to inflate a [`SparseChain`] update with `new_txs` and apply the inflated
-    /// update, returning a [`ChangeSet`].
-    ///
-    /// This is equivalent to calling [`inflate_and_determine_changeset`] and [`apply_changeset`] in
-    /// sequence.
-    ///
-    /// [`inflate_and_determine_changeset`]: Self::inflate_and_determine_changeset
-    /// [`apply_changeset`]: Self::apply_changeset
-    pub fn inflate_and_apply_update(
-        &mut self,
-        update: SparseChain<P>,
-        new_txs: impl IntoIterator<Item = T>,
-    ) -> Result<ChangeSet<P, T>, InflateAndUpdateError<P>> {
-        let changeset = self.inflate_and_determine_changeset(update, new_txs)?;
-        self.apply_changeset(changeset.clone());
-        Ok(changeset)
-    }
-
-    /// Return a list of missing full transactions that are required to [`inflate_update`].
-    ///
-    /// [`inflate_update`]: Self::inflate_update
-    pub fn find_missing_txids<U: AsRef<SparseChain<P>>>(&self, update: U) -> Vec<Txid> {
-        update
-            .as_ref()
-            .txids()
-            .filter(|(_, txid)| self.graph.get_tx(*txid).is_none())
-            .map(|&(_, txid)| txid)
-            .collect()
-    }
-
     /// Sets the checkpoint limit.
     ///
     /// Refer to [`SparseChain::checkpoint_limit`] for more.
@@ -653,53 +606,3 @@ impl<P> From<UnresolvableConflict<P>> for InsertTxError<P> {
 
 #[cfg(feature = "std")]
 impl<P: core::fmt::Debug> std::error::Error for UnresolvableConflict<P> {}
-
-/// This is the error that may occur during [`inflate_and_determine_changeset`] or
-/// [`inflate_and_apply_update`] of [`ChainGraph`].
-///
-/// [`inflate_and_determine_changeset`]: ChainGraph::inflate_and_determine_changeset
-/// [`inflate_and_apply_update`]: ChainGraph::inflate_and_apply_update
-#[derive(Clone, Debug, PartialEq)]
-pub enum InflateAndUpdateError<P> {
-    /// This represents a failure when inflating a [`SparseChain`] into a [`ChainGraph`] update.
-    InflateFailure(NewError<P>),
-    /// This represents a failure when applying a [`ChainGraph`] update.
-    UpdateFailure(UpdateError<P>),
-}
-
-impl<P> InflateAndUpdateError<P> {
-    pub fn missing_txids(&self) -> Option<&HashSet<Txid>> {
-        match self {
-            Self::InflateFailure(NewError::Missing(m)) => Some(m),
-            _ => None,
-        }
-    }
-}
-
-impl<P: core::fmt::Debug> core::fmt::Display for InflateAndUpdateError<P> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            InflateAndUpdateError::InflateFailure(e) => {
-                write!(f, "failed to inflate sparsechain update: {}", e)
-            }
-            InflateAndUpdateError::UpdateFailure(e) => {
-                write!(f, "failed to determine changeset: {}", e)
-            }
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl<P: core::fmt::Debug> std::error::Error for InflateAndUpdateError<P> {}
-
-impl<P> From<NewError<P>> for InflateAndUpdateError<P> {
-    fn from(value: NewError<P>) -> Self {
-        Self::InflateFailure(value)
-    }
-}
-
-impl<P> From<UpdateError<P>> for InflateAndUpdateError<P> {
-    fn from(value: UpdateError<P>) -> Self {
-        Self::UpdateFailure(value)
-    }
-}

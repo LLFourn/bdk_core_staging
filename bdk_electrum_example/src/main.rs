@@ -224,7 +224,7 @@ fn main() -> anyhow::Result<()> {
         ElectrumCommands::SyncUnspent => {
             // get all utxo outpoints
             let tracker = tracker.lock().unwrap();
-            let local_chain = tracker.checkpoints().clone();
+            let local_chain = tracker.chain().checkpoints().clone();
             let utxo_outpoints = tracker
                 .full_utxos()
                 .map(|(_, txo)| txo.outpoint)
@@ -243,7 +243,7 @@ fn main() -> anyhow::Result<()> {
         }
         ElectrumCommands::SyncUnconfirmed => {
             let tracker = tracker.lock().unwrap();
-            let local_chain = tracker.checkpoints().clone();
+            let local_chain = tracker.chain().checkpoints().clone();
             let unconfirmed_txs = tracker
                 .chain()
                 .range_txids_by_height(TxHeight::Unconfirmed..)
@@ -262,19 +262,19 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let missing_txids = tracker.lock().unwrap().find_missing_txids(&response);
+    let missing_txids = response.find_missing_txids(&*tracker.lock().unwrap());
 
     // fetch the missing full transactions **without** a lock on the tracker
     let new_txs = client
-        .batch_transaction_get(&missing_txids)
+        .batch_transaction_get(missing_txids)
         .context("fetching full transactions")?;
 
     {
         // Get a final short lock to apply the changes
         let mut tracker = tracker.lock().unwrap();
-        let changeset = response.apply(new_txs, &mut tracker)?;
-        let mut db = db.lock().unwrap();
-        db.append_changeset(&changeset)?;
+        let changeset = response.into_keychain_changeset(new_txs, &*tracker)?;
+        db.lock().unwrap().append_changeset(&changeset)?;
+        tracker.apply_changeset(changeset);
     };
 
     Ok(())

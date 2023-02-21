@@ -2,10 +2,10 @@
 //! from an electrum server.
 //!
 //! The star of the show is the [`ElectrumClient::scan`] method, which scans for relevant blockchain
-//! data (via electrum). `scan` takes in [`ScanParams`], and outputs a [`ScanUpdate`].
+//! data (via electrum). `scan` takes in [`ScanParams`], and outputs a [`ElectrumUpdate`].
 //!
-//! A [`ScanUpdate`] only includes `txid`s and no full transactions. The caller is responsible for
-//! obtaining full transactions before applying it to [`KeychainTracker`]. This can be done with
+//! A [`ElectrumUpdate`] only includes `txid`s and no full transactions. The caller is responsible
+//! for obtaining full transactions before applying it to [`KeychainTracker`]. This can be done with
 //! these steps:
 //!
 //! 1. Determine which full transactions are missing from [`KeychainTracker`]. The method
@@ -20,7 +20,7 @@
 //!
 //! [`KeychainTracker`]: bdk_chain::keychain::KeychainTracker
 //! [`ElectrumClient::scan`]: ElectrumClient::scan
-//! [`find_missing_txids`]: KeychainTracker::find_missing_txids
+//! [`find_missing_txids`]: ElectrumUpdate::find_missing_txids
 //! [`batch_transaction_get`]: ElectrumApi::batch_transaction_get
 //! [`bdk_electrum_example`]: https://github.com/LLFourn/bdk_core_staging/tree/master/bdk_electrum_example
 
@@ -33,10 +33,11 @@ use std::{
 
 use bdk_chain::{
     bitcoin::{BlockHash, OutPoint, Script, Transaction, Txid},
-    chain_graph::InflateAndUpdateError,
-    keychain::{KeychainChangeSet, KeychainTracker},
+    chain_graph,
+    keychain::{KeychainChangeSet, KeychainScan, KeychainTracker},
     sparse_chain::{self, ChainPosition, SparseChain},
-    BlockId, ConfirmationTime, TxHeight,
+    tx_graph::TxGraph,
+    AsTransaction, BlockId, ConfirmationTime, TxHeight,
 };
 pub use electrum_client;
 use electrum_client::Client;
@@ -444,7 +445,7 @@ where
     }
 
     /// Scan the blockchain (via electrum) for data specified by [`ScanParams`]. This returns a
-    /// [`ScanUpdate`] which can be applied to a [`KeychainTracker`] after we find all the missing
+    /// [`ElectrumUpdate`] which can be applied to a [`KeychainTracker`] after we find all the missing
     /// full transactions.
     ///
     /// Refer to [crate-level documentation] for more.
@@ -454,7 +455,7 @@ where
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
         params: ScanParams<K, S>,
-    ) -> Result<ScanUpdate<K, P>, Error>
+    ) -> Result<ElectrumUpdate<K, P>, Error>
     where
         K: Ord + Clone,
         S: IntoIterator<Item = (u32, Script)>,
@@ -540,7 +541,7 @@ where
                 match self.populate_with_outpoints(&mut update, params.outpoints.iter().cloned()) {
                     Err(InternalError::Reorg) => continue,
                     Err(InternalError::ElectrumError(e)) => return Err(e.into()),
-                    Ok(_) => {}
+                    Ok(_txs) => { /* [TODO] cache full txs to reduce bandwidth */ }
                 }
             }
 
@@ -567,7 +568,7 @@ where
             })
             .collect::<BTreeMap<_, _>>();
 
-        Ok(ScanUpdate {
+        Ok(ElectrumUpdate {
             update,
             last_active_indices: last_active_index,
         })
@@ -621,14 +622,14 @@ impl<K, S: IntoIterator<Item = (u32, Script)>> From<BTreeMap<K, S>> for ScanPara
 }
 
 /// The result of [`ElectrumClient::scan`].
-pub struct ScanUpdate<K, P> {
+pub struct ElectrumUpdate<K, P> {
     /// The internal [`SparseChain`] update.
     pub update: SparseChain<P>,
     /// The last keychain script pubkey indices which had transaction histories.
     pub last_active_indices: BTreeMap<K, u32>,
 }
 
-impl<K, P> Default for ScanUpdate<K, P> {
+impl<K, P> Default for ElectrumUpdate<K, P> {
     fn default() -> Self {
         Self {
             update: Default::default(),
@@ -637,25 +638,81 @@ impl<K, P> Default for ScanUpdate<K, P> {
     }
 }
 
-impl<K, P> AsRef<SparseChain<P>> for ScanUpdate<K, P> {
+impl<K, P> AsRef<SparseChain<P>> for ElectrumUpdate<K, P> {
     fn as_ref(&self) -> &SparseChain<P> {
         &self.update
     }
 }
 
-impl<K: Ord + Clone + Debug, P: ChainPosition> ScanUpdate<K, P> {
-    /// Apply the [`ScanUpdate`] to the `tracker`.
+impl<K: Ord + Clone + Debug, P: ChainPosition> ElectrumUpdate<K, P> {
+    /// Return a list of missing full transactions that are required to [`inflate_update`].
+    ///
+    /// [`inflate_update`]: bdk_chain::chain_graph::ChainGraph::inflate_update
+    pub fn find_missing_txids<T, G>(&self, graph: G) -> Vec<&Txid>
+    where
+        T: AsTransaction,
+        G: AsRef<TxGraph<T>>,
+    {
+        self.update
+            .txids()
+            .filter(|(_, txid)| graph.as_ref().get_tx(*txid).is_none())
+            .map(|(_, txid)| txid)
+            .collect()
+    }
+
+    /// Transform the [`ElectrumUpdate`] into a [`KeychainScan`] which can be applied to the
+    /// [`KeychainTracker`].
     ///
     /// This will fail if there are missing full transactions not provided via `new_txs`.
-    pub fn apply(
+    pub fn into_keychain_changeset(
         self,
         new_txs: Vec<Transaction>,
-        tracker: &mut KeychainTracker<K, P>,
-    ) -> Result<KeychainChangeSet<K, P, Transaction>, InflateAndUpdateError<P>> {
-        tracker.set_lookahead_to_targets(self.last_active_indices);
-        tracker.apply_sparsechain_update(self.update, new_txs)
+        tracker: &KeychainTracker<K, P>,
+    ) -> Result<KeychainChangeSet<K, P, Transaction>, IntoChangeSetError<P>> {
+        Ok(tracker.determine_changeset(&KeychainScan {
+            update: tracker.chain_graph().inflate_update(self.update, new_txs)?,
+            last_active_indices: self.last_active_indices,
+        })?)
     }
 }
+
+/// Error of [`ElectrumUpdate::into_keychain_changeset`].
+#[derive(Debug)]
+pub enum IntoChangeSetError<P> {
+    /// Failed to inflate a [`SparseChain`] update into a [`ChainGraph`] update.
+    ///
+    /// [`ChainGraph`]: chain_graph::ChainGraph
+    InflateError(chain_graph::NewError<P>),
+
+    /// Failed to determine a [`chain_graph::ChangeSet`] that can be applied to the
+    /// [`KeychainTracker`].
+    UpdateError(chain_graph::UpdateError<P>),
+}
+
+impl<P: Debug> core::fmt::Display for IntoChangeSetError<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IntoChangeSetError::InflateError(e) => {
+                write!(f, "failed to inflate sparsechain update: {}", e)
+            }
+            IntoChangeSetError::UpdateError(e) => write!(f, "failed to determine changeset: {}", e),
+        }
+    }
+}
+
+impl<P> From<chain_graph::NewError<P>> for IntoChangeSetError<P> {
+    fn from(value: chain_graph::NewError<P>) -> Self {
+        Self::InflateError(value)
+    }
+}
+
+impl<P> From<chain_graph::UpdateError<P>> for IntoChangeSetError<P> {
+    fn from(value: chain_graph::UpdateError<P>) -> Self {
+        Self::UpdateError(value)
+    }
+}
+
+impl<P: Debug> std::error::Error for IntoChangeSetError<P> {}
 
 #[derive(Debug)]
 enum InternalError {

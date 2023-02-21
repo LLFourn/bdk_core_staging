@@ -1,5 +1,4 @@
-use alloc::vec::Vec;
-use bitcoin::{BlockHash, Transaction, Txid};
+use bitcoin::Transaction;
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::{
@@ -46,13 +45,6 @@ where
         self.txout_index.keychains()
     }
 
-    /// Convenience method to call [`checkpoints`] of the internal [`SparseChain`].
-    ///
-    /// [`checkpoints`]: SparseChain::checkpoints
-    pub fn checkpoints(&self) -> &BTreeMap<u32, BlockHash> {
-        self.chain().checkpoints()
-    }
-
     /// Get the checkpoint limit of the internal [`SparseChain`].
     ///
     /// Refer to [`SparseChain::checkpoint_limit`] for more.
@@ -65,62 +57,6 @@ where
     /// Refer to [`SparseChain::set_checkpoint_limit`] for more.
     pub fn set_checkpoint_limit(&mut self, limit: Option<usize>) {
         self.chain_graph.set_checkpoint_limit(limit)
-    }
-
-    /// Convenience method to call [`lookahead_to_target_multi`] of the internal
-    /// [`KeychainTxOutIndex`].
-    ///
-    /// [`lookahead_to_target_multi`]: KeychainTxOutIndex::lookahead_to_target_multi
-    pub fn set_lookahead_to_targets(&mut self, targets: BTreeMap<K, u32>) {
-        self.txout_index.lookahead_to_target_multi(targets)
-    }
-
-    /// Convenience method to call [`find_missing_txids`] of the internal [`ChainGraph`].
-    ///
-    /// [`find_missing_txids`]: ChainGraph::find_missing_txids
-    pub fn find_missing_txids<U: AsRef<SparseChain<P>>>(&self, chain_update: U) -> Vec<Txid> {
-        self.chain_graph().find_missing_txids(chain_update)
-    }
-
-    /// Updates the tracker with a [`SparseChain`] and `new_txs` that are missing from the tracker,
-    /// but required to successfully apply the update. A [`KeychainChangeSet`] is returned to show
-    /// the changes that are applied.
-    ///
-    /// The txids of `missing_txs` can be found via [`find_missing_txids`] of [`ChainGraph`]. Then
-    /// it is up to the caller to fetch the full transactions from somewhere.
-    ///
-    /// [`find_missing_txids`]: ChainGraph::find_missing_txids
-    pub fn apply_sparsechain_update(
-        &mut self,
-        chain_update: SparseChain<P>,
-        missing_txs: Vec<T>,
-    ) -> Result<KeychainChangeSet<K, P, T>, chain_graph::InflateAndUpdateError<P>> {
-        let cg_changeset = self
-            .chain_graph
-            .inflate_and_apply_update(chain_update, missing_txs)?;
-        let derivation_additions = self.txout_index.scan(&cg_changeset);
-        Ok(KeychainChangeSet {
-            derivation_indices: derivation_additions,
-            chain_graph: cg_changeset,
-        })
-    }
-
-    /// Updates the tracker with a [`ChainGraph`] and returns a [`KeychainChangeSet`] to show the
-    /// changes that are applied.
-    pub fn apply_chaingraph_update<T2>(
-        &mut self,
-        update: ChainGraph<P, T2>,
-    ) -> Result<KeychainChangeSet<K, P, T>, chain_graph::UpdateError<P>>
-    where
-        T2: IntoOwned<T> + Clone,
-    {
-        let cg_changeset = self.chain_graph.apply_update(update)?;
-        let derivation_additions = self.txout_index.scan(&cg_changeset);
-
-        Ok(KeychainChangeSet {
-            derivation_indices: derivation_additions,
-            chain_graph: cg_changeset,
-        })
     }
 
     /// Determines the resultant [`KeychainChangeSet`] if the given [`KeychainScan`] is applied.
