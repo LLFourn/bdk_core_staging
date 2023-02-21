@@ -14,15 +14,15 @@
 //! 2. Obtaining the full transactions. To do this via electrum, the method
 //! [`batch_transaction_get`] can be used.
 //!
-//! ```
-//! // [TODO] Implement this!
-//! println!("hello world");
-//! ```
+//! # Example
+//!
+//! Refer to [`bdk_electrum_example`].
 //!
 //! [`KeychainTracker`]: bdk_chain::keychain::KeychainTracker
 //! [`ElectrumClient::scan`]: ElectrumClient::scan
 //! [`find_missing_txids`]: KeychainTracker::find_missing_txids
 //! [`batch_transaction_get`]: ElectrumApi::batch_transaction_get
+//! [`bdk_electrum_example`]: https://github.com/LLFourn/bdk_core_staging/tree/master/bdk_electrum_example
 
 use std::{
     collections::{BTreeMap, HashMap},
