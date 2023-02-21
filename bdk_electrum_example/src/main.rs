@@ -1,7 +1,4 @@
-use bdk_chain::{
-    bitcoin::{Network, Script},
-    TxHeight,
-};
+use bdk_chain::{bitcoin::Network, TxHeight};
 use bdk_cli::{
     anyhow::{self, Context},
     clap::{self, Parser, Subcommand},
@@ -27,20 +24,23 @@ enum ElectrumCommands {
     Sync {
         /// Scan all the unused addresses
         #[clap(long)]
-        unused: bool,
+        unused_spks: bool,
         /// Scan the script addresses that have unspent outputs
         #[clap(long)]
-        unspent: bool,
+        unspent_spks: bool,
         /// Scan every address that you have derived
         #[clap(long)]
-        all: bool,
+        all_spks: bool,
+        /// Scan unspent outpoints for spends or changes to confirmation status of residing tx
+        #[clap(long)]
+        unspent_outpoints: bool,
+        /// Scan unconfirmed transactions for updates
+        #[clap(long)]
+        unconfirmed_txs: bool,
+
         #[clap(flatten)]
         scan_option: ScanOption,
     },
-    /// Scan unspent outpoints for spends or changes to confirmation status of residing tx
-    SyncUnspent,
-    /// Scan unconfirmed transactions for updates
-    SyncUnconfirmed,
 }
 
 #[derive(Parser, Debug, Clone, PartialEq)]
@@ -152,113 +152,93 @@ fn main() -> anyhow::Result<()> {
             client.scan(&local_chain, params)?
         }
         ElectrumCommands::Sync {
-            mut unused,
-            mut unspent,
-            all,
+            mut unused_spks,
+            mut unspent_spks,
+            all_spks,
+            unspent_outpoints,
+            unconfirmed_txs,
             scan_option,
         } => {
-            let (spks, local_chain) = {
-                // Get a short lock on the tracker to get the spks we're interested in
-                let tracker = &*tracker.lock().unwrap();
-                let txout_index = &tracker.txout_index;
-                if !(all || unused || unspent) {
-                    unused = true;
-                    unspent = true;
-                } else if all {
-                    unused = false;
-                    unspent = false
-                }
-                let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
-                    Box::new(core::iter::empty());
+            // Get a short lock on the tracker to get the spks we're interested in
+            let tracker = tracker.lock().unwrap();
 
-                if all {
-                    let all_spks = txout_index
-                        .all_spks()
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>();
-                    spks = Box::new(spks.chain(all_spks.into_iter().map(|(index, script)| {
-                        eprintln!("scanning {:?}", index);
-                        script
-                    })));
-                }
+            if !(all_spks || unused_spks || unspent_spks || unspent_outpoints || unconfirmed_txs) {
+                unused_spks = true;
+                unspent_spks = true;
+            } else if all_spks {
+                unused_spks = false;
+                unspent_spks = false;
+            }
 
-                if unused {
-                    let unused_spks = txout_index
-                        .unused_spks(..)
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>();
-                    spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {
-                        eprintln!("Checking if address at {:?} has been used", index);
-                        script
-                    })));
-                }
+            let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
+                Box::new(core::iter::empty());
+            if all_spks {
+                let all_spks = tracker
+                    .txout_index
+                    .all_spks()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>();
+                spks = Box::new(spks.chain(all_spks.into_iter().map(|(index, script)| {
+                    eprintln!("scanning {:?}", index);
+                    script
+                })));
+            }
+            if unused_spks {
+                let unused_spks = tracker
+                    .txout_index
+                    .unused_spks(..)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>();
+                spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {
+                    eprintln!("Checking if address at {:?} has been used", index);
+                    script
+                })));
+            }
+            if unspent_spks {
+                let unspent_txouts = tracker
+                    .full_utxos()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>();
+                spks = Box::new(
+                    spks.chain(unspent_txouts.into_iter().map(|(_index, ftxout)| {
+                        eprintln!("checking if {} has been spent", ftxout.outpoint);
+                        ftxout.txout.script_pubkey
+                    })),
+                );
+            }
 
-                if unspent {
-                    let unspent_txouts = tracker
-                        .full_utxos()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>();
-                    spks = Box::new(spks.chain(unspent_txouts.into_iter().map(
-                        |(_index, ftxout)| {
-                            eprintln!("checking if {} has been spent", ftxout.outpoint);
-                            ftxout.txout.script_pubkey
-                        },
-                    )));
-                }
-                let local_chain = tracker.chain().checkpoints().clone();
+            let mut outpoints = Vec::new();
+            if unspent_outpoints {
+                outpoints = tracker.full_utxos().map(|(_, txo)| txo.outpoint).collect();
+            }
 
-                (spks, local_chain)
-            };
+            let mut txs = Vec::new();
+            if unconfirmed_txs {
+                txs = tracker
+                    .chain()
+                    .range_txids_by_height(TxHeight::Unconfirmed..)
+                    .filter_map(|(_, txid)| tracker.graph().get_tx(*txid))
+                    .cloned()
+                    .collect();
+            }
+
+            let local_chain = tracker.chain().checkpoints().clone();
+
+            // drop lock on tracker
+            drop(tracker);
 
             // we scan the spks **without** a lock on the tracker
             let params = ScanParamsWithoutKeychain {
                 batch_size: scan_option.batch_size,
+                txs,
+                outpoints,
                 ..ScanParamsWithoutKeychain::from_spks(spks)
             };
             client
                 .scan_without_keychain(&local_chain, params)
                 .context("scanning the blockchain")?
                 .into_with_keychain()
-        }
-        ElectrumCommands::SyncUnspent => {
-            // get all utxo outpoints
-            let tracker = tracker.lock().unwrap();
-            let local_chain = tracker.chain().checkpoints().clone();
-            let utxo_outpoints = tracker
-                .full_utxos()
-                .map(|(_, txo)| txo.outpoint)
-                .collect::<Vec<_>>();
-            drop(tracker);
-
-            println!("utxos: {}", utxo_outpoints.len());
-
-            let params = ScanParams::<bdk_cli::Keychain, Vec<(u32, Script)>> {
-                outpoints: utxo_outpoints,
-                ..Default::default()
-            };
-            client
-                .scan(&local_chain, params)
-                .context("scaning unspents")?
-        }
-        ElectrumCommands::SyncUnconfirmed => {
-            let tracker = tracker.lock().unwrap();
-            let local_chain = tracker.chain().checkpoints().clone();
-            let unconfirmed_txs = tracker
-                .chain()
-                .range_txids_by_height(TxHeight::Unconfirmed..)
-                .filter_map(|(_, txid)| tracker.graph().get_tx(*txid))
-                .cloned()
-                .collect::<Vec<_>>();
-            drop(tracker);
-
-            let params = ScanParams::<bdk_cli::Keychain, Vec<(u32, Script)>> {
-                full_txs: unconfirmed_txs,
-                ..Default::default()
-            };
-            client
-                .scan(&local_chain, params)
-                .context("scanning unconfirmed")?
         }
     };
 

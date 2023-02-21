@@ -511,8 +511,8 @@ where
                 }
             }
 
-            if !params.full_txs.is_empty() {
-                match self.populate_with_txs(&mut update, params.full_txs.iter()) {
+            if !params.txs.is_empty() {
+                match self.populate_with_txs(&mut update, params.txs.iter()) {
                     Err(InternalError::Reorg) => continue,
                     Err(InternalError::ElectrumError(e)) => return Err(e.into()),
                     Ok(_) => {}
@@ -575,7 +575,7 @@ where
         let params = ScanParams {
             keychain_spks: [((), spk_iter)].into(),
             txids: params.txids,
-            full_txs: params.full_txs,
+            txs: params.txs,
             outpoints: params.outpoints,
             stop_gap: params.stop_gap,
             batch_size: params.batch_size,
@@ -591,7 +591,7 @@ pub struct ScanParams<K, S: IntoIterator<Item = (u32, Script)>> {
     /// Txids to scan for. The update will update the [`ChainPosition`]s for these.
     pub txids: Vec<Txid>,
     /// Full transactions to scan for. The update will update the [`ChainPosition`]s for these.
-    pub full_txs: Vec<Transaction>,
+    pub txs: Vec<Transaction>,
     /// Outpoints to scan for. The update will try include the transaction that spends this outpoint
     /// alongside the transaction which contains this outpoint.
     pub outpoints: Vec<OutPoint>,
@@ -607,7 +607,7 @@ impl<K, S: IntoIterator<Item = (u32, Script)>> Default for ScanParams<K, S> {
         Self {
             keychain_spks: Default::default(),
             txids: Default::default(),
-            full_txs: Default::default(),
+            txs: Default::default(),
             outpoints: Default::default(),
             stop_gap: 10,
             batch_size: 10,
@@ -631,7 +631,7 @@ pub struct ScanParamsWithoutKeychain<S: IntoIterator<Item = Script>> {
     /// Txids to scan for. The update will update the [`ChainPosition`]s for these.
     pub txids: Vec<Txid>,
     /// Full transactions to scan for. The update will update the [`ChainPosition`]s for these.
-    pub full_txs: Vec<Transaction>,
+    pub txs: Vec<Transaction>,
     /// Outpoints to scan for. The update will try include the transaction that spends this outpoint
     /// alongside the transaction which contains this outpoint.
     pub outpoints: Vec<OutPoint>,
@@ -647,7 +647,7 @@ impl<S: IntoIterator<Item = Script> + Default> Default for ScanParamsWithoutKeyc
         Self {
             spks: Default::default(),
             txids: Default::default(),
-            full_txs: Default::default(),
+            txs: Default::default(),
             outpoints: Default::default(),
             stop_gap: 10,
             batch_size: 10,
@@ -661,7 +661,7 @@ impl<S: IntoIterator<Item = Script>> ScanParamsWithoutKeychain<S> {
         Self {
             spks: spks,
             txids: Default::default(),
-            full_txs: Default::default(),
+            txs: Default::default(),
             outpoints: Default::default(),
             stop_gap: 10,
             batch_size: 10,
