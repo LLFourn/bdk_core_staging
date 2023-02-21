@@ -51,10 +51,10 @@ pub struct ScanOption {
 }
 
 /// A wrapped [`bdk_electrum::ElectrumClient`] that implements [`bdk_cli::Broadcast`].
-struct WrappedClient(bdk_electrum::ElectrumClient<TxHeight>);
+struct WrappedClient(bdk_electrum::ElectrumClient);
 
 impl Deref for WrappedClient {
-    type Target = bdk_electrum::ElectrumClient<TxHeight>;
+    type Target = bdk_electrum::ElectrumClient;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -149,7 +149,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             // we scan the spks **without** a lock on the tracker
-            client.scan(&local_chain, params)?
+            client.scan(&bdk_electrum::tx_height_position, &local_chain, params)?
         }
         ElectrumCommands::Sync {
             mut unused_spks,
@@ -236,7 +236,7 @@ fn main() -> anyhow::Result<()> {
                 ..ScanParamsWithoutKeychain::from_spks(spks)
             };
             client
-                .scan_without_keychain(&local_chain, params)
+                .scan_without_keychain(&bdk_electrum::tx_height_position, &local_chain, params)
                 .context("scanning the blockchain")?
                 .into_with_keychain()
         }

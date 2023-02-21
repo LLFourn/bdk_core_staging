@@ -9,14 +9,12 @@
 //! these steps:
 //!
 //! 1. Determine which full transactions are missing from [`KeychainTracker`]. The method
-//! [`find_missing_txids`] of [`KeychainTracker`] can be used.
+//! [`find_missing_txids`] of [`ElectrumUpdate`] can be used.
 //!
 //! 2. Obtaining the full transactions. To do this via electrum, the method
 //! [`batch_transaction_get`] can be used.
 //!
-//! # Example
-//!
-//! Refer to [`bdk_electrum_example`].
+//! Refer to [`bdk_electrum_example`] for a complete example.
 //!
 //! [`KeychainTracker`]: bdk_chain::keychain::KeychainTracker
 //! [`ElectrumClient::scan`]: ElectrumClient::scan
@@ -27,7 +25,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Debug,
-    marker::PhantomData,
     ops::Deref,
 };
 
@@ -43,70 +40,68 @@ pub use electrum_client;
 use electrum_client::Client;
 pub use electrum_client::{ElectrumApi, Error};
 
-/// Represents a [`ChainPosition`] that can be created via [`ElectrumClient`].
+/// Arguments for getting a [`ChainPosition`] implementation from [`ElectrumClient`].
+#[non_exhaustive]
+pub struct ChainPositionArgs<'c> {
+    pub client: &'c ElectrumClient,
+    pub txid: Txid,
+    pub height: TxHeight,
+}
+
+/// The `to_position` argument for [`scan`] or [`scan_without_keychain`] to use [`TxHeight`] as the
+/// [`ChainPosition`].
 ///
-/// This is used internally within [`ElectrumClient`] so updates can be created for any
-/// [`ChainPosition`] that implements [`ElectrumChainPosition`].
-pub trait ElectrumChainPosition: ChainPosition + Sized {
-    /// Construct a [`ChainPosition`] implementation from the provided `txid` and `height`.
-    fn position_from_electrum(
-        client: &ElectrumClient<Self>,
-        txid: Txid,
-        height: TxHeight,
-    ) -> Result<Self, Error>;
+/// [`scan`]: ElectrumClient::scan
+/// [`scan_without_keychain`]: ElectrumClient::scan_without_keychain
+pub fn tx_height_position<'c>(args: ChainPositionArgs<'c>) -> Result<TxHeight, Error> {
+    Ok(args.height)
 }
 
-impl ElectrumChainPosition for TxHeight {
-    fn position_from_electrum(
-        _: &ElectrumClient<Self>,
-        _: Txid,
-        height: TxHeight,
-    ) -> Result<TxHeight, Error> {
-        Ok(height)
-    }
-}
-
-impl ElectrumChainPosition for ConfirmationTime {
-    fn position_from_electrum(
-        client: &ElectrumClient<Self>,
-        _: Txid,
-        height: TxHeight,
-    ) -> Result<ConfirmationTime, Error> {
-        Ok(match height {
-            TxHeight::Confirmed(height) => {
-                let time = client.block_header(height as _)?.time as u64;
-                ConfirmationTime::Confirmed { height, time }
-            }
-            TxHeight::Unconfirmed => ConfirmationTime::Unconfirmed,
-        })
-    }
+/// The `to_position` argument for [`scan`] or [`scan_without_keychain`] to use [`ConfirmationTime`]
+/// as the [`ChainPosition`].
+///
+/// [`scan`]: ElectrumClient::scan
+/// [`scan_without_keychain`]: ElectrumClient::scan_without_keychain
+pub fn confirmation_time_position<'c>(
+    args: ChainPositionArgs<'c>,
+) -> Result<ConfirmationTime, Error> {
+    Ok(match args.height {
+        TxHeight::Confirmed(height) => {
+            let time = args.client.block_header(height as _)?.time as u64;
+            ConfirmationTime::Confirmed { height, time }
+        }
+        TxHeight::Unconfirmed => ConfirmationTime::Unconfirmed,
+    })
 }
 
 /// Structure to get data from electrum to update [`KeychainTracker`].
 ///
 /// This uses [`electrum_client::Client`] internally.
-pub struct ElectrumClient<P> {
+pub struct ElectrumClient {
     inner: Client,
-    pos_marker: PhantomData<P>,
 }
 
-impl<P> Deref for ElectrumClient<P> {
+impl Deref for ElectrumClient {
     type Target = Client;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl<P> ElectrumClient<P>
-where
-    P: ChainPosition + ElectrumChainPosition,
-{
+impl ElectrumClient {
+    fn position_args(&self, txid: Txid, tx_height: TxHeight) -> ChainPositionArgs {
+        ChainPositionArgs {
+            client: self,
+            txid,
+            height: tx_height,
+        }
+    }
+
     /// Create a new [`ElectrumClient`] that is connected to electrum server at `url` with default
     /// [`electrum_client::Config`].
     pub fn new(url: &str) -> Result<Self, Error> {
         Ok(Self {
             inner: electrum_client::Client::new(url)?,
-            pos_marker: Default::default(),
         })
     }
 
@@ -114,21 +109,12 @@ where
     pub fn from_config(url: &str, config: electrum_client::Config) -> Result<Self, Error> {
         Ok(Self {
             inner: electrum_client::Client::from_config(url, config)?,
-            pos_marker: Default::default(),
         })
     }
 
     /// Create a new [`ElectrumClient`] from the provided [`electrum_client::Client`].
     pub fn from_client(client: Client) -> Self {
-        Self {
-            inner: client,
-            pos_marker: Default::default(),
-        }
-    }
-
-    /// This publicly exposes [`ElectrumChainPosition::position_from_electrum`].
-    pub fn get_chain_position(&self, txid: Txid, height: TxHeight) -> Result<P, Error> {
-        P::position_from_electrum(self, txid, height)
+        Self { inner: client }
     }
 
     /// Fetch the latest block height.
@@ -141,8 +127,9 @@ where
     }
 
     /// Prepare an update sparsechain "template" based on the checkpoints of the `local_chain`.
-    fn prepare_update(
+    fn prepare_update<P: ChainPosition>(
         &self,
+        to_position: &impl Fn(ChainPositionArgs<'_>) -> Result<P, Error>,
         local_chain: &BTreeMap<u32, BlockHash>,
     ) -> Result<SparseChain<P>, Error> {
         let mut update = SparseChain::<P>::default();
@@ -177,7 +164,7 @@ where
                 sparse_chain::InsertCheckpointError::HashNotMatching { .. } => {
                     // There has been a re-org before we even begin scanning addresses.
                     // Just recursively call (this should never happen).
-                    return self.prepare_update(local_chain);
+                    return self.prepare_update(to_position, local_chain);
                 }
             }
         }
@@ -187,8 +174,9 @@ where
 
     /// Populate an update [`SparseChain`] with transactions (and associated block positions) that
     /// contain and spend the given `outpoints`.
-    fn populate_with_outpoints(
+    fn populate_with_outpoints<P: ChainPosition>(
         &self,
+        to_position: &impl Fn(ChainPositionArgs<'_>) -> Result<P, Error>,
         update: &mut SparseChain<P>,
         outpoints: impl Iterator<Item = OutPoint>,
     ) -> Result<HashMap<Txid, Transaction>, InternalError> {
@@ -260,7 +248,7 @@ where
                         }
                     }
                 };
-                let tx_pos = self.get_chain_position(txid, tx_height)?;
+                let tx_pos = to_position(self.position_args(txid, tx_height))?;
 
                 if let Err(failure) = update.insert_tx(txid, tx_pos) {
                     match failure {
@@ -281,8 +269,9 @@ where
 
     /// Populate an update [`SparseChain`] with transactions (and associated block positions) from
     /// the given `txids`.
-    fn populate_with_txids(
+    fn populate_with_txids<P: ChainPosition>(
         &self,
+        to_position: &impl Fn(ChainPositionArgs<'_>) -> Result<P, Error>,
         update: &mut SparseChain<P>,
         txids: impl Iterator<Item = Txid>,
     ) -> Result<(), InternalError> {
@@ -302,7 +291,7 @@ where
             if tx_height.is_confirmed() && tx_height > TxHeight::Confirmed(tip.height) {
                 continue;
             }
-            let tx_pos = self.get_chain_position(txid, tx_height)?;
+            let tx_pos = to_position(self.position_args(txid, tx_height))?;
             if let Err(failure) = update.insert_tx(txid, tx_pos) {
                 match failure {
                     sparse_chain::InsertTxError::TxTooHigh { .. } => {
@@ -317,8 +306,9 @@ where
         Ok(())
     }
 
-    fn populate_with_txs<'a>(
+    fn populate_with_txs<'a, P: ChainPosition>(
         &self,
+        to_position: &impl Fn(ChainPositionArgs<'_>) -> Result<P, Error>,
         update: &mut SparseChain<P>,
         txs: impl Iterator<Item = &'a Transaction>,
     ) -> Result<(), InternalError> {
@@ -334,7 +324,7 @@ where
                 continue;
             }
             let txid = tx.txid();
-            let tx_pos = self.get_chain_position(txid, tx_height)?;
+            let tx_pos = to_position(self.position_args(txid, tx_height))?;
             if let Err(failure) = update.insert_tx(txid, tx_pos) {
                 match failure {
                     sparse_chain::InsertTxError::TxTooHigh { .. } => {
@@ -351,14 +341,16 @@ where
 
     /// Populate an update [`SparseChain`] with transactions (and associated block positions) from
     /// the transaction history of the provided `spks`.
-    fn populate_with_spks<K, I, S>(
+    fn populate_with_spks<P, K, I, S>(
         &self,
+        to_position: &impl Fn(ChainPositionArgs<'_>) -> Result<P, Error>,
         update: &mut SparseChain<P>,
         spks: &mut S,
         stop_gap: usize,
         batch_size: usize,
     ) -> Result<BTreeMap<I, (Script, bool)>, InternalError>
     where
+        P: ChainPosition,
         K: Ord + Clone,
         I: Ord + Clone,
         S: Iterator<Item = (I, Script)>,
@@ -393,7 +385,7 @@ where
                 }
 
                 for tx in spk_history {
-                    let tx_pos = self.get_chain_position(
+                    let tx_pos = to_position(self.position_args(
                         tx.tx_hash,
                         match tx.height {
                             h if h <= 0 => TxHeight::Unconfirmed,
@@ -406,7 +398,7 @@ where
                                 }
                             }
                         },
-                    )?;
+                    ))?;
                     if let Err(failure) = update.insert_tx(tx.tx_hash, tx_pos) {
                         match failure {
                             sparse_chain::InsertTxError::TxTooHigh { .. } => {
@@ -451,12 +443,14 @@ where
     /// Refer to [crate-level documentation] for more.
     ///
     /// [crate-level documentation]: crate
-    pub fn scan<K, S>(
+    pub fn scan<P, K, S>(
         &self,
+        to_position: impl Fn(ChainPositionArgs<'_>) -> Result<P, Error>,
         local_chain: &BTreeMap<u32, BlockHash>,
         params: ScanParams<K, S>,
     ) -> Result<ElectrumUpdate<K, P>, Error>
     where
+        P: ChainPosition,
         K: Ord + Clone,
         S: IntoIterator<Item = (u32, Script)>,
     {
@@ -468,14 +462,15 @@ where
         let mut scanned_spks = BTreeMap::<(K, u32), (Script, bool)>::new();
 
         let update = loop {
-            let mut update = self.prepare_update(local_chain)?;
+            let mut update = self.prepare_update(&to_position, local_chain)?;
 
             if !request_spks.is_empty() {
                 if !scanned_spks.is_empty() {
                     let mut scanned_spk_iter = scanned_spks
                         .iter()
                         .map(|(i, (spk, _))| (i.clone(), spk.clone()));
-                    match self.populate_with_spks::<K, _, _>(
+                    match self.populate_with_spks::<P, K, _, _>(
+                        &to_position,
                         &mut update,
                         &mut scanned_spk_iter,
                         params.stop_gap,
@@ -487,7 +482,8 @@ where
                     };
                 }
                 for (keychain, keychain_spks) in &mut request_spks {
-                    match self.populate_with_spks::<K, u32, _>(
+                    match self.populate_with_spks::<P, K, u32, _>(
+                        &to_position,
                         &mut update,
                         keychain_spks,
                         params.stop_gap,
@@ -504,7 +500,11 @@ where
             }
 
             if !params.txids.is_empty() {
-                match self.populate_with_txids(&mut update, params.txids.iter().cloned()) {
+                match self.populate_with_txids(
+                    &to_position,
+                    &mut update,
+                    params.txids.iter().cloned(),
+                ) {
                     Err(InternalError::Reorg) => continue,
                     Err(InternalError::ElectrumError(e)) => return Err(e.into()),
                     Ok(_) => {}
@@ -512,7 +512,7 @@ where
             }
 
             if !params.txs.is_empty() {
-                match self.populate_with_txs(&mut update, params.txs.iter()) {
+                match self.populate_with_txs(&to_position, &mut update, params.txs.iter()) {
                     Err(InternalError::Reorg) => continue,
                     Err(InternalError::ElectrumError(e)) => return Err(e.into()),
                     Ok(_) => {}
@@ -520,7 +520,11 @@ where
             }
 
             if !params.outpoints.is_empty() {
-                match self.populate_with_outpoints(&mut update, params.outpoints.iter().cloned()) {
+                match self.populate_with_outpoints(
+                    &to_position,
+                    &mut update,
+                    params.outpoints.iter().cloned(),
+                ) {
                     Err(InternalError::Reorg) => continue,
                     Err(InternalError::ElectrumError(e)) => return Err(e.into()),
                     Ok(_txs) => { /* [TODO] cache full txs to reduce bandwidth */ }
@@ -559,12 +563,14 @@ where
     /// Convenience method to call [`scan`] without requiring a keychain.
     ///
     /// [`scan`]: ElectrumClient::scan
-    pub fn scan_without_keychain<S>(
+    pub fn scan_without_keychain<P, S>(
         &self,
+        to_position: impl Fn(ChainPositionArgs<'_>) -> Result<P, Error>,
         local_chain: &BTreeMap<u32, BlockHash>,
         params: ScanParamsWithoutKeychain<S>,
     ) -> Result<ElectrumUpdate<(), P>, Error>
     where
+        P: ChainPosition,
         S: IntoIterator<Item = Script>,
     {
         let spk_iter = params
@@ -580,7 +586,7 @@ where
             stop_gap: params.stop_gap,
             batch_size: params.batch_size,
         };
-        self.scan(local_chain, params)
+        self.scan(to_position, local_chain, params)
     }
 }
 
