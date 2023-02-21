@@ -39,7 +39,7 @@ use bdk_chain::{
     BlockId, ConfirmationTime, TxHeight,
 };
 pub use electrum_client;
-use electrum_client::{Client, ElectrumApi, GetHistoryRes};
+use electrum_client::{Client, ElectrumApi};
 
 /// Represents a [`ChainPosition`] that can be created via [`ElectrumClient`].
 ///
@@ -183,19 +183,6 @@ where
         Ok(update)
     }
 
-    /// Check for reorgs during the sync process.
-    fn reorg_check(&self, update: &mut SparseChain<P>) -> Result<(), InternalError> {
-        let our_tip = update
-            .latest_checkpoint()
-            .expect("update must have atleast one checkpoint");
-        let server_blockhash = self.block_header(our_tip.height as usize)?.block_hash();
-        if our_tip.hash != server_blockhash {
-            Err(InternalError::Reorg)
-        } else {
-            Ok(())
-        }
-    }
-
     /// Populate an update [`SparseChain`] with transactions (and associated block positions) that
     /// contain and spend the given `outpoints`.
     fn populate_with_outpoints(
@@ -206,15 +193,73 @@ where
         let tip = update
             .latest_checkpoint()
             .expect("update must atleast have one checkpoint");
+
         let mut full_txs = HashMap::new();
         for outpoint in outpoints {
-            for (tx_height, tx) in self.find_spending_tx(outpoint)? {
-                let txid = tx.txid();
-                full_txs.insert(txid, tx);
-                if tx_height.is_confirmed() && tx_height > TxHeight::Confirmed(tip.height) {
+            let txid = outpoint.txid;
+            let tx = self.inner.transaction_get(&txid)?;
+            debug_assert_eq!(tx.txid(), txid);
+            let txout = match tx.output.get(outpoint.vout as usize) {
+                Some(txout) => txout,
+                None => continue,
+            };
+
+            // attempt to find the following transactions (alongside their chain positions), and
+            // add to our sparsechain `update`:
+            let mut has_residing = false; // tx in which the outpoint resides
+            let mut has_spending = false; // tx that spends the outpoint
+            for res in self.inner.script_get_history(&txout.script_pubkey)? {
+                if has_residing && has_spending {
+                    break;
+                }
+
+                // skip if we have already added the tx to our `update`
+                if full_txs.contains_key(&res.tx_hash) {
+                    if res.tx_hash == txid {
+                        has_residing = true;
+                    } else {
+                        has_spending = true;
+                    }
                     continue;
                 }
+
+                let res_tx = if res.tx_hash == txid {
+                    has_residing = true;
+                    tx.clone()
+                } else {
+                    let res_tx = self.inner.transaction_get(&res.tx_hash)?;
+                    if !res_tx
+                        .input
+                        .iter()
+                        .any(|txin| txin.previous_output == outpoint)
+                    {
+                        continue;
+                    }
+                    has_spending = true;
+                    res_tx
+                };
+                full_txs.insert(res.tx_hash, res_tx);
+
+                let tx_height = match res.height {
+                    h if h <= 0 => {
+                        debug_assert!(
+                            h == 0 || h == -1,
+                            "unexpected height ({}) from electrum server",
+                            h
+                        );
+                        TxHeight::Unconfirmed
+                    }
+                    h => {
+                        let h = h as u32;
+                        if h > tip.height {
+                            TxHeight::Unconfirmed
+                        } else {
+                            TxHeight::Confirmed(h)
+                        }
+                    }
+                };
                 let tx_pos = self.get_chain_position(txid, tx_height)?;
+
                 if let Err(failure) = update.insert_tx(txid, tx_pos) {
                     match failure {
                         sparse_chain::InsertTxError::TxTooHigh { .. } => {
@@ -243,7 +288,12 @@ where
             .latest_checkpoint()
             .expect("update must have atleast one checkpoint");
         for txid in txids {
-            let tx_height = match self.get_txid_status(txid)? {
+            let tx = match self.inner.transaction_get(&txid) {
+                Ok(tx) => tx,
+                Err(electrum_client::Error::Protocol(_)) => continue,
+                Err(other_err) => return Err(other_err.into()),
+            };
+            let tx_height = match self.get_tx_status(&tx)? {
                 Some(height) => height,
                 None => continue,
             };
@@ -372,57 +422,6 @@ where
         }
     }
 
-    fn find_spending_tx(
-        &self,
-        outpoint: OutPoint,
-    ) -> Result<Vec<(TxHeight, Transaction)>, ElectrumError> {
-        fn tx_height_from_result(res: &GetHistoryRes) -> TxHeight {
-            match res.height {
-                0 | -1 => TxHeight::Unconfirmed,
-                h if h > 0 => TxHeight::Confirmed(h as _),
-                invalid_h => panic!("unexpected height ({}) from electrum server", invalid_h),
-            }
-        }
-
-        let tx = self.inner.transaction_get(&outpoint.txid)?;
-        let txout = tx
-            .output
-            .get(outpoint.vout as usize)
-            .ok_or(ElectrumError::InvalidOutPoint(outpoint))?;
-
-        let mut spent_tx = None;
-        let mut spending_tx = None;
-        for item in self.inner.script_get_history(&txout.script_pubkey)? {
-            let current_tx = self.inner.transaction_get(&item.tx_hash)?;
-            if current_tx.txid() == tx.txid() {
-                let height = tx_height_from_result(&item);
-                spent_tx = Some((height, tx.clone()));
-            }
-            if current_tx
-                .input
-                .iter()
-                .any(|txin| txin.previous_output == outpoint)
-            {
-                let height = tx_height_from_result(&item);
-                spending_tx = Some((height, current_tx));
-            }
-            if spent_tx.is_none() && spending_tx.is_none() {
-                break;
-            }
-        }
-
-        Ok([spent_tx, spending_tx].into_iter().flatten().collect())
-    }
-
-    fn get_txid_status(&self, txid: Txid) -> Result<Option<TxHeight>, ElectrumError> {
-        let tx = match self.inner.transaction_get(&txid) {
-            Ok(tx) => tx,
-            Err(electrum_client::Error::Protocol(_)) => return Ok(None),
-            Err(other_err) => return Err(other_err.into()),
-        };
-        self.get_tx_status(&tx)
-    }
-
     fn get_tx_status(&self, tx: &Transaction) -> Result<Option<TxHeight>, ElectrumError> {
         let txid = tx.txid();
         let spk = tx
@@ -544,10 +543,15 @@ where
                 }
             }
 
-            match self.reorg_check(&mut update) {
-                Err(InternalError::Reorg) => continue,
-                Err(InternalError::ElectrumError(e)) => return Err(e.into()),
-                Ok(_) => break update,
+            // check for reorgs during scan process
+            let our_tip = update
+                .latest_checkpoint()
+                .expect("update must have atleast one checkpoint");
+            let server_blockhash = self.block_header(our_tip.height as usize)?.block_hash();
+            if our_tip.hash != server_blockhash {
+                continue; // reorg
+            } else {
+                break update;
             }
         };
 
