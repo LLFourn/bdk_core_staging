@@ -9,7 +9,7 @@ use bdk_cli::{
 };
 use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
-    ScanParams,
+    ScanParams, ScanParamsWithoutKeychain,
 };
 use std::{collections::BTreeMap, fmt::Debug, io, io::Write, ops::Deref};
 
@@ -212,14 +212,14 @@ fn main() -> anyhow::Result<()> {
             };
 
             // we scan the spks **without** a lock on the tracker
-            let params = ScanParams::<bdk_cli::Keychain, Vec<(u32, Script)>> {
-                arbitary_spks: spks.collect(),
+            let params = ScanParamsWithoutKeychain {
                 batch_size: scan_option.batch_size,
-                ..Default::default()
+                ..ScanParamsWithoutKeychain::from_spks(spks)
             };
             client
-                .scan(&local_chain, params)
+                .scan_without_keychain(&local_chain, params)
                 .context("scanning the blockchain")?
+                .into_with_keychain()
         }
         ElectrumCommands::SyncUnspent => {
             // get all utxo outpoints

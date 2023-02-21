@@ -503,24 +503,6 @@ where
                 }
             }
 
-            if !params.arbitary_spks.is_empty() {
-                let mut arbitary_spks = params
-                    .arbitary_spks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, spk)| (i, spk.clone()));
-                match self.populate_with_spks::<K, _, _>(
-                    &mut update,
-                    &mut arbitary_spks,
-                    usize::MAX,
-                    params.batch_size,
-                ) {
-                    Err(InternalError::Reorg) => continue,
-                    Err(InternalError::ElectrumError(e)) => return Err(e.into()),
-                    Ok(_) => {}
-                }
-            }
-
             if !params.txids.is_empty() {
                 match self.populate_with_txids(&mut update, params.txids.iter().cloned()) {
                     Err(InternalError::Reorg) => continue,
@@ -573,15 +555,39 @@ where
             last_active_indices: last_active_index,
         })
     }
+
+    /// Convenience method to call [`scan`] without requiring a keychain.
+    ///
+    /// [`scan`]: ElectrumClient::scan
+    pub fn scan_without_keychain<S>(
+        &self,
+        local_chain: &BTreeMap<u32, BlockHash>,
+        params: ScanParamsWithoutKeychain<S>,
+    ) -> Result<ElectrumUpdate<(), P>, Error>
+    where
+        S: IntoIterator<Item = Script>,
+    {
+        let spk_iter = params
+            .spks
+            .into_iter()
+            .enumerate()
+            .map(|(i, spk)| (i as u32, spk));
+        let params = ScanParams {
+            keychain_spks: [((), spk_iter)].into(),
+            txids: params.txids,
+            full_txs: params.full_txs,
+            outpoints: params.outpoints,
+            stop_gap: params.stop_gap,
+            batch_size: params.batch_size,
+        };
+        self.scan(local_chain, params)
+    }
 }
 
 /// Parameters for [`ElectrumClient::scan`].
 pub struct ScanParams<K, S: IntoIterator<Item = (u32, Script)>> {
     /// Indexed script pubkeys of each keychain to scan transaction histories for.
     pub keychain_spks: BTreeMap<K, S>,
-    /// Arbitary script pubkeys to scan transaction histories for, which are not associated to a
-    /// keychain.
-    pub arbitary_spks: Vec<Script>,
     /// Txids to scan for. The update will update the [`ChainPosition`]s for these.
     pub txids: Vec<Txid>,
     /// Full transactions to scan for. The update will update the [`ChainPosition`]s for these.
@@ -600,7 +606,6 @@ impl<K, S: IntoIterator<Item = (u32, Script)>> Default for ScanParams<K, S> {
     fn default() -> Self {
         Self {
             keychain_spks: Default::default(),
-            arbitary_spks: Default::default(),
             txids: Default::default(),
             full_txs: Default::default(),
             outpoints: Default::default(),
@@ -610,13 +615,56 @@ impl<K, S: IntoIterator<Item = (u32, Script)>> Default for ScanParams<K, S> {
     }
 }
 
-impl<K, S: IntoIterator<Item = (u32, Script)>> ScanParams<K, S> {}
-
 impl<K, S: IntoIterator<Item = (u32, Script)>> From<BTreeMap<K, S>> for ScanParams<K, S> {
     fn from(value: BTreeMap<K, S>) -> Self {
         Self {
             keychain_spks: value,
             ..Default::default()
+        }
+    }
+}
+
+/// Parameters for [`ElectrumClient::scan_without_keychain`].
+pub struct ScanParamsWithoutKeychain<S: IntoIterator<Item = Script>> {
+    /// Miscellaneous script pubkeys to scan transaction histories for.
+    pub spks: S,
+    /// Txids to scan for. The update will update the [`ChainPosition`]s for these.
+    pub txids: Vec<Txid>,
+    /// Full transactions to scan for. The update will update the [`ChainPosition`]s for these.
+    pub full_txs: Vec<Transaction>,
+    /// Outpoints to scan for. The update will try include the transaction that spends this outpoint
+    /// alongside the transaction which contains this outpoint.
+    pub outpoints: Vec<OutPoint>,
+    /// The theshold number of [`ScanParamsWithoutKeychain::spks`] that return empty histories
+    /// before we stop scanning for `keychain_spks`.
+    pub stop_gap: usize,
+    /// The batch size to use for requests that can be batched.
+    pub batch_size: usize,
+}
+
+impl<S: IntoIterator<Item = Script> + Default> Default for ScanParamsWithoutKeychain<S> {
+    fn default() -> Self {
+        Self {
+            spks: Default::default(),
+            txids: Default::default(),
+            full_txs: Default::default(),
+            outpoints: Default::default(),
+            stop_gap: 10,
+            batch_size: 10,
+        }
+    }
+}
+
+impl<S: IntoIterator<Item = Script>> ScanParamsWithoutKeychain<S> {
+    /// Create [`ScanParamsWithoutKeychain`] with provided `spks` and default parameters.
+    pub fn from_spks(spks: S) -> Self {
+        Self {
+            spks: spks,
+            txids: Default::default(),
+            full_txs: Default::default(),
+            outpoints: Default::default(),
+            stop_gap: 10,
+            batch_size: 10,
         }
     }
 }
@@ -673,6 +721,16 @@ impl<K: Ord + Clone + Debug, P: ChainPosition> ElectrumUpdate<K, P> {
             update: tracker.chain_graph().inflate_update(self.update, new_txs)?,
             last_active_indices: self.last_active_indices,
         })?)
+    }
+}
+
+impl<P> ElectrumUpdate<(), P> {
+    /// Convert [`ElectrumUpdate<(), P>`] into [`ElectrumUpdate<K, P>`].
+    pub fn into_with_keychain<K>(self) -> ElectrumUpdate<K, P> {
+        ElectrumUpdate {
+            update: self.update,
+            last_active_indices: Default::default(),
+        }
     }
 }
 
