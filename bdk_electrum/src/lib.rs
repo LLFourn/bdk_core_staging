@@ -39,7 +39,8 @@ use bdk_chain::{
     BlockId, ConfirmationTime, TxHeight,
 };
 pub use electrum_client;
-use electrum_client::{Client, ElectrumApi};
+use electrum_client::Client;
+pub use electrum_client::{ElectrumApi, Error};
 
 /// Represents a [`ChainPosition`] that can be created via [`ElectrumClient`].
 ///
@@ -51,7 +52,7 @@ pub trait ElectrumChainPosition: ChainPosition + Sized {
         client: &ElectrumClient<Self>,
         txid: Txid,
         height: TxHeight,
-    ) -> Result<Self, ElectrumError>;
+    ) -> Result<Self, Error>;
 }
 
 impl ElectrumChainPosition for TxHeight {
@@ -59,7 +60,7 @@ impl ElectrumChainPosition for TxHeight {
         _: &ElectrumClient<Self>,
         _: Txid,
         height: TxHeight,
-    ) -> Result<TxHeight, ElectrumError> {
+    ) -> Result<TxHeight, Error> {
         Ok(height)
     }
 }
@@ -69,7 +70,7 @@ impl ElectrumChainPosition for ConfirmationTime {
         client: &ElectrumClient<Self>,
         _: Txid,
         height: TxHeight,
-    ) -> Result<ConfirmationTime, ElectrumError> {
+    ) -> Result<ConfirmationTime, Error> {
         Ok(match height {
             TxHeight::Confirmed(height) => {
                 let time = client.block_header(height as _)?.time as u64;
@@ -101,7 +102,7 @@ where
 {
     /// Create a new [`ElectrumClient`] that is connected to electrum server at `url` with default
     /// [`electrum_client::Config`].
-    pub fn new(url: &str) -> Result<Self, ElectrumError> {
+    pub fn new(url: &str) -> Result<Self, Error> {
         Ok(Self {
             inner: electrum_client::Client::new(url)?,
             pos_marker: Default::default(),
@@ -109,7 +110,7 @@ where
     }
 
     /// Create a new [`ElectrumClient`] from the provided [`electrum_client::Config`].
-    pub fn from_config(url: &str, config: electrum_client::Config) -> Result<Self, ElectrumError> {
+    pub fn from_config(url: &str, config: electrum_client::Config) -> Result<Self, Error> {
         Ok(Self {
             inner: electrum_client::Client::from_config(url, config)?,
             pos_marker: Default::default(),
@@ -125,12 +126,12 @@ where
     }
 
     /// This publicly exposes [`ElectrumChainPosition::position_from_electrum`].
-    pub fn get_chain_position(&self, txid: Txid, height: TxHeight) -> Result<P, ElectrumError> {
+    pub fn get_chain_position(&self, txid: Txid, height: TxHeight) -> Result<P, Error> {
         P::position_from_electrum(self, txid, height)
     }
 
     /// Fetch the latest block height.
-    pub fn get_tip(&self) -> Result<(u32, BlockHash), electrum_client::Error> {
+    pub fn get_tip(&self) -> Result<(u32, BlockHash), Error> {
         // TODO: unsubscribe when added to the client, or is there a better call to use here?
         Ok(self
             .inner
@@ -142,7 +143,7 @@ where
     fn prepare_update(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
-    ) -> Result<SparseChain<P>, ElectrumError> {
+    ) -> Result<SparseChain<P>, Error> {
         let mut update = SparseChain::<P>::default();
 
         // Find local chain block that is still there so our update can connect to the local chain.
@@ -422,7 +423,7 @@ where
         }
     }
 
-    fn get_tx_status(&self, tx: &Transaction) -> Result<Option<TxHeight>, ElectrumError> {
+    fn get_tx_status(&self, tx: &Transaction) -> Result<Option<TxHeight>, Error> {
         let txid = tx.txid();
         let spk = tx
             .output
@@ -453,7 +454,7 @@ where
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
         params: ScanParams<K, S>,
-    ) -> Result<ScanUpdate<K, P>, ElectrumError>
+    ) -> Result<ScanUpdate<K, P>, Error>
     where
         K: Ord + Clone,
         S: IntoIterator<Item = (u32, Script)>,
@@ -656,38 +657,9 @@ impl<K: Ord + Clone + Debug, P: ChainPosition> ScanUpdate<K, P> {
     }
 }
 
-/// Error type returned by [`ElectrumClient`].
-#[derive(Debug)]
-pub enum ElectrumError {
-    /// Error of the internal [`electrum_client::Client`].
-    Client(electrum_client::Error),
-    /// Error that occurs when the provided outpoint (via [`ScanParams`]) does not exist on the
-    /// transaction (`vout` is too high).
-    InvalidOutPoint(OutPoint),
-}
-
-impl core::fmt::Display for ElectrumError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ElectrumError::Client(e) => write!(f, "{}", e),
-            ElectrumError::InvalidOutPoint(op) => {
-                write!(f, "outpoint {}:{} does not exist", op.txid, op.vout)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ElectrumError {}
-
-impl From<electrum_client::Error> for ElectrumError {
-    fn from(e: electrum_client::Error) -> Self {
-        Self::Client(e)
-    }
-}
-
 #[derive(Debug)]
 enum InternalError {
-    ElectrumError(ElectrumError),
+    ElectrumError(Error),
     Reorg,
 }
 
@@ -697,12 +669,6 @@ impl core::fmt::Display for InternalError {
             InternalError::ElectrumError(e) => core::fmt::Display::fmt(e, f),
             InternalError::Reorg => write!(f, "reorg occured during update"),
         }
-    }
-}
-
-impl From<ElectrumError> for InternalError {
-    fn from(value: ElectrumError) -> Self {
-        Self::ElectrumError(value)
     }
 }
 

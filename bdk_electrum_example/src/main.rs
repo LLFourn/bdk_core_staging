@@ -9,7 +9,7 @@ use bdk_cli::{
 };
 use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
-    ElectrumError, ScanParams,
+    ScanParams,
 };
 use std::{collections::BTreeMap, fmt::Debug, io, io::Write, ops::Deref};
 
@@ -62,13 +62,13 @@ impl Deref for WrappedClient {
 }
 
 impl WrappedClient {
-    fn new(url: &str, config: electrum_client::Config) -> Result<Self, ElectrumError> {
+    fn new(url: &str, config: electrum_client::Config) -> Result<Self, bdk_electrum::Error> {
         bdk_electrum::ElectrumClient::from_config(url, config).map(Self)
     }
 }
 
 impl Broadcast for WrappedClient {
-    type Error = ElectrumError;
+    type Error = bdk_electrum::Error;
 
     fn broadcast(&self, tx: &bdk_chain::bitcoin::Transaction) -> anyhow::Result<(), Self::Error> {
         self.transaction_broadcast(tx)?;
