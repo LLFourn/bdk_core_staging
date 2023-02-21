@@ -487,6 +487,30 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         }
     }
 
+    /// Get the next unused script pubkey of the provided `keychain` and mark it as used.
+    ///
+    /// This is a convenience method that is equivalent to calling [`next_unused_spk`] and
+    /// [`mark_used`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if 'keychain' has never been added to the index
+    ///
+    /// [`next_unused_spk`]: Self::next_unused_spk
+    /// [`mark_used`]: Self::mark_used
+    pub fn reserve_next_unused_spk(
+        &mut self,
+        keychain: &K,
+    ) -> ((u32, &Script), DerivationAdditions<K>) {
+        let ((index, _), additions) = self.next_unused_spk(keychain);
+        self.mark_used(keychain, index);
+        let script = self
+            .inner
+            .spk_at_index(&(keychain.clone(), index))
+            .expect("spk already returned above");
+        ((index, script), additions)
+    }
+
     /// Marks the script pubkey at `index` as used even though it hasn't seen an output with it.
     /// This only has an effect when the `index` had been added to `self` already and was unused.
     ///
