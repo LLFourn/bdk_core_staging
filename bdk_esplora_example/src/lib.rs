@@ -5,7 +5,9 @@ use std::io::{self, Write};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::esplora::Client;
 use bdk_chain::bitcoin::{secp256k1::Secp256k1, Address, Network};
+use bdk_chain::bitcoin::{Transaction, Txid};
 use bdk_chain::chain_graph::ChainGraph;
 use bdk_chain::file_store::KeychainStore;
 use bdk_chain::keychain::KeychainScan;
@@ -17,7 +19,6 @@ use bdk_chain::ConfirmationTime;
 pub use bdk_chain::*;
 use bdk_cli::anyhow::{Context, Result};
 use bdk_cli::Keychain;
-use esplora::Client;
 
 pub const DEFAULT_PARALLEL_REQUESTS: u8 = 5;
 
@@ -91,6 +92,19 @@ where
     eprintln!("This is the address at index {}", index);
     println!("{}", address);
     Ok(address)
+}
+
+pub fn get_tx_and_confirmation(
+    txid: Txid,
+    keychain_tracker: &Mutex<KeychainTracker<Keychain, ConfirmationTime>>,
+) -> (ConfirmationTime, Transaction) {
+    let tracker = keychain_tracker.lock().unwrap();
+    let (conf, tx) = tracker
+        .chain_graph()
+        .get_tx_in_chain(txid)
+        .expect("transaction should be still in chain");
+
+    (conf.clone(), tx.clone())
 }
 
 pub fn get_balance(tracker: &Mutex<KeychainTracker<Keychain, ConfirmationTime>>) -> (u64, u64) {
@@ -179,6 +193,13 @@ where
     let scan = client
         .spk_scan(spks, &local_chain, None)
         .context("scanning the blockchain")?;
+
+    /*for (conf, txid) in scan.chain().txids() {
+        println!("Conf: {:?}", conf);
+        println!("Tx {:?}", txid);
+        let (_, tx) = scan.get_tx_in_chain(*txid).unwrap();
+        dbg!(tx);
+    }*/
 
     {
         // we take a short lock to apply the results to the tracker and db

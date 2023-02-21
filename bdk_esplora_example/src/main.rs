@@ -1,12 +1,9 @@
-mod esplora;
-use crate::esplora::Client;
 use bdk_chain::bitcoin::Network;
-
-use std::io::{self, Write};
+use bdk_esplora_example::esplora::Client;
 
 const DEFAULT_PARALLEL_REQUESTS: u8 = 5;
 use bdk_cli::{
-    anyhow::{self, Context},
+    anyhow,
     clap::{self, Subcommand},
 };
 
@@ -59,119 +56,14 @@ fn main() -> anyhow::Result<()> {
 
     match esplora_cmd {
         EsploraCommands::Scan { stop_gap } => {
-            let (spk_iterators, local_chain) = {
-                // Get a short lock on the tracker to get the spks iterators
-                // and local chain state
-                let tracker = &*keychain_tracker.lock().unwrap();
-                let spk_iterators = tracker
-                    .txout_index
-                    .spks_of_all_keychains()
-                    .into_iter()
-                    .map(|(keychain, iter)| {
-                        let mut first = true;
-                        (
-                            keychain,
-                            iter.inspect(move |(i, _)| {
-                                if first {
-                                    eprint!("\nscanning {}: ", keychain);
-                                    first = false;
-                                }
-
-                                eprint!("{} ", i);
-                                let _ = io::stdout().flush();
-                            }),
-                        )
-                    })
-                    .collect();
-
-                let local_chain = tracker.chain().checkpoints().clone();
-                (spk_iterators, local_chain)
-            };
-
-            // we scan the iterators **without** a lock on the tracker
-            let wallet_scan = client
-                .wallet_scan(spk_iterators, &local_chain, Some(stop_gap))
-                .context("scanning the blockchain")?;
-            eprintln!();
-
-            {
-                // we take a short lock to apply results to tracker and db
-                let tracker = &mut *keychain_tracker.lock().unwrap();
-                let db = &mut *db.lock().unwrap();
-                let changeset = tracker.apply_update(wallet_scan)?;
-                db.append_changeset(&changeset)?;
-            }
+            bdk_esplora_example::run_scan(stop_gap, &keychain_tracker, &db, &client)?;
         }
         EsploraCommands::Sync {
-            mut unused,
-            mut unspent,
+            unused,
+            unspent,
             all,
         } => {
-            let (spks, local_chain) = {
-                // Get a short lock on the tracker to get the spks we're interested in
-                let tracker = &*keychain_tracker.lock().unwrap();
-                let txout_index = &tracker.txout_index;
-                if !(all || unused || unspent) {
-                    unused = true;
-                    unspent = true;
-                } else if all {
-                    unused = false;
-                    unspent = false
-                }
-                let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
-                    Box::new(core::iter::empty());
-
-                if all {
-                    let all_spks = txout_index
-                        .all_spks()
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>();
-                    spks = Box::new(spks.chain(all_spks.into_iter().map(|(index, script)| {
-                        eprintln!("scanning {:?}", index);
-                        script
-                    })));
-                }
-
-                if unused {
-                    let unused_spks = txout_index
-                        .unused_spks(..)
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>();
-                    spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {
-                        eprintln!("Checking if address at {:?} has been used", index);
-                        script
-                    })));
-                }
-
-                if unspent {
-                    let unspent_txouts = tracker
-                        .full_utxos()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>();
-                    spks = Box::new(spks.chain(unspent_txouts.into_iter().map(
-                        |(_index, ftxout)| {
-                            eprintln!("checking if {} has been spent", ftxout.outpoint);
-                            ftxout.txout.script_pubkey
-                        },
-                    )));
-                }
-                let local_chain = tracker.chain().checkpoints().clone();
-
-                (spks, local_chain)
-            };
-            // we scan the desired spks **without** a lock on the tracker
-            let scan = client
-                .spk_scan(spks, &local_chain, None)
-                .context("scanning the blockchain")?;
-
-            {
-                // we take a short lock to apply the results to the tracker and db
-                let tracker = &mut *keychain_tracker.lock().unwrap();
-                let changeset = tracker.apply_update(scan.into())?;
-                let db = &mut *db.lock().unwrap();
-                db.append_changeset(&changeset)?;
-            }
+            bdk_esplora_example::run_sync(unused, unspent, all, &keychain_tracker, &db, &client)?;
         }
     }
 

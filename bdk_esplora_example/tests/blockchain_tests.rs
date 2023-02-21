@@ -20,49 +20,44 @@ use electrsd::{
 use std::env;
 use std::time::{Duration, Instant};
 
-fn setup_test_servers() -> (BitcoinD, ElectrsD) {
-    let bitcoin_daemon: BitcoinD = {
-        let bitcoind_exe = env::var("BITCOIND_EXE")
-            .ok()
-            .or_else(|| bitcoind::downloaded_exe_path().ok())
-            .expect(
-                "you need to provide an env var BITCOIND_EXE or specify a bitcoind version feature",
-            );
-        let conf = bitcoind::Conf::default();
-        BitcoinD::with_conf(bitcoind_exe, &conf).unwrap()
-    };
-
-    let electrs_daemon: ElectrsD = {
-        let electrs_exe = env::var("ELECTRS_EXE")
-            .ok()
-            .or_else(electrsd::downloaded_exe_path)
-            .expect(
-                "you need to provide env var ELECTRS_EXE or specify an electrsd version feature",
-            );
-        let mut conf = electrsd::Conf::default();
-        conf.http_enabled = true;
-        ElectrsD::with_conf(electrs_exe, &bitcoin_daemon, &conf).unwrap()
-    };
-
-    (bitcoin_daemon, electrs_daemon)
+fn setup_electrs_server(bitcoind: &BitcoinD) -> ElectrsD {
+    let electrs_exe = env::var("ELECTRS_EXE")
+        .ok()
+        .or_else(electrsd::downloaded_exe_path)
+        .expect("you need to provide env var ELECTRS_EXE or specify an electrsd version feature");
+    let mut conf = electrsd::Conf::default();
+    conf.http_enabled = true;
+    ElectrsD::with_conf(electrs_exe, bitcoind, &conf).unwrap()
 }
 
-fn wait_for_tx_appears_in_esplora(wait_seconds: u64, electrs_daemon: &ElectrsD, txid: &bdk_chain::bitcoin::Txid) -> bool {
-    //let mut runs = 0;
-    //while runs < wait_seconds {
+fn setup_bitcoind(conf: Option<bitcoind::Conf>) -> BitcoinD {
+    let bitcoind_exe = env::var("BITCOIND_EXE")
+        .ok()
+        .or_else(|| bitcoind::downloaded_exe_path().ok())
+        .expect(
+            "you need to provide an env var BITCOIND_EXE or specify a bitcoind version feature",
+        );
+    let conf = conf.unwrap_or_else(|| bitcoind::Conf::default());
+
+    BitcoinD::with_conf(bitcoind_exe, &conf).unwrap()
+}
+
+fn wait_for_tx_appears_in_esplora(
+    wait_seconds: u64,
+    electrs_daemon: &ElectrsD,
+    txid: &bdk_chain::bitcoin::Txid,
+) -> bool {
     let instant = Instant::now();
     loop {
         let wait_tx = electrs_daemon.client.transaction_get(txid);
         if wait_tx.is_ok() {
             return true;
         }
-        //std::thread::sleep(Duration::from_secs(1));
-        //runs = runs + 1;
+
         if instant.elapsed() >= Duration::from_secs(wait_seconds) {
             return false;
         }
     }
-    //return false;
 }
 
 fn generate_blocks_and_wait(num: usize, bitcoin_daemon: &BitcoinD, electrs_daemon: &ElectrsD) {
@@ -77,18 +72,16 @@ fn reorg(num_blocks: usize, bitcoin_daemon: &BitcoinD) -> Result<()> {
 
     let mut to_invalidate = best_hash;
     for i in 1..=num_blocks {
-        dbg!(
+        println!(
             "Invalidating block {}/{} ({})",
-            i,
-            num_blocks,
-            to_invalidate
+            i, num_blocks, to_invalidate
         );
 
         bitcoin_daemon.client.invalidate_block(&to_invalidate)?;
         to_invalidate = bitcoin_daemon.client.get_best_block_hash()?;
     }
 
-    dbg!(
+    println!(
         "Invalidated {} blocks to new height of {}",
         num_blocks,
         initial_height - num_blocks as usize
@@ -97,8 +90,11 @@ fn reorg(num_blocks: usize, bitcoin_daemon: &BitcoinD) -> Result<()> {
     Ok(())
 }
 
-fn setup_client(bitcoin_daemon: &BitcoinD, electrs_daemon: &ElectrsD) -> Client {
-    generate_blocks_and_wait(101, bitcoin_daemon, electrs_daemon);
+fn premine(num_blocks: usize, bitcoin_daemon: &BitcoinD, electrs_daemon: &ElectrsD) {
+    generate_blocks_and_wait(num_blocks, bitcoin_daemon, electrs_daemon);
+}
+
+fn setup_esplora_client(electrs_daemon: &ElectrsD) -> Client {
     let esplora_url = format!("http://{}", electrs_daemon.esplora_url.as_ref().unwrap());
     Client::new(&esplora_url, DEFAULT_PARALLEL_REQUESTS)
         .expect("creation of Rust Esplora Client failed")
@@ -107,7 +103,7 @@ fn setup_client(bitcoin_daemon: &BitcoinD, electrs_daemon: &ElectrsD) -> Client 
 fn generate_blocks(num: usize, bitcoin_daemon: &BitcoinD) {
     let address = bitcoin_daemon
         .client
-        .get_new_address(Some("test"), Some(AddressType::Legacy))
+        .get_new_address(Some("test"), Some(AddressType::Bech32))
         .unwrap();
     let _block_hashes = bitcoin_daemon
         .client
@@ -147,17 +143,20 @@ where
 
 #[test]
 fn test_confirmed_balance() -> Result<()> {
-    //setup test servers
-    let (bitcoin_daemon, electrs_daemon) = setup_test_servers();
-    //setup esplora client
-    let client = setup_client(&bitcoin_daemon, &electrs_daemon);
-    //setup the CLI app
+    // setup bitcoin and electrs daemon
+    let bitcoin_daemon = setup_bitcoind(None);
+    let electrs_daemon = setup_electrs_server(&bitcoin_daemon);
+
+    premine(101, &bitcoin_daemon, &electrs_daemon);
+
+    let client = setup_esplora_client(&electrs_daemon);
+
+    // initialize the bdk_esplora_example for testing
     let (_keymap, keychain_tracker, db) = bdk_esplora_example::init()?;
 
-    //Generate an address from CLI app
     let address = bdk_esplora_example::get_new_address(&keychain_tracker, &db, Network::Regtest)?;
 
-    //Send bitcoins to that address
+    // Send bitcoins to the above address
     let _txid = bitcoin_daemon
         .client
         .send_to_address(
@@ -172,14 +171,12 @@ fn test_confirmed_balance() -> Result<()> {
         )
         .unwrap();
 
-    //Mine a couple of blocks
+    // mine a block to confirm the transaction
     generate_blocks_and_wait(1, &bitcoin_daemon, &electrs_daemon);
 
     bdk_esplora_example::run_sync(false, false, true, &keychain_tracker, &db, &client)?;
 
-    //check balance of wallet
     let balance = keychain_tracker.lock().unwrap().balance(|_| false);
-
     assert_eq!(balance.confirmed, 1000);
 
     Ok(())
@@ -187,18 +184,20 @@ fn test_confirmed_balance() -> Result<()> {
 
 #[test]
 fn test_unconfirmed_balance() -> Result<()> {
-    //setup test servers
-    let (bitcoin_daemon, electrs_daemon) = setup_test_servers();
+    // setup bitcoin and electrs daemons
+    let bitcoin_daemon = setup_bitcoind(None);
+    let electrs_daemon = setup_electrs_server(&bitcoin_daemon);
 
-    let client = setup_client(&bitcoin_daemon, &electrs_daemon);
+    premine(101, &bitcoin_daemon, &electrs_daemon);
 
-    //setup the CLI app
+    let client = setup_esplora_client(&electrs_daemon);
+
+    // initialize the bdk_esplora_example for testing
     let (_keymap, keychain_tracker, db) = bdk_esplora_example::init()?;
 
-    //Generate an address from CLI app
     let address = bdk_esplora_example::get_new_address(&keychain_tracker, &db, Network::Regtest)?;
 
-    //Send bitcoins to that address
+    // Send bitcoins to the above address
     let txid = bitcoin_daemon
         .client
         .send_to_address(
@@ -214,12 +213,10 @@ fn test_unconfirmed_balance() -> Result<()> {
         .unwrap();
 
     wait_for_tx_appears_in_esplora(5, &electrs_daemon, &txid);
-    
+
     bdk_esplora_example::run_sync(false, false, true, &keychain_tracker, &db, &client)?;
 
-    //check balance of wallet
     let balance = keychain_tracker.lock().unwrap().balance(|_| false);
-
     assert_eq!(balance.untrusted_pending, 1000);
 
     Ok(())
@@ -227,18 +224,26 @@ fn test_unconfirmed_balance() -> Result<()> {
 
 #[test]
 fn test_reorg() -> Result<()> {
-    //setup test servers
-    let (bitcoin_daemon, electrs_daemon) = setup_test_servers();
-    //setup esplora client
-    let client = setup_client(&bitcoin_daemon, &electrs_daemon);
+    //setup bitcoin nodes and electrsd
+    let mut conf = bitcoind::Conf::default();
+    conf.p2p = bitcoind::P2P::Yes;
+    let bitcoin_daemon = setup_bitcoind(Some(conf));
+    let electrs_daemon = setup_electrs_server(&bitcoin_daemon);
+    let mut miner_conf = bitcoind::Conf::default();
+    miner_conf.p2p = bitcoin_daemon.p2p_connect(true).unwrap();
+    let miner_node = setup_bitcoind(Some(miner_conf));
 
-    //setup the CLI app
+    premine(101, &bitcoin_daemon, &electrs_daemon);
+
+    let client = setup_esplora_client(&electrs_daemon);
+
+    // initialize the bdk_esplora_example app
     let (_keymap, keychain_tracker, db) = bdk_esplora_example::init()?;
 
     //generate an address and send to that address.
     let address = bdk_esplora_example::get_new_address(&keychain_tracker, &db, Network::Regtest)?;
 
-    //Send bitcoins to that address
+    //Send bitcoins to the address above
     let txid = bitcoin_daemon
         .client
         .send_to_address(
@@ -263,33 +268,28 @@ fn test_reorg() -> Result<()> {
 
     assert_eq!(balance.confirmed, 1000);
 
-    // reorg blocks
-    reorg(10, &bitcoin_daemon)?;
+    // Reorg blocks on miner chain
+    reorg(3, &miner_node)?;
+    // Generate more blocks on the miner node, thereby making it the chain with the most
+    // work, so the bitcoin_daemon chain has to catch up on this chain which doesn't
+    // have a transaction above.
+    generate_blocks_and_wait(5, &miner_node, &electrs_daemon);
 
     //test if you find your transaction in pending untrusted balance.
     bdk_esplora_example::run_sync(false, false, true, &keychain_tracker, &db, &client)?;
 
-    //check balance of wallet
     let balance = keychain_tracker.lock().unwrap().balance(|_| false);
-
-    dbg!(balance.clone());
-
     assert_eq!(balance.untrusted_pending, 1000);
 
-    let tracker_lock = keychain_tracker.lock().unwrap();
-    let (new_pos, tx) = tracker_lock
-        .chain_graph()
-        .get_tx_in_chain(txid)
-        .expect("transaction should be still in chain");
-    assert_eq!(new_pos, &ConfirmationTime::Unconfirmed);
+    let (new_pos, tx) = bdk_esplora_example::get_tx_and_confirmation(txid, &keychain_tracker);
+    assert_eq!(new_pos, ConfirmationTime::Unconfirmed);
 
-    bitcoin_daemon.client.send_raw_transaction(tx).unwrap();
+    bitcoin_daemon.client.send_raw_transaction(&tx).unwrap();
     generate_blocks_and_wait(1, &bitcoin_daemon, &electrs_daemon);
 
     bdk_esplora_example::run_sync(false, false, true, &keychain_tracker, &db, &client)?;
 
     let balance = keychain_tracker.lock().unwrap().balance(|_| false);
-
     assert_eq!(balance.confirmed, 1000);
 
     Ok(())
@@ -297,18 +297,19 @@ fn test_reorg() -> Result<()> {
 
 #[test]
 fn test_send_tx() -> Result<()> {
-    //setup test servers
-    let (bitcoin_daemon, electrs_daemon) = setup_test_servers();
-    //setup esplora client
-    let client = setup_client(&bitcoin_daemon, &electrs_daemon);
+    let bitcoin_daemon = setup_bitcoind(None);
+    let electrs_daemon = setup_electrs_server(&bitcoin_daemon);
 
-    //setup the CLI app
+    let client = setup_esplora_client(&electrs_daemon);
+
+    premine(101, &bitcoin_daemon, &electrs_daemon);
+
+    // Initialize the bdk esplora app
     let (keymap, keychain_tracker, db) = bdk_esplora_example::init()?;
 
-    //generate an address
     let address = bdk_esplora_example::get_new_address(&keychain_tracker, &db, Network::Regtest)?;
 
-    //Send bitcoins to that address
+    // Send bitcoins to the address above
     let _ = bitcoin_daemon
         .client
         .send_to_address(
@@ -323,19 +324,18 @@ fn test_send_tx() -> Result<()> {
         )
         .unwrap();
 
+    // Get the transaction confirmed above
     generate_blocks_and_wait(1, &bitcoin_daemon, &electrs_daemon);
 
     bdk_esplora_example::run_sync(false, false, true, &keychain_tracker, &db, &client)?;
 
-    //check balance of wallet
     let balance = keychain_tracker.lock().unwrap().balance(|_| false);
 
     assert_eq!(balance.confirmed, 10000);
 
-    //use bitcoind to generate address.
     let address = bitcoin_daemon.client.get_new_address(None, None)?;
 
-    //Create a transaction that sends back some coins to bitcoind
+    // Create a transaction that sends back coins to bitcoind
     let (tx, _) = bdk_cli::create_tx(
         1000,
         address,
@@ -343,18 +343,16 @@ fn test_send_tx() -> Result<()> {
         &mut keychain_tracker.lock().unwrap(),
         &keymap,
     )?;
-    //let tx_id = bitcoind.client.send_raw_transaction(&tx)?;
+
     let _ = client.broadcast(&tx)?;
 
-    //Generate blocks
+    // Get transaction confirmed
     generate_blocks_and_wait(1, &bitcoin_daemon, &electrs_daemon);
 
-    //Sync esplora client
+    // Sync esplora client
     bdk_esplora_example::run_sync(false, false, true, &keychain_tracker, &db, &client)?;
 
     let balance = keychain_tracker.lock().unwrap().balance(|_| false);
-
-    dbg!(balance.clone());
 
     assert_eq!(balance.confirmed, 8716);
     let tracker_lock = keychain_tracker.lock().unwrap();

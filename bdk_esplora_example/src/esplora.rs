@@ -195,9 +195,9 @@ impl Client {
         // Depending upon service providers number of recent blocks returned will vary.
         // esplora returns 10.
         // mempool.space returns 15.
-        for block in self.client.get_recent_blocks(None)? {
+        for block in self.client.get_blocks(None)? {
             let block_id = BlockId {
-                height: block.height,
+                height: block.time.height,
                 hash: block.id,
             };
             let _ = update
