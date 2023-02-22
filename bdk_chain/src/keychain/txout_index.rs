@@ -460,6 +460,30 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         ((next_index, script), additions)
     }
 
+    /// Attempts to reveal the next script pubkey of the provided `keychain` and mark it as used.
+    ///
+    /// This is a convenience method that is equivalent to calling [`reveal_next_spk`] and
+    /// [`mark_used`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `keychain` does not exist.
+    ///
+    /// [`reveal_next_spk`]: Self::reveal_next_spk
+    /// [`mark_used`]: Self::mark_used
+    pub fn reveal_and_reserve_next_spk(
+        &mut self,
+        keychain: &K,
+    ) -> ((u32, &Script), DerivationAdditions<K>) {
+        let ((next_index, _), additions) = self.reveal_next_spk(keychain);
+        self.mark_used(keychain, next_index);
+        let script = self
+            .inner
+            .spk_at_index(&(keychain.clone(), next_index))
+            .expect("spk already returned above");
+        ((next_index, script), additions)
+    }
+
     /// Gets the next unused script pubkey in the keychain. I.e. the script pubkey with the lowest
     /// index that has not been used yet.
     ///
