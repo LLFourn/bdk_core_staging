@@ -6,7 +6,7 @@ use bdk_cli::{
 };
 use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
-    ScanParams, ScanParamsWithoutKeychain,
+    ElectrumUpdate, ScanParams, ScanParamsWithoutKeychain,
 };
 use std::{collections::BTreeMap, fmt::Debug, io, io::Write, ops::Deref};
 
@@ -235,10 +235,13 @@ fn main() -> anyhow::Result<()> {
                 outpoints,
                 ..ScanParamsWithoutKeychain::from_spks(spks)
             };
-            client
-                .scan_without_keychain(&bdk_electrum::tx_height_position, &local_chain, params)
-                .context("scanning the blockchain")?
-                .into_with_keychain()
+            ElectrumUpdate {
+                chain_update: client
+                    .scan_without_keychain(&bdk_electrum::tx_height_position, &local_chain, params)
+                    .context("scanning the blockchain")?
+                    .chain_update,
+                ..Default::default()
+            }
         }
     };
 
@@ -252,7 +255,10 @@ fn main() -> anyhow::Result<()> {
     {
         // Get a final short lock to apply the changes
         let mut tracker = tracker.lock().unwrap();
-        let changeset = response.into_keychain_changeset(new_txs, &*tracker)?;
+        let changeset = {
+            let scan = response.into_keychain_scan(new_txs, &*tracker)?;
+            tracker.determine_changeset(&scan)?
+        };
         db.lock().unwrap().append_changeset(&changeset)?;
         tracker.apply_changeset(changeset);
     };

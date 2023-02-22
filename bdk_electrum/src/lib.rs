@@ -23,6 +23,7 @@
 //! [`bdk_electrum_example`]: https://github.com/LLFourn/bdk_core_staging/tree/master/bdk_electrum_example
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap},
     fmt::Debug,
     ops::Deref,
@@ -30,8 +31,8 @@ use std::{
 
 use bdk_chain::{
     bitcoin::{BlockHash, OutPoint, Script, Transaction, Txid},
-    chain_graph,
-    keychain::{KeychainChangeSet, KeychainScan, KeychainTracker},
+    chain_graph::{self, ChainGraph},
+    keychain::KeychainScan,
     sparse_chain::{self, ChainPosition, SparseChain},
     tx_graph::TxGraph,
     AsTransaction, BlockId, ConfirmationTime, TxHeight,
@@ -74,7 +75,7 @@ pub fn confirmation_time_position<'c>(
     })
 }
 
-/// Structure to get data from electrum to update [`KeychainTracker`].
+/// Structure to get data from electrum to update [`bdk_chain`] structures.
 ///
 /// This uses [`electrum_client::Client`] internally.
 pub struct ElectrumClient {
@@ -231,6 +232,7 @@ impl ElectrumClient {
                 full_txs.insert(res.tx_hash, res_tx);
 
                 let tx_height = match res.height {
+                    // Electrum server API specifies that height <= 0 is considered unconfirmed
                     h if h <= 0 => {
                         debug_assert!(
                             h == 0 || h == -1,
@@ -284,46 +286,28 @@ impl ElectrumClient {
                 Err(electrum_client::Error::Protocol(_)) => continue,
                 Err(other_err) => return Err(other_err.into()),
             };
-            let tx_height = match self.get_tx_status(&tx)? {
-                Some(height) => height,
-                None => continue,
-            };
-            if tx_height.is_confirmed() && tx_height > TxHeight::Confirmed(tip.height) {
-                continue;
-            }
-            let tx_pos = to_position(self.position_args(txid, tx_height))?;
-            if let Err(failure) = update.insert_tx(txid, tx_pos) {
-                match failure {
-                    sparse_chain::InsertTxError::TxTooHigh { .. } => {
-                        unreachable!("we should never encounter this as we ensured height <= tip");
-                    }
-                    sparse_chain::InsertTxError::TxMovedUnexpectedly { .. } => {
-                        return Err(InternalError::Reorg);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
 
-    fn populate_with_txs<'a, P: ChainPosition>(
-        &self,
-        to_position: &impl Fn(ChainPositionArgs<'_>) -> Result<P, Error>,
-        update: &mut SparseChain<P>,
-        txs: impl Iterator<Item = &'a Transaction>,
-    ) -> Result<(), InternalError> {
-        let tip = update
-            .latest_checkpoint()
-            .expect("update must have at least one checkpoint");
-        for tx in txs {
-            let tx_height = match self.get_tx_status(tx)? {
-                Some(height) => height,
+            let spk = tx
+                .output
+                .get(0)
+                .map(|txo| &txo.script_pubkey)
+                .expect("tx must have an output");
+
+            let tx_height = match self
+                .inner
+                .script_get_history(spk)?
+                .into_iter()
+                .find(|r| r.tx_hash == txid)
+                .map(|r| r.height)
+            {
+                Some(h) if h > 0 => TxHeight::Confirmed(h as _),
+                Some(_) => TxHeight::Unconfirmed,
                 None => continue,
             };
+
             if tx_height.is_confirmed() && tx_height > TxHeight::Confirmed(tip.height) {
                 continue;
             }
-            let txid = tx.txid();
             let tx_pos = to_position(self.position_args(txid, tx_height))?;
             if let Err(failure) = update.insert_tx(txid, tx_pos) {
                 match failure {
@@ -416,29 +400,9 @@ impl ElectrumClient {
         }
     }
 
-    fn get_tx_status(&self, tx: &Transaction) -> Result<Option<TxHeight>, Error> {
-        let txid = tx.txid();
-        let spk = tx
-            .output
-            .get(0)
-            .map(|txo| &txo.script_pubkey)
-            .expect("tx must have an output");
-        let tx_height = self
-            .inner
-            .script_get_history(spk)?
-            .into_iter()
-            .find(|r| r.tx_hash == txid)
-            .map(|r| r.height);
-        Ok(match tx_height {
-            Some(h) if h > 0 => Some(TxHeight::Confirmed(h as _)),
-            Some(_) => Some(TxHeight::Unconfirmed),
-            None => None,
-        })
-    }
-
     /// Scan the blockchain (via electrum) for data specified by [`ScanParams`]. This returns a
-    /// [`ElectrumUpdate`] which can be applied to a [`KeychainTracker`] after we find all the missing
-    /// full transactions.
+    /// [`ElectrumUpdate`] which can be transformed into a [`KeychainScan`] after we find all the
+    /// missing full transactions.
     ///
     /// Refer to [crate-level documentation] for more.
     ///
@@ -511,14 +475,6 @@ impl ElectrumClient {
                 }
             }
 
-            if !params.txs.is_empty() {
-                match self.populate_with_txs(&to_position, &mut update, params.txs.iter()) {
-                    Err(InternalError::Reorg) => continue,
-                    Err(InternalError::ElectrumError(e)) => return Err(e.into()),
-                    Ok(_) => {}
-                }
-            }
-
             if !params.outpoints.is_empty() {
                 match self.populate_with_outpoints(
                     &to_position,
@@ -555,7 +511,7 @@ impl ElectrumClient {
             .collect::<BTreeMap<_, _>>();
 
         Ok(ElectrumUpdate {
-            update,
+            chain_update: update,
             last_active_indices: last_active_index,
         })
     }
@@ -581,7 +537,6 @@ impl ElectrumClient {
         let params = ScanParams {
             keychain_spks: [((), spk_iter)].into(),
             txids: params.txids,
-            txs: params.txs,
             outpoints: params.outpoints,
             stop_gap: params.stop_gap,
             batch_size: params.batch_size,
@@ -596,8 +551,6 @@ pub struct ScanParams<K, S: IntoIterator<Item = (u32, Script)>> {
     pub keychain_spks: BTreeMap<K, S>,
     /// Txids to scan for. The update will update the [`ChainPosition`]s for these.
     pub txids: Vec<Txid>,
-    /// Full transactions to scan for. The update will update the [`ChainPosition`]s for these.
-    pub txs: Vec<Transaction>,
     /// Outpoints to scan for. The update will try include the transaction that spends this outpoint
     /// alongside the transaction which contains this outpoint.
     pub outpoints: Vec<OutPoint>,
@@ -613,19 +566,9 @@ impl<K, S: IntoIterator<Item = (u32, Script)>> Default for ScanParams<K, S> {
         Self {
             keychain_spks: Default::default(),
             txids: Default::default(),
-            txs: Default::default(),
             outpoints: Default::default(),
             stop_gap: 10,
             batch_size: 10,
-        }
-    }
-}
-
-impl<K, S: IntoIterator<Item = (u32, Script)>> From<BTreeMap<K, S>> for ScanParams<K, S> {
-    fn from(value: BTreeMap<K, S>) -> Self {
-        Self {
-            keychain_spks: value,
-            ..Default::default()
         }
     }
 }
@@ -678,7 +621,7 @@ impl<S: IntoIterator<Item = Script>> ScanParamsWithoutKeychain<S> {
 /// The result of [`ElectrumClient::scan`].
 pub struct ElectrumUpdate<K, P> {
     /// The internal [`SparseChain`] update.
-    pub update: SparseChain<P>,
+    pub chain_update: SparseChain<P>,
     /// The last keychain script pubkey indices which had transaction histories.
     pub last_active_indices: BTreeMap<K, u32>,
 }
@@ -686,7 +629,7 @@ pub struct ElectrumUpdate<K, P> {
 impl<K, P> Default for ElectrumUpdate<K, P> {
     fn default() -> Self {
         Self {
-            update: Default::default(),
+            chain_update: Default::default(),
             last_active_indices: Default::default(),
         }
     }
@@ -694,7 +637,7 @@ impl<K, P> Default for ElectrumUpdate<K, P> {
 
 impl<K, P> AsRef<SparseChain<P>> for ElectrumUpdate<K, P> {
     fn as_ref(&self) -> &SparseChain<P> {
-        &self.update
+        &self.chain_update
     }
 }
 
@@ -707,90 +650,39 @@ impl<K: Ord + Clone + Debug, P: ChainPosition> ElectrumUpdate<K, P> {
         T: AsTransaction,
         G: AsRef<TxGraph<T>>,
     {
-        self.update
+        self.chain_update
             .txids()
             .filter(|(_, txid)| graph.as_ref().get_tx(*txid).is_none())
             .map(|(_, txid)| txid)
             .collect()
     }
 
-    /// Transform the [`ElectrumUpdate`] into a [`KeychainScan`] which can be applied to the
-    /// [`KeychainTracker`].
+    /// Transform the [`ElectrumUpdate`] into a [`KeychainScan`] which can be applied to a
+    /// `tracker`.
     ///
     /// This will fail if there are missing full transactions not provided via `new_txs`.
-    pub fn into_keychain_changeset(
+    pub fn into_keychain_scan<T, CG>(
         self,
-        new_txs: Vec<Transaction>,
-        tracker: &KeychainTracker<K, P>,
-    ) -> Result<KeychainChangeSet<K, P, Transaction>, IntoChangeSetError<P>> {
-        Ok(tracker.determine_changeset(&KeychainScan {
-            update: tracker.chain_graph().inflate_update(self.update, new_txs)?,
+        new_txs: Vec<T>,
+        chain_graph: &CG,
+    ) -> Result<KeychainScan<K, P, Cow<T>>, chain_graph::NewError<P>>
+    where
+        T: AsTransaction + Clone + Ord,
+        CG: AsRef<ChainGraph<P, T>>,
+    {
+        Ok(KeychainScan {
+            update: chain_graph
+                .as_ref()
+                .inflate_update(self.chain_update, new_txs)?,
             last_active_indices: self.last_active_indices,
-        })?)
+        })
     }
 }
-
-impl<P> ElectrumUpdate<(), P> {
-    /// Convert [`ElectrumUpdate<(), P>`] into [`ElectrumUpdate<K, P>`].
-    pub fn into_with_keychain<K>(self) -> ElectrumUpdate<K, P> {
-        ElectrumUpdate {
-            update: self.update,
-            last_active_indices: Default::default(),
-        }
-    }
-}
-
-/// Error of [`ElectrumUpdate::into_keychain_changeset`].
-#[derive(Debug)]
-pub enum IntoChangeSetError<P> {
-    /// Failed to inflate a [`SparseChain`] update into a [`ChainGraph`] update.
-    ///
-    /// [`ChainGraph`]: chain_graph::ChainGraph
-    InflateError(chain_graph::NewError<P>),
-
-    /// Failed to determine a [`chain_graph::ChangeSet`] that can be applied to the
-    /// [`KeychainTracker`].
-    UpdateError(chain_graph::UpdateError<P>),
-}
-
-impl<P: Debug> core::fmt::Display for IntoChangeSetError<P> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IntoChangeSetError::InflateError(e) => {
-                write!(f, "failed to inflate sparsechain update: {}", e)
-            }
-            IntoChangeSetError::UpdateError(e) => write!(f, "failed to determine changeset: {}", e),
-        }
-    }
-}
-
-impl<P> From<chain_graph::NewError<P>> for IntoChangeSetError<P> {
-    fn from(value: chain_graph::NewError<P>) -> Self {
-        Self::InflateError(value)
-    }
-}
-
-impl<P> From<chain_graph::UpdateError<P>> for IntoChangeSetError<P> {
-    fn from(value: chain_graph::UpdateError<P>) -> Self {
-        Self::UpdateError(value)
-    }
-}
-
-impl<P: Debug> std::error::Error for IntoChangeSetError<P> {}
 
 #[derive(Debug)]
 enum InternalError {
     ElectrumError(Error),
     Reorg,
-}
-
-impl core::fmt::Display for InternalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            InternalError::ElectrumError(e) => core::fmt::Display::fmt(e, f),
-            InternalError::Reorg => write!(f, "reorg occured during update"),
-        }
-    }
 }
 
 impl From<electrum_client::Error> for InternalError {

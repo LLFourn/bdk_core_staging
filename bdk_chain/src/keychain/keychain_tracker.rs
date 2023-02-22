@@ -296,8 +296,20 @@ impl<K, P> Default for KeychainTracker<K, P> {
     }
 }
 
+impl<K, P> AsRef<SparseChain<P>> for KeychainTracker<K, P> {
+    fn as_ref(&self) -> &SparseChain<P> {
+        self.chain_graph.chain()
+    }
+}
+
 impl<K, P> AsRef<TxGraph> for KeychainTracker<K, P> {
     fn as_ref(&self) -> &TxGraph {
-        self.chain_graph.as_ref()
+        self.chain_graph.graph()
+    }
+}
+
+impl<K, P> AsRef<ChainGraph<P>> for KeychainTracker<K, P> {
+    fn as_ref(&self) -> &ChainGraph<P> {
+        &self.chain_graph
     }
 }
