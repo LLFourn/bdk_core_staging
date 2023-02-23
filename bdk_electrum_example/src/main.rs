@@ -6,7 +6,7 @@ use bdk_cli::{
 };
 use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
-    ElectrumUpdate,
+    ElectrumExt, ElectrumUpdate,
 };
 use std::{collections::BTreeMap, fmt::Debug, io, io::Write, ops::Deref};
 
@@ -50,11 +50,11 @@ pub struct ScanOption {
     pub batch_size: usize,
 }
 
-/// A wrapped [`bdk_electrum::ElectrumClient`] that implements [`bdk_cli::Broadcast`].
-struct WrappedClient(bdk_electrum::ElectrumClient);
+/// A wrapped [`electrum_client::Client`] that implements [`bdk_cli::Broadcast`].
+struct WrappedClient(electrum_client::Client);
 
 impl Deref for WrappedClient {
-    type Target = bdk_electrum::ElectrumClient;
+    type Target = electrum_client::Client;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -62,17 +62,16 @@ impl Deref for WrappedClient {
 }
 
 impl WrappedClient {
-    fn new(url: &str, config: electrum_client::Config) -> Result<Self, bdk_electrum::Error> {
-        bdk_electrum::ElectrumClient::from_config(url, config).map(Self)
+    fn new(url: &str, config: electrum_client::Config) -> Result<Self, electrum_client::Error> {
+        electrum_client::Client::from_config(url, config).map(Self)
     }
 }
 
 impl Broadcast for WrappedClient {
-    type Error = bdk_electrum::Error;
+    type Error = electrum_client::Error;
 
     fn broadcast(&self, tx: &bdk_chain::bitcoin::Transaction) -> anyhow::Result<(), Self::Error> {
-        self.transaction_broadcast(tx)?;
-        Ok(())
+        self.transaction_broadcast(tx).map(|_| ())
     }
 }
 

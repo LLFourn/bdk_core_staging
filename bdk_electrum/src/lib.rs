@@ -1,7 +1,7 @@
 //! This crate is used for updating [`KeychainTracker`] (from the [`bdk_chain`] crate) with data
 //! from an electrum server.
 //!
-//! The star of the show is the [`ElectrumClient::scan`] method, which scans for relevant blockchain
+//! The star of the show is the [`ElectrumExt::scan`] method, which scans for relevant blockchain
 //! data (via electrum) and outputs an [`ElectrumUpdate`].
 //!
 //! An [`ElectrumUpdate`] only includes `txid`s and no full transactions. The caller is responsible
@@ -26,7 +26,6 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
     fmt::Debug,
-    ops::Deref,
 };
 
 use bdk_chain::{
@@ -38,312 +37,16 @@ use bdk_chain::{
     AsTransaction, BlockId, ConfirmationTime, TxHeight,
 };
 pub use electrum_client;
-use electrum_client::Client;
-pub use electrum_client::{ElectrumApi, Error};
+use electrum_client::{Client, ElectrumApi, Error};
 
-/// Structure to get data from electrum to update [`bdk_chain`] structures.
+/// Trait to extend [`electrum_client::Client`] functionality.
 ///
-/// This uses [`electrum_client::Client`] internally.
-pub struct ElectrumClient {
-    inner: Client,
-}
-
-impl Deref for ElectrumClient {
-    type Target = Client;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl ElectrumClient {
-    /// Create a new [`ElectrumClient`] that is connected to electrum server at `url` with default
-    /// [`electrum_client::Config`].
-    pub fn new(url: &str) -> Result<Self, Error> {
-        Ok(Self {
-            inner: electrum_client::Client::new(url)?,
-        })
-    }
-
-    /// Create a new [`ElectrumClient`] from the provided [`electrum_client::Config`].
-    pub fn from_config(url: &str, config: electrum_client::Config) -> Result<Self, Error> {
-        Ok(Self {
-            inner: electrum_client::Client::from_config(url, config)?,
-        })
-    }
-
-    /// Create a new [`ElectrumClient`] from the provided [`electrum_client::Client`].
-    pub fn from_client(client: Client) -> Self {
-        Self { inner: client }
-    }
-
+/// Refer to [crate-level documentation] for more.
+///
+/// [crate-level documentation]: crate
+pub trait ElectrumExt {
     /// Fetch the latest block height.
-    pub fn get_tip(&self) -> Result<(u32, BlockHash), Error> {
-        // TODO: unsubscribe when added to the client, or is there a better call to use here?
-        Ok(self
-            .inner
-            .block_headers_subscribe()
-            .map(|data| (data.height as u32, data.header.block_hash()))?)
-    }
-
-    /// Prepare an update sparsechain "template" based on the checkpoints of the `local_chain`.
-    fn prepare_update(&self, local_chain: &BTreeMap<u32, BlockHash>) -> Result<SparseChain, Error> {
-        let mut update = SparseChain::default();
-
-        // Find local chain block that is still there so our update can connect to the local chain.
-        for (&existing_height, &existing_hash) in local_chain.iter().rev() {
-            // TODO: a batch request may be safer, as a reorg that happens when we are obtaining
-            //       `block_header`s will result in inconsistencies
-            let current_hash = self
-                .inner
-                .block_header(existing_height as usize)?
-                .block_hash();
-            let _ = update
-                .insert_checkpoint(BlockId {
-                    height: existing_height,
-                    hash: current_hash,
-                })
-                .expect("This never errors because we are working with a fresh chain");
-
-            if current_hash == existing_hash {
-                break;
-            }
-        }
-
-        // Insert the new tip so new transactions will be accepted into the sparse chain.
-        let tip = {
-            let (height, hash) = self.get_tip()?;
-            BlockId { height, hash }
-        };
-        if let Err(failure) = update.insert_checkpoint(tip) {
-            match failure {
-                sparse_chain::InsertCheckpointError::HashNotMatching { .. } => {
-                    // There has been a re-org before we even begin scanning addresses.
-                    // Just recursively call (this should never happen).
-                    return self.prepare_update(local_chain);
-                }
-            }
-        }
-
-        Ok(update)
-    }
-
-    /// Populate an update [`SparseChain`] with transactions (and associated block positions) that
-    /// contain and spend the given `outpoints`.
-    fn populate_with_outpoints(
-        &self,
-        update: &mut SparseChain,
-        outpoints: &mut impl Iterator<Item = OutPoint>,
-    ) -> Result<HashMap<Txid, Transaction>, InternalError> {
-        let tip = update
-            .latest_checkpoint()
-            .expect("update must atleast have one checkpoint");
-
-        let mut full_txs = HashMap::new();
-        for outpoint in outpoints {
-            let txid = outpoint.txid;
-            let tx = self.inner.transaction_get(&txid)?;
-            debug_assert_eq!(tx.txid(), txid);
-            let txout = match tx.output.get(outpoint.vout as usize) {
-                Some(txout) => txout,
-                None => continue,
-            };
-
-            // attempt to find the following transactions (alongside their chain positions), and
-            // add to our sparsechain `update`:
-            let mut has_residing = false; // tx in which the outpoint resides
-            let mut has_spending = false; // tx that spends the outpoint
-            for res in self.inner.script_get_history(&txout.script_pubkey)? {
-                if has_residing && has_spending {
-                    break;
-                }
-
-                // skip if we have already added the tx to our `update`
-                if full_txs.contains_key(&res.tx_hash) {
-                    if res.tx_hash == txid {
-                        has_residing = true;
-                    } else {
-                        has_spending = true;
-                    }
-                    continue;
-                }
-
-                let res_tx = if res.tx_hash == txid {
-                    has_residing = true;
-                    tx.clone()
-                } else {
-                    let res_tx = self.inner.transaction_get(&res.tx_hash)?;
-                    if !res_tx
-                        .input
-                        .iter()
-                        .any(|txin| txin.previous_output == outpoint)
-                    {
-                        continue;
-                    }
-                    has_spending = true;
-                    res_tx
-                };
-                full_txs.insert(res.tx_hash, res_tx);
-
-                let tx_height = match res.height {
-                    // Electrum server API specifies that height <= 0 is considered unconfirmed
-                    h if h <= 0 => {
-                        debug_assert!(
-                            h == 0 || h == -1,
-                            "unexpected height ({}) from electrum server",
-                            h
-                        );
-                        TxHeight::Unconfirmed
-                    }
-                    h => {
-                        let h = h as u32;
-                        if h > tip.height {
-                            TxHeight::Unconfirmed
-                        } else {
-                            TxHeight::Confirmed(h)
-                        }
-                    }
-                };
-
-                if let Err(failure) = update.insert_tx(txid, tx_height) {
-                    match failure {
-                        sparse_chain::InsertTxError::TxTooHigh { .. } => {
-                            unreachable!(
-                                "we should never encounter this as we ensured height <= tip"
-                            );
-                        }
-                        sparse_chain::InsertTxError::TxMovedUnexpectedly { .. } => {
-                            return Err(InternalError::Reorg);
-                        }
-                    }
-                }
-            }
-        }
-        Ok(full_txs)
-    }
-
-    /// Populate an update [`SparseChain`] with transactions (and associated block positions) from
-    /// the given `txids`.
-    fn populate_with_txids(
-        &self,
-        update: &mut SparseChain,
-        txids: &mut impl Iterator<Item = Txid>,
-    ) -> Result<(), InternalError> {
-        let tip = update
-            .latest_checkpoint()
-            .expect("update must have atleast one checkpoint");
-        for txid in txids {
-            let tx = match self.inner.transaction_get(&txid) {
-                Ok(tx) => tx,
-                Err(electrum_client::Error::Protocol(_)) => continue,
-                Err(other_err) => return Err(other_err.into()),
-            };
-
-            let spk = tx
-                .output
-                .get(0)
-                .map(|txo| &txo.script_pubkey)
-                .expect("tx must have an output");
-
-            let tx_height = match self
-                .inner
-                .script_get_history(spk)?
-                .into_iter()
-                .find(|r| r.tx_hash == txid)
-                .map(|r| r.height)
-            {
-                Some(h) if h > 0 => TxHeight::Confirmed(h as _),
-                Some(_) => TxHeight::Unconfirmed,
-                None => continue,
-            };
-
-            if tx_height.is_confirmed() && tx_height > TxHeight::Confirmed(tip.height) {
-                continue;
-            }
-            if let Err(failure) = update.insert_tx(txid, tx_height) {
-                match failure {
-                    sparse_chain::InsertTxError::TxTooHigh { .. } => {
-                        unreachable!("we should never encounter this as we ensured height <= tip");
-                    }
-                    sparse_chain::InsertTxError::TxMovedUnexpectedly { .. } => {
-                        return Err(InternalError::Reorg);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Populate an update [`SparseChain`] with transactions (and associated block positions) from
-    /// the transaction history of the provided `spks`.
-    fn populate_with_spks<K, I, S>(
-        &self,
-        update: &mut SparseChain,
-        spks: &mut S,
-        stop_gap: usize,
-        batch_size: usize,
-    ) -> Result<BTreeMap<I, (Script, bool)>, InternalError>
-    where
-        K: Ord + Clone,
-        I: Ord + Clone,
-        S: Iterator<Item = (I, Script)>,
-    {
-        let tip = update.latest_checkpoint().map_or(0, |cp| cp.height);
-        let mut unused_spk_count = 0_usize;
-        let mut scanned_spks = BTreeMap::new();
-
-        loop {
-            let spks = (0..batch_size)
-                .map_while(|_| spks.next())
-                .collect::<Vec<_>>();
-            if spks.is_empty() {
-                return Ok(scanned_spks);
-            }
-
-            let spk_histories = self
-                .inner
-                .batch_script_get_history(spks.iter().map(|(_, s)| s))?;
-
-            for ((spk_index, spk), spk_history) in spks.into_iter().zip(spk_histories) {
-                if spk_history.is_empty() {
-                    scanned_spks.insert(spk_index, (spk, false));
-                    unused_spk_count += 1;
-                    if unused_spk_count > stop_gap {
-                        return Ok(scanned_spks);
-                    }
-                    continue;
-                } else {
-                    scanned_spks.insert(spk_index, (spk, true));
-                    unused_spk_count = 0;
-                }
-
-                for tx in spk_history {
-                    let tx_height = match tx.height {
-                        h if h <= 0 => TxHeight::Unconfirmed,
-                        h => {
-                            let h = h as u32;
-                            if h > tip {
-                                TxHeight::Unconfirmed
-                            } else {
-                                TxHeight::Confirmed(h)
-                            }
-                        }
-                    };
-                    if let Err(failure) = update.insert_tx(tx.tx_hash, tx_height) {
-                        match failure {
-                            sparse_chain::InsertTxError::TxTooHigh { .. } => {
-                                unreachable!(
-                                    "we should never encounter this as we ensured height <= tip"
-                                );
-                            }
-                            sparse_chain::InsertTxError::TxMovedUnexpectedly { .. } => {
-                                return Err(InternalError::Reorg);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    fn get_tip(&self) -> Result<(u32, BlockHash), Error>;
 
     /// Scan the blockchain (via electrum) for the data specified. This returns a [`ElectrumUpdate`]
     /// which can be transformed into a [`KeychainScan`] after we find all the missing full
@@ -352,7 +55,7 @@ impl ElectrumClient {
     /// Refer to [crate-level documentation] for more.
     ///
     /// [crate-level documentation]: crate
-    pub fn scan<K>(
+    fn scan<K: Ord + Clone>(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
         keychain_spks: BTreeMap<K, impl IntoIterator<Item = (u32, Script)>>,
@@ -360,10 +63,53 @@ impl ElectrumClient {
         outpoints: impl IntoIterator<Item = OutPoint>,
         stop_gap: usize,
         batch_size: usize,
-    ) -> Result<ElectrumUpdate<K, TxHeight>, Error>
-    where
-        K: Ord + Clone,
-    {
+    ) -> Result<ElectrumUpdate<K, TxHeight>, Error>;
+
+    /// Convenience method to call [`scan`] without requiring a keychain.
+    ///
+    /// [`scan`]: ElectrumExt::scan
+    fn scan_without_keychain(
+        &self,
+        local_chain: &BTreeMap<u32, BlockHash>,
+        misc_spks: impl IntoIterator<Item = Script>,
+        txids: impl IntoIterator<Item = Txid>,
+        outpoints: impl IntoIterator<Item = OutPoint>,
+        batch_size: usize,
+    ) -> Result<SparseChain, Error> {
+        let spk_iter = misc_spks
+            .into_iter()
+            .enumerate()
+            .map(|(i, spk)| (i as u32, spk));
+
+        self.scan(
+            local_chain,
+            [((), spk_iter)].into(),
+            txids,
+            outpoints,
+            usize::MAX,
+            batch_size,
+        )
+        .map(|u| u.chain_update)
+    }
+}
+
+impl ElectrumExt for Client {
+    fn get_tip(&self) -> Result<(u32, BlockHash), Error> {
+        // TODO: unsubscribe when added to the client, or is there a better call to use here?
+        Ok(self
+            .block_headers_subscribe()
+            .map(|data| (data.height as u32, data.header.block_hash()))?)
+    }
+
+    fn scan<K: Ord + Clone>(
+        &self,
+        local_chain: &BTreeMap<u32, BlockHash>,
+        keychain_spks: BTreeMap<K, impl IntoIterator<Item = (u32, Script)>>,
+        txids: impl IntoIterator<Item = Txid>,
+        outpoints: impl IntoIterator<Item = OutPoint>,
+        stop_gap: usize,
+        batch_size: usize,
+    ) -> Result<ElectrumUpdate<K, TxHeight>, Error> {
         let mut request_spks = keychain_spks
             .into_iter()
             .map(|(k, s)| {
@@ -377,14 +123,15 @@ impl ElectrumClient {
         let outpoints = outpoints.into_iter().collect::<Vec<_>>();
 
         let update = loop {
-            let mut update = self.prepare_update(local_chain)?;
+            let mut update = prepare_update(self, local_chain)?;
 
             if !request_spks.is_empty() {
                 if !scanned_spks.is_empty() {
                     let mut scanned_spk_iter = scanned_spks
                         .iter()
                         .map(|(i, (spk, _))| (i.clone(), spk.clone()));
-                    match self.populate_with_spks::<K, _, _>(
+                    match populate_with_spks::<K, _, _>(
+                        self,
                         &mut update,
                         &mut scanned_spk_iter,
                         stop_gap,
@@ -396,7 +143,8 @@ impl ElectrumClient {
                     };
                 }
                 for (keychain, keychain_spks) in &mut request_spks {
-                    match self.populate_with_spks::<K, u32, _>(
+                    match populate_with_spks::<K, u32, _>(
+                        self,
                         &mut update,
                         keychain_spks,
                         stop_gap,
@@ -412,13 +160,13 @@ impl ElectrumClient {
                 }
             }
 
-            match self.populate_with_txids(&mut update, &mut txids.iter().cloned()) {
+            match populate_with_txids(self, &mut update, &mut txids.iter().cloned()) {
                 Err(InternalError::Reorg) => continue,
                 Err(InternalError::ElectrumError(e)) => return Err(e.into()),
                 Ok(_) => {}
             }
 
-            match self.populate_with_outpoints(&mut update, &mut outpoints.iter().cloned()) {
+            match populate_with_outpoints(self, &mut update, &mut outpoints.iter().cloned()) {
                 Err(InternalError::Reorg) => continue,
                 Err(InternalError::ElectrumError(e)) => return Err(e.into()),
                 Ok(_txs) => { /* [TODO] cache full txs to reduce bandwidth */ }
@@ -452,36 +200,9 @@ impl ElectrumClient {
             last_active_indices: last_active_index,
         })
     }
-
-    /// Convenience method to call [`scan`] without requiring a keychain.
-    ///
-    /// [`scan`]: ElectrumClient::scan
-    pub fn scan_without_keychain(
-        &self,
-        local_chain: &BTreeMap<u32, BlockHash>,
-        misc_spks: impl IntoIterator<Item = Script>,
-        txids: impl IntoIterator<Item = Txid>,
-        outpoints: impl IntoIterator<Item = OutPoint>,
-        batch_size: usize,
-    ) -> Result<SparseChain, Error> {
-        let spk_iter = misc_spks
-            .into_iter()
-            .enumerate()
-            .map(|(i, spk)| (i as u32, spk));
-
-        self.scan(
-            local_chain,
-            [((), spk_iter)].into(),
-            txids,
-            outpoints,
-            usize::MAX,
-            batch_size,
-        )
-        .map(|u| u.chain_update)
-    }
 }
 
-/// The result of [`ElectrumClient::scan`].
+/// The result of [`ElectrumExt::scan`].
 pub struct ElectrumUpdate<K, P> {
     /// The internal [`SparseChain`] update.
     pub chain_update: SparseChain<P>,
@@ -599,5 +320,265 @@ enum InternalError {
 impl From<electrum_client::Error> for InternalError {
     fn from(value: electrum_client::Error) -> Self {
         Self::ElectrumError(value.into())
+    }
+}
+
+fn get_tip(client: &Client) -> Result<(u32, BlockHash), Error> {
+    // TODO: unsubscribe when added to the client, or is there a better call to use here?
+    Ok(client
+        .block_headers_subscribe()
+        .map(|data| (data.height as u32, data.header.block_hash()))?)
+}
+
+/// Prepare an update sparsechain "template" based on the checkpoints of the `local_chain`.
+fn prepare_update(
+    client: &Client,
+    local_chain: &BTreeMap<u32, BlockHash>,
+) -> Result<SparseChain, Error> {
+    let mut update = SparseChain::default();
+
+    // Find local chain block that is still there so our update can connect to the local chain.
+    for (&existing_height, &existing_hash) in local_chain.iter().rev() {
+        // TODO: a batch request may be safer, as a reorg that happens when we are obtaining
+        //       `block_header`s will result in inconsistencies
+        let current_hash = client.block_header(existing_height as usize)?.block_hash();
+        let _ = update
+            .insert_checkpoint(BlockId {
+                height: existing_height,
+                hash: current_hash,
+            })
+            .expect("This never errors because we are working with a fresh chain");
+
+        if current_hash == existing_hash {
+            break;
+        }
+    }
+
+    // Insert the new tip so new transactions will be accepted into the sparse chain.
+    let tip = {
+        let (height, hash) = get_tip(client)?;
+        BlockId { height, hash }
+    };
+    if let Err(failure) = update.insert_checkpoint(tip) {
+        match failure {
+            sparse_chain::InsertCheckpointError::HashNotMatching { .. } => {
+                // There has been a re-org before we even begin scanning addresses.
+                // Just recursively call (this should never happen).
+                return prepare_update(client, local_chain);
+            }
+        }
+    }
+
+    Ok(update)
+}
+
+fn populate_with_outpoints(
+    client: &Client,
+    update: &mut SparseChain,
+    outpoints: &mut impl Iterator<Item = OutPoint>,
+) -> Result<HashMap<Txid, Transaction>, InternalError> {
+    let tip = update
+        .latest_checkpoint()
+        .expect("update must atleast have one checkpoint");
+
+    let mut full_txs = HashMap::new();
+    for outpoint in outpoints {
+        let txid = outpoint.txid;
+        let tx = client.transaction_get(&txid)?;
+        debug_assert_eq!(tx.txid(), txid);
+        let txout = match tx.output.get(outpoint.vout as usize) {
+            Some(txout) => txout,
+            None => continue,
+        };
+
+        // attempt to find the following transactions (alongside their chain positions), and
+        // add to our sparsechain `update`:
+        let mut has_residing = false; // tx in which the outpoint resides
+        let mut has_spending = false; // tx that spends the outpoint
+        for res in client.script_get_history(&txout.script_pubkey)? {
+            if has_residing && has_spending {
+                break;
+            }
+
+            // skip if we have already added the tx to our `update`
+            if full_txs.contains_key(&res.tx_hash) {
+                if res.tx_hash == txid {
+                    has_residing = true;
+                } else {
+                    has_spending = true;
+                }
+                continue;
+            }
+
+            let res_tx = if res.tx_hash == txid {
+                has_residing = true;
+                tx.clone()
+            } else {
+                let res_tx = client.transaction_get(&res.tx_hash)?;
+                if !res_tx
+                    .input
+                    .iter()
+                    .any(|txin| txin.previous_output == outpoint)
+                {
+                    continue;
+                }
+                has_spending = true;
+                res_tx
+            };
+            full_txs.insert(res.tx_hash, res_tx);
+
+            let tx_height = match res.height {
+                // Electrum server API specifies that height <= 0 is considered unconfirmed
+                h if h <= 0 => {
+                    debug_assert!(
+                        h == 0 || h == -1,
+                        "unexpected height ({}) from electrum server",
+                        h
+                    );
+                    TxHeight::Unconfirmed
+                }
+                h => {
+                    let h = h as u32;
+                    if h > tip.height {
+                        TxHeight::Unconfirmed
+                    } else {
+                        TxHeight::Confirmed(h)
+                    }
+                }
+            };
+
+            if let Err(failure) = update.insert_tx(txid, tx_height) {
+                match failure {
+                    sparse_chain::InsertTxError::TxTooHigh { .. } => {
+                        unreachable!("we should never encounter this as we ensured height <= tip");
+                    }
+                    sparse_chain::InsertTxError::TxMovedUnexpectedly { .. } => {
+                        return Err(InternalError::Reorg);
+                    }
+                }
+            }
+        }
+    }
+    Ok(full_txs)
+}
+
+/// Populate an update [`SparseChain`] with transactions (and associated block positions) from
+/// the given `txids`.
+fn populate_with_txids(
+    client: &Client,
+    update: &mut SparseChain,
+    txids: &mut impl Iterator<Item = Txid>,
+) -> Result<(), InternalError> {
+    let tip = update
+        .latest_checkpoint()
+        .expect("update must have atleast one checkpoint");
+    for txid in txids {
+        let tx = match client.transaction_get(&txid) {
+            Ok(tx) => tx,
+            Err(electrum_client::Error::Protocol(_)) => continue,
+            Err(other_err) => return Err(other_err.into()),
+        };
+
+        let spk = tx
+            .output
+            .get(0)
+            .map(|txo| &txo.script_pubkey)
+            .expect("tx must have an output");
+
+        let tx_height = match client
+            .script_get_history(spk)?
+            .into_iter()
+            .find(|r| r.tx_hash == txid)
+            .map(|r| r.height)
+        {
+            Some(h) if h > 0 => TxHeight::Confirmed(h as _),
+            Some(_) => TxHeight::Unconfirmed,
+            None => continue,
+        };
+
+        if tx_height.is_confirmed() && tx_height > TxHeight::Confirmed(tip.height) {
+            continue;
+        }
+        if let Err(failure) = update.insert_tx(txid, tx_height) {
+            match failure {
+                sparse_chain::InsertTxError::TxTooHigh { .. } => {
+                    unreachable!("we should never encounter this as we ensured height <= tip");
+                }
+                sparse_chain::InsertTxError::TxMovedUnexpectedly { .. } => {
+                    return Err(InternalError::Reorg);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Populate an update [`SparseChain`] with transactions (and associated block positions) from
+/// the transaction history of the provided `spks`.
+fn populate_with_spks<K, I, S>(
+    client: &Client,
+    update: &mut SparseChain,
+    spks: &mut S,
+    stop_gap: usize,
+    batch_size: usize,
+) -> Result<BTreeMap<I, (Script, bool)>, InternalError>
+where
+    K: Ord + Clone,
+    I: Ord + Clone,
+    S: Iterator<Item = (I, Script)>,
+{
+    let tip = update.latest_checkpoint().map_or(0, |cp| cp.height);
+    let mut unused_spk_count = 0_usize;
+    let mut scanned_spks = BTreeMap::new();
+
+    loop {
+        let spks = (0..batch_size)
+            .map_while(|_| spks.next())
+            .collect::<Vec<_>>();
+        if spks.is_empty() {
+            return Ok(scanned_spks);
+        }
+
+        let spk_histories = client.batch_script_get_history(spks.iter().map(|(_, s)| s))?;
+
+        for ((spk_index, spk), spk_history) in spks.into_iter().zip(spk_histories) {
+            if spk_history.is_empty() {
+                scanned_spks.insert(spk_index, (spk, false));
+                unused_spk_count += 1;
+                if unused_spk_count > stop_gap {
+                    return Ok(scanned_spks);
+                }
+                continue;
+            } else {
+                scanned_spks.insert(spk_index, (spk, true));
+                unused_spk_count = 0;
+            }
+
+            for tx in spk_history {
+                let tx_height = match tx.height {
+                    h if h <= 0 => TxHeight::Unconfirmed,
+                    h => {
+                        let h = h as u32;
+                        if h > tip {
+                            TxHeight::Unconfirmed
+                        } else {
+                            TxHeight::Confirmed(h)
+                        }
+                    }
+                };
+                if let Err(failure) = update.insert_tx(tx.tx_hash, tx_height) {
+                    match failure {
+                        sparse_chain::InsertTxError::TxTooHigh { .. } => {
+                            unreachable!(
+                                "we should never encounter this as we ensured height <= tip"
+                            );
+                        }
+                        sparse_chain::InsertTxError::TxMovedUnexpectedly { .. } => {
+                            return Err(InternalError::Reorg);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
