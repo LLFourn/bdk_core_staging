@@ -149,7 +149,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             // we scan the spks **without** a lock on the tracker
-            client.scan(&bdk_electrum::tx_height_position, &local_chain, params)?
+            client.scan(&local_chain, params)?
         }
         ElectrumCommands::Sync {
             mut unused_spks,
@@ -237,7 +237,7 @@ fn main() -> anyhow::Result<()> {
             };
             ElectrumUpdate {
                 chain_update: client
-                    .scan_without_keychain(&bdk_electrum::tx_height_position, &local_chain, params)
+                    .scan_without_keychain(&local_chain, params)
                     .context("scanning the blockchain")?
                     .chain_update,
                 ..Default::default()
