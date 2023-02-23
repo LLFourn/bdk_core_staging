@@ -2,9 +2,9 @@
 //! from an electrum server.
 //!
 //! The star of the show is the [`ElectrumClient::scan`] method, which scans for relevant blockchain
-//! data (via electrum). `scan` takes in [`ScanParams`], and outputs a [`ElectrumUpdate`].
+//! data (via electrum) and outputs an [`ElectrumUpdate`].
 //!
-//! A [`ElectrumUpdate`] only includes `txid`s and no full transactions. The caller is responsible
+//! An [`ElectrumUpdate`] only includes `txid`s and no full transactions. The caller is responsible
 //! for obtaining full transactions before applying it to [`KeychainTracker`]. This can be done with
 //! these steps:
 //!
@@ -132,7 +132,7 @@ impl ElectrumClient {
     fn populate_with_outpoints(
         &self,
         update: &mut SparseChain,
-        outpoints: impl Iterator<Item = OutPoint>,
+        outpoints: &mut impl Iterator<Item = OutPoint>,
     ) -> Result<HashMap<Txid, Transaction>, InternalError> {
         let tip = update
             .latest_checkpoint()
@@ -226,7 +226,7 @@ impl ElectrumClient {
     fn populate_with_txids(
         &self,
         update: &mut SparseChain,
-        txids: impl Iterator<Item = Txid>,
+        txids: &mut impl Iterator<Item = Txid>,
     ) -> Result<(), InternalError> {
         let tip = update
             .latest_checkpoint()
@@ -345,28 +345,36 @@ impl ElectrumClient {
         }
     }
 
-    /// Scan the blockchain (via electrum) for data specified by [`ScanParams`]. This returns a
-    /// [`ElectrumUpdate`] which can be transformed into a [`KeychainScan`] after we find all the
-    /// missing full transactions.
+    /// Scan the blockchain (via electrum) for the data specified. This returns a [`ElectrumUpdate`]
+    /// which can be transformed into a [`KeychainScan`] after we find all the missing full
+    /// transactions.
     ///
     /// Refer to [crate-level documentation] for more.
     ///
     /// [crate-level documentation]: crate
-    pub fn scan<K, S>(
+    pub fn scan<K>(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
-        params: ScanParams<K, S>,
+        keychain_spks: BTreeMap<K, impl IntoIterator<Item = (u32, Script)>>,
+        txids: impl IntoIterator<Item = Txid>,
+        outpoints: impl IntoIterator<Item = OutPoint>,
+        stop_gap: usize,
+        batch_size: usize,
     ) -> Result<ElectrumUpdate<K, TxHeight>, Error>
     where
         K: Ord + Clone,
-        S: IntoIterator<Item = (u32, Script)>,
     {
-        let mut request_spks = params
-            .keychain_spks
+        let mut request_spks = keychain_spks
             .into_iter()
-            .map(|(k, s)| (k, s.into_iter()))
+            .map(|(k, s)| {
+                let iter = s.into_iter();
+                (k, iter)
+            })
             .collect::<BTreeMap<K, _>>();
         let mut scanned_spks = BTreeMap::<(K, u32), (Script, bool)>::new();
+
+        let txids = txids.into_iter().collect::<Vec<_>>();
+        let outpoints = outpoints.into_iter().collect::<Vec<_>>();
 
         let update = loop {
             let mut update = self.prepare_update(local_chain)?;
@@ -379,8 +387,8 @@ impl ElectrumClient {
                     match self.populate_with_spks::<K, _, _>(
                         &mut update,
                         &mut scanned_spk_iter,
-                        params.stop_gap,
-                        params.batch_size,
+                        stop_gap,
+                        batch_size,
                     ) {
                         Err(InternalError::Reorg) => continue,
                         Err(InternalError::ElectrumError(e)) => return Err(e.into()),
@@ -391,8 +399,8 @@ impl ElectrumClient {
                     match self.populate_with_spks::<K, u32, _>(
                         &mut update,
                         keychain_spks,
-                        params.stop_gap,
-                        params.batch_size,
+                        stop_gap,
+                        batch_size,
                     ) {
                         Err(InternalError::Reorg) => continue,
                         Err(InternalError::ElectrumError(e)) => return Err(e.into()),
@@ -404,20 +412,16 @@ impl ElectrumClient {
                 }
             }
 
-            if !params.txids.is_empty() {
-                match self.populate_with_txids(&mut update, params.txids.iter().cloned()) {
-                    Err(InternalError::Reorg) => continue,
-                    Err(InternalError::ElectrumError(e)) => return Err(e.into()),
-                    Ok(_) => {}
-                }
+            match self.populate_with_txids(&mut update, &mut txids.iter().cloned()) {
+                Err(InternalError::Reorg) => continue,
+                Err(InternalError::ElectrumError(e)) => return Err(e.into()),
+                Ok(_) => {}
             }
 
-            if !params.outpoints.is_empty() {
-                match self.populate_with_outpoints(&mut update, params.outpoints.iter().cloned()) {
-                    Err(InternalError::Reorg) => continue,
-                    Err(InternalError::ElectrumError(e)) => return Err(e.into()),
-                    Ok(_txs) => { /* [TODO] cache full txs to reduce bandwidth */ }
-                }
+            match self.populate_with_outpoints(&mut update, &mut outpoints.iter().cloned()) {
+                Err(InternalError::Reorg) => continue,
+                Err(InternalError::ElectrumError(e)) => return Err(e.into()),
+                Ok(_txs) => { /* [TODO] cache full txs to reduce bandwidth */ }
             }
 
             // check for reorgs during scan process
@@ -452,100 +456,28 @@ impl ElectrumClient {
     /// Convenience method to call [`scan`] without requiring a keychain.
     ///
     /// [`scan`]: ElectrumClient::scan
-    pub fn scan_without_keychain<S>(
+    pub fn scan_without_keychain(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
-        params: ScanParamsWithoutKeychain<S>,
-    ) -> Result<ElectrumUpdate<(), TxHeight>, Error>
-    where
-        S: IntoIterator<Item = Script>,
-    {
-        let spk_iter = params
-            .spks
+        misc_spks: impl IntoIterator<Item = Script>,
+        txids: impl IntoIterator<Item = Txid>,
+        outpoints: impl IntoIterator<Item = OutPoint>,
+        batch_size: usize,
+    ) -> Result<SparseChain, Error> {
+        let spk_iter = misc_spks
             .into_iter()
             .enumerate()
             .map(|(i, spk)| (i as u32, spk));
-        let params = ScanParams {
-            keychain_spks: [((), spk_iter)].into(),
-            txids: params.txids,
-            outpoints: params.outpoints,
-            stop_gap: params.stop_gap,
-            batch_size: params.batch_size,
-        };
-        self.scan(local_chain, params)
-    }
-}
 
-/// Parameters for [`ElectrumClient::scan`].
-pub struct ScanParams<K, S: IntoIterator<Item = (u32, Script)>> {
-    /// Indexed script pubkeys of each keychain to scan transaction histories for.
-    pub keychain_spks: BTreeMap<K, S>,
-    /// Txids to scan for. The update will update the [`ChainPosition`]s for these.
-    pub txids: Vec<Txid>,
-    /// Outpoints to scan for. The update will try include the transaction that spends this outpoint
-    /// alongside the transaction which contains this outpoint.
-    pub outpoints: Vec<OutPoint>,
-    /// The theshold number of [`ScanParams::keychain_spks`] that return empty histories before we
-    /// stop scanning for `keychain_spks`.
-    pub stop_gap: usize,
-    /// The batch size to use for requests that can be batched.
-    pub batch_size: usize,
-}
-
-impl<K, S: IntoIterator<Item = (u32, Script)>> Default for ScanParams<K, S> {
-    fn default() -> Self {
-        Self {
-            keychain_spks: Default::default(),
-            txids: Default::default(),
-            outpoints: Default::default(),
-            stop_gap: 10,
-            batch_size: 10,
-        }
-    }
-}
-
-/// Parameters for [`ElectrumClient::scan_without_keychain`].
-pub struct ScanParamsWithoutKeychain<S: IntoIterator<Item = Script>> {
-    /// Miscellaneous script pubkeys to scan transaction histories for.
-    pub spks: S,
-    /// Txids to scan for. The update will update the [`ChainPosition`]s for these.
-    pub txids: Vec<Txid>,
-    /// Full transactions to scan for. The update will update the [`ChainPosition`]s for these.
-    pub txs: Vec<Transaction>,
-    /// Outpoints to scan for. The update will try include the transaction that spends this outpoint
-    /// alongside the transaction which contains this outpoint.
-    pub outpoints: Vec<OutPoint>,
-    /// The theshold number of [`ScanParamsWithoutKeychain::spks`] that return empty histories
-    /// before we stop scanning for `keychain_spks`.
-    pub stop_gap: usize,
-    /// The batch size to use for requests that can be batched.
-    pub batch_size: usize,
-}
-
-impl<S: IntoIterator<Item = Script> + Default> Default for ScanParamsWithoutKeychain<S> {
-    fn default() -> Self {
-        Self {
-            spks: Default::default(),
-            txids: Default::default(),
-            txs: Default::default(),
-            outpoints: Default::default(),
-            stop_gap: 10,
-            batch_size: 10,
-        }
-    }
-}
-
-impl<S: IntoIterator<Item = Script>> ScanParamsWithoutKeychain<S> {
-    /// Create [`ScanParamsWithoutKeychain`] with provided `spks` and default parameters.
-    pub fn from_spks(spks: S) -> Self {
-        Self {
-            spks: spks,
-            txids: Default::default(),
-            txs: Default::default(),
-            outpoints: Default::default(),
-            stop_gap: 10,
-            batch_size: 10,
-        }
+        self.scan(
+            local_chain,
+            [((), spk_iter)].into(),
+            txids,
+            outpoints,
+            usize::MAX,
+            batch_size,
+        )
+        .map(|u| u.chain_update)
     }
 }
 

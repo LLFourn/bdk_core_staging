@@ -6,7 +6,7 @@ use bdk_cli::{
 };
 use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
-    ElectrumUpdate, ScanParams, ScanParamsWithoutKeychain,
+    ElectrumUpdate,
 };
 use std::{collections::BTreeMap, fmt::Debug, io, io::Write, ops::Deref};
 
@@ -123,33 +123,31 @@ fn main() -> anyhow::Result<()> {
                     .into_iter()
                     .map(|(keychain, iter)| {
                         let mut first = true;
-                        (
-                            keychain,
-                            iter.inspect(move |(i, _)| {
-                                if first {
-                                    eprint!("\nscanning {}: ", keychain);
-                                    first = false;
-                                }
+                        let spk_iter = iter.inspect(move |(i, _)| {
+                            if first {
+                                eprint!("\nscanning {}: ", keychain);
+                                first = false;
+                            }
 
-                                eprint!("{} ", i);
-                                let _ = io::stdout().flush();
-                            }),
-                        )
+                            eprint!("{} ", i);
+                            let _ = io::stdout().flush();
+                        });
+                        (keychain, spk_iter)
                     })
                     .collect::<BTreeMap<_, _>>();
                 let local_chain = tracker.chain().checkpoints().clone();
                 (spk_iterators, local_chain)
             };
 
-            let params = ScanParams {
-                keychain_spks: spk_iterators,
-                stop_gap,
-                batch_size: scan_option.batch_size,
-                ..Default::default()
-            };
-
             // we scan the spks **without** a lock on the tracker
-            client.scan(&local_chain, params)?
+            client.scan(
+                &local_chain,
+                spk_iterators,
+                core::iter::empty(),
+                core::iter::empty(),
+                stop_gap,
+                scan_option.batch_size,
+            )?
         }
         ElectrumCommands::Sync {
             mut unused_spks,
@@ -213,13 +211,12 @@ fn main() -> anyhow::Result<()> {
                 outpoints = tracker.full_utxos().map(|(_, txo)| txo.outpoint).collect();
             }
 
-            let mut txs = Vec::new();
+            let mut txids = Vec::new();
             if unconfirmed_txs {
-                txs = tracker
+                txids = tracker
                     .chain()
                     .range_txids_by_height(TxHeight::Unconfirmed..)
-                    .filter_map(|(_, txid)| tracker.graph().get_tx(*txid))
-                    .cloned()
+                    .map(|(_, txid)| *txid)
                     .collect();
             }
 
@@ -229,17 +226,16 @@ fn main() -> anyhow::Result<()> {
             drop(tracker);
 
             // we scan the spks **without** a lock on the tracker
-            let params = ScanParamsWithoutKeychain {
-                batch_size: scan_option.batch_size,
-                txs,
-                outpoints,
-                ..ScanParamsWithoutKeychain::from_spks(spks)
-            };
             ElectrumUpdate {
                 chain_update: client
-                    .scan_without_keychain(&local_chain, params)
-                    .context("scanning the blockchain")?
-                    .chain_update,
+                    .scan_without_keychain(
+                        &local_chain,
+                        spks,
+                        txids,
+                        outpoints,
+                        scan_option.batch_size,
+                    )
+                    .context("scanning the blockchain")?,
                 ..Default::default()
             }
         }
