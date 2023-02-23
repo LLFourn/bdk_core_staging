@@ -521,14 +521,9 @@ pub fn create_tx<P: ChainPosition>(
     Ok((transaction, change_info))
 }
 
-pub trait Broadcast {
-    type Error: std::error::Error + Send + Sync + 'static;
-    fn broadcast(&self, tx: &Transaction) -> Result<(), Self::Error>;
-}
-
 pub fn handle_commands<C: clap::Subcommand, P>(
     command: Commands<C>,
-    client: impl Broadcast,
+    broadcast: impl FnOnce(&Transaction) -> Result<()>,
     // we Mutexes around these not because we need them for a simple CLI app but to demonsrate how
     // all the stuff we're doing can be thread safe and also not keep locks up over an IO bound.
     tracker: &Mutex<KeychainTracker<Keychain, P>>,
@@ -579,7 +574,7 @@ where
                 }
             };
 
-            match client.broadcast(&transaction) {
+            match (broadcast)(&transaction) {
                 Ok(_) => {
                     println!("Broadcasted Tx : {}", transaction.txid());
                     let mut tracker = tracker.lock().unwrap();
