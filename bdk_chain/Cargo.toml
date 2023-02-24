@@ -13,7 +13,6 @@ serde_crate = { package = "serde", version = "1", optional = true, features = ["
 # Use hashbrown as a feature flag to have HashSet and HashMap from it.
 hashbrown = { version = "0.12.1" , optional = true }
 miniscript = { version = "9.0.0", optional = true  }
-bincode = { version = "2.0.0-rc.2", optional = true }
 
 [dev-dependencies]
 rand = "0.8"
@@ -21,5 +20,4 @@ rand = "0.8"
 [features]
 default = ["std", "miniscript"]
 std = []
-serde = ["serde_crate", "bitcoin/serde", "bincode/serde"]
-file_store = ["std", "bincode", "serde", "miniscript"]
+serde = ["serde_crate", "bitcoin/serde"]

@@ -7,7 +7,8 @@ edition = "2021"
 [dependencies]
 # BDK Core
 bdk_chain = { path = "../bdk_chain", features = ["serde"] }
-bdk_cli = { path = "../bdk_cli_lib"}
+bdk_cli = { path = "../bdk_cli_lib" }
+bdk_file_store = { path = "../bdk_file_store" }
 
 # Electrum
 electrum-client = { version = "0.12" }
