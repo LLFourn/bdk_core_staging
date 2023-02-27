@@ -27,12 +27,12 @@ Our design goals for these mechanisms are:
 TODO:
 
 - [x] Chain and data indexing
-- [x] Persistant storage (see [file_store](./bdk_chain/src/file_store.rs))
+- [x] Persistant storage (see [bdk_file_store](./bdk_file_store))
 - [x] Working esplora example (see [bdk_esplora_example](./bdk_esplora_example))
 - [x] Working electrum example (see [bdk_electrum_example](./bdk_electrum_example))
-- [ ] Working bitcoin core rpc block-by-block example (see https://github.com/LLFourn/bdk_core_staging/pull/89)
-- [ ] Working bitcoin core rpc wallet sync example (see https://github.com/LLFourn/bdk_core_staging/pull/79)
-- [ ] Working compact block filters example using nakamoto (see https://github.com/LLFourn/bdk_core_staging/pull/14)
+- [ ] Working bitcoin core rpc block-by-block example (see https://github.com/LLFourn/bdk_core_staging/pull/157)
+- [ ] Working bitcoin core rpc wallet sync example (see https://github.com/LLFourn/bdk_core_staging/pull/170)
+- [ ] Working compact block filters example using nakamoto (see https://github.com/LLFourn/bdk_core_staging/pull/153)
 - [ ] Improve API for block-by-block syncing -- i.e. CBF and RPC Chain
 - [ ] Feerate calculation for CPFP
 
