@@ -1,22 +1,20 @@
-//! This crate is used for updating [`KeychainTracker`] (from the [`bdk_chain`] crate) with data
-//! from an electrum server.
+//! This crate is used for updating structures of the [`bdk_chain`] crate with data from electrum.
 //!
 //! The star of the show is the [`ElectrumExt::scan`] method, which scans for relevant blockchain
 //! data (via electrum) and outputs an [`ElectrumUpdate`].
 //!
 //! An [`ElectrumUpdate`] only includes `txid`s and no full transactions. The caller is responsible
-//! for obtaining full transactions before applying it to [`KeychainTracker`]. This can be done with
+//! for obtaining full transactions before applying. This can be done with
 //! these steps:
 //!
-//! 1. Determine which full transactions are missing from [`KeychainTracker`]. The method
-//! [`find_missing_txids`] of [`ElectrumUpdate`] can be used.
+//! 1. Determine which full transactions are missing. The method [`find_missing_txids`] of
+//! [`ElectrumUpdate`] can be used.
 //!
 //! 2. Obtaining the full transactions. To do this via electrum, the method
 //! [`batch_transaction_get`] can be used.
 //!
 //! Refer to [`bdk_electrum_example`] for a complete example.
 //!
-//! [`KeychainTracker`]: bdk_chain::keychain::KeychainTracker
 //! [`ElectrumClient::scan`]: ElectrumClient::scan
 //! [`find_missing_txids`]: ElectrumUpdate::find_missing_txids
 //! [`batch_transaction_get`]: ElectrumApi::batch_transaction_get
