@@ -7,7 +7,7 @@
 //! for obtaining full transactions before applying. This can be done with
 //! these steps:
 //!
-//! 1. Determine which full transactions are missing. The method [`find_missing_txids`] of
+//! 1. Determine which full transactions are missing. The method [`missing_full_txs`] of
 //! [`ElectrumUpdate`] can be used.
 //!
 //! 2. Obtaining the full transactions. To do this via electrum, the method
@@ -16,7 +16,7 @@
 //! Refer to [`bdk_electrum_example`] for a complete example.
 //!
 //! [`ElectrumClient::scan`]: ElectrumClient::scan
-//! [`find_missing_txids`]: ElectrumUpdate::find_missing_txids
+//! [`missing_full_txs`]: ElectrumUpdate::missing_full_txs
 //! [`batch_transaction_get`]: ElectrumApi::batch_transaction_get
 //! [`bdk_electrum_example`]: https://github.com/LLFourn/bdk_core_staging/tree/master/bdk_electrum_example
 
@@ -51,9 +51,11 @@ pub trait ElectrumExt {
     /// which can be transformed into a [`KeychainScan`] after we find all the missing full
     /// transactions.
     ///
-    /// Refer to [crate-level documentation] for more.
-    ///
-    /// [crate-level documentation]: crate
+    /// - `local_chain`: the most recent block hashes present locally
+    /// - `keychain_spks`: keychains that we want to scan transactions for
+    /// - `txids`: transactions that we want updated [`ChainPosition`]s for
+    /// - `outpoints`: transactions associated with these outpoints (residing, spending) that we
+    ///     want to included in the update
     fn scan<K: Ord + Clone>(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
@@ -228,7 +230,7 @@ impl<K: Ord + Clone + Debug, P: ChainPosition> ElectrumUpdate<K, P> {
     /// Return a list of missing full transactions that are required to [`inflate_update`].
     ///
     /// [`inflate_update`]: bdk_chain::chain_graph::ChainGraph::inflate_update
-    pub fn find_missing_txids<T, G>(&self, graph: G) -> Vec<&Txid>
+    pub fn missing_full_txs<T, G>(&self, graph: G) -> Vec<&Txid>
     where
         T: AsTransaction,
         G: AsRef<TxGraph<T>>,

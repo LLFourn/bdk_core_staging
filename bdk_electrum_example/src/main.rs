@@ -240,7 +240,7 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let missing_txids = response.find_missing_txids(&*tracker.lock().unwrap());
+    let missing_txids = response.missing_full_txs(&*tracker.lock().unwrap());
 
     // fetch the missing full transactions **without** a lock on the tracker
     let new_txs = client
