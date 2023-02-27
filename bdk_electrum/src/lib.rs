@@ -399,32 +399,32 @@ fn populate_with_outpoints(
                 break;
             }
 
-            // skip if we have already added the tx to our `update`
-            if full_txs.contains_key(&res.tx_hash) {
-                if res.tx_hash == txid {
-                    has_residing = true;
-                } else {
-                    has_spending = true;
-                }
-                continue;
-            }
-
-            let res_tx = if res.tx_hash == txid {
-                has_residing = true;
-                tx.clone()
-            } else {
-                let res_tx = client.transaction_get(&res.tx_hash)?;
-                if !res_tx
-                    .input
-                    .iter()
-                    .any(|txin| txin.previous_output == outpoint)
-                {
+            if res.tx_hash == txid {
+                if has_residing {
                     continue;
                 }
-                has_spending = true;
-                res_tx
+                has_residing = true;
+                full_txs.insert(res.tx_hash, tx.clone());
+            } else {
+                if has_spending {
+                    continue;
+                }
+                let res_tx = match full_txs.get(&res.tx_hash) {
+                    Some(tx) => tx,
+                    None => {
+                        let res_tx = client.transaction_get(&res.tx_hash)?;
+                        full_txs.insert(res.tx_hash, res_tx);
+                        full_txs.get(&res.tx_hash).expect("just inserted")
+                    }
+                };
+                has_spending = res_tx
+                    .input
+                    .iter()
+                    .any(|txin| txin.previous_output == outpoint);
+                if !has_spending {
+                    continue;
+                }
             };
-            full_txs.insert(res.tx_hash, res_tx);
 
             let tx_height = match res.height {
                 // Electrum server API specifies that height <= 0 is considered unconfirmed
@@ -446,7 +446,7 @@ fn populate_with_outpoints(
                 }
             };
 
-            if let Err(failure) = update.insert_tx(txid, tx_height) {
+            if let Err(failure) = update.insert_tx(res.tx_hash, tx_height) {
                 match failure {
                     sparse_chain::InsertTxError::TxTooHigh { .. } => {
                         unreachable!("we should never encounter this as we ensured height <= tip");
