@@ -484,20 +484,35 @@ fn populate_with_txids(
             .map(|txo| &txo.script_pubkey)
             .expect("tx must have an output");
 
-        let tx_height = match client
+        let res_height = match client
             .script_get_history(spk)?
             .into_iter()
             .find(|r| r.tx_hash == txid)
-            .map(|r| r.height)
         {
-            Some(h) if h > 0 => TxHeight::Confirmed(h as _),
-            Some(_) => TxHeight::Unconfirmed,
+            Some(r) => r.height,
             None => continue,
         };
 
-        if tx_height.is_confirmed() && tx_height > TxHeight::Confirmed(tip.height) {
-            continue;
-        }
+        let tx_height = match res_height {
+            // Electrum server API specifies that height <= 0 is considered unconfirmed
+            h if h <= 0 => {
+                debug_assert!(
+                    h == 0 || h == -1,
+                    "unexpected height ({}) from electrum server",
+                    h
+                );
+                TxHeight::Unconfirmed
+            }
+            h => {
+                let h = h as u32;
+                if h > tip.height {
+                    TxHeight::Unconfirmed
+                } else {
+                    TxHeight::Confirmed(h)
+                }
+            }
+        };
+
         if let Err(failure) = update.insert_tx(txid, tx_height) {
             match failure {
                 sparse_chain::InsertTxError::TxTooHigh { .. } => {
@@ -555,7 +570,15 @@ where
 
             for tx in spk_history {
                 let tx_height = match tx.height {
-                    h if h <= 0 => TxHeight::Unconfirmed,
+                    // Electrum server API specifies that height <= 0 is considered unconfirmed
+                    h if h <= 0 => {
+                        debug_assert!(
+                            h == 0 || h == -1,
+                            "unexpected height ({}) from electrum server",
+                            h
+                        );
+                        TxHeight::Unconfirmed
+                    }
                     h => {
                         let h = h as u32;
                         if h > tip {
