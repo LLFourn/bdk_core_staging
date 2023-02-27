@@ -1,9 +1,9 @@
-use bdk_chain::{bitcoin::Network, TxHeight};
 use bdk_cli::{
     anyhow::{self, Context},
     clap::{self, Parser, Subcommand},
     Broadcast,
 };
+use bdk_electrum::bdk_chain::{self, bitcoin::Network, TxHeight};
 use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
     ElectrumExt, ElectrumUpdate,

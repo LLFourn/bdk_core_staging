@@ -26,6 +26,7 @@ use std::{
     fmt::Debug,
 };
 
+pub use bdk_chain;
 use bdk_chain::{
     bitcoin::{BlockHash, OutPoint, Script, Transaction, Txid},
     chain_graph::{self, ChainGraph},

@@ -184,7 +184,7 @@ pub fn run_address_cmd<P>(
     network: Network,
 ) -> Result<()>
 where
-    P: sparse_chain::ChainPosition,
+    P: bdk_chain::sparse_chain::ChainPosition,
     KeychainChangeSet<Keychain, P>: serde::Serialize + serde::de::DeserializeOwned,
 {
     let mut tracker = tracker.lock().unwrap();
