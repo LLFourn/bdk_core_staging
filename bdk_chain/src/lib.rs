@@ -40,9 +40,6 @@ mod descriptor_ext;
 #[cfg(feature = "miniscript")]
 pub use descriptor_ext::DescriptorExt;
 
-#[cfg(feature = "file_store")]
-pub mod file_store;
-
 #[allow(unused_imports)]
 #[macro_use]
 extern crate alloc;

@@ -1,20 +1,17 @@
-#![cfg(feature = "file_store")]
-
+use bdk_chain::{
+    bitcoin::Transaction,
+    keychain::{KeychainChangeSet, KeychainTracker},
+    TxHeight,
+};
+use bdk_file_store::{FileError, IterError, KeychainStore, MAGIC_BYTES, MAGIC_BYTES_LEN};
+use serde;
 use std::{
+    format,
     fs::{File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    vec::Vec,
 };
-
-use bdk_chain::{
-    file_store::{FileError, IterError, KeychainStore, MAGIC_BYTES, MAGIC_BYTES_LEN},
-    keychain::{KeychainChangeSet, KeychainTracker},
-    serde, TxHeight,
-};
-use bitcoin::Transaction;
-
-#[macro_use]
-mod common;
 
 struct TempPath(PathBuf);
 
@@ -55,11 +52,8 @@ impl Drop for TempPath {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(crate = "serde_crate")
+#[derive(
+    Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 enum TestKeychain {
     External,
@@ -103,13 +97,16 @@ fn new_fails_if_magic_bytes_are_invalid() {
         .expect("should write");
 
     match KeychainStore::<TestKeychain, TxHeight, Transaction>::new(path.open()) {
-        Err(FileError::InvalidMagicBytes(b)) => assert_eq!(b, invalid_magic_mnemonic.as_bytes()),
+        Err(FileError::InvalidMagicBytes(b)) => {
+            assert_eq!(b, invalid_magic_mnemonic.as_bytes())
+        }
         unexpected => panic!("unexpected result: {:?}", unexpected),
     };
 }
 
 #[test]
 fn append_changeset_truncates_invalid_bytes() {
+    use bdk_chain::miniscript;
     use core::str::FromStr;
     // initial data to write to file (magic bytes + invalid data)
     let mut data = [255_u8; 2000];
