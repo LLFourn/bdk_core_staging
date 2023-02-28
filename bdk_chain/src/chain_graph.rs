@@ -51,7 +51,7 @@ impl<P, T> AsRef<TxGraph<T>> for ChainGraph<P, T> {
     }
 }
 
-impl<'a, P, T> AsRef<ChainGraph<P, T>> for &'a ChainGraph<P, T> {
+impl<P, T> AsRef<ChainGraph<P, T>> for ChainGraph<P, T> {
     fn as_ref(&self) -> &ChainGraph<P, T> {
         self
     }

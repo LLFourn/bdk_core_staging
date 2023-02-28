@@ -266,8 +266,8 @@ impl<K: Ord + Clone + Debug, P: ChainPosition> ElectrumUpdate<K, P> {
 
 impl<K: Ord + Clone + Debug> ElectrumUpdate<K, TxHeight> {
     /// Creates [`ElectrumUpdate<K, ConfirmationTime>`] from [`ElectrumUpdate<K, TxHeight>`].
-    pub fn new_confirmation_time_update(
-        &self,
+    pub fn into_confirmation_time_update(
+        self,
         client: &electrum_client::Client,
     ) -> Result<ElectrumUpdate<K, ConfirmationTime>, Error> {
         let heights = self
@@ -373,6 +373,13 @@ fn prepare_update(
     Ok(update)
 }
 
+/// Populates the update [`SparseChain`] with related transactions and associated [`ChainPosition`]s
+/// of the provided `outpoints` (this is the tx which contains the outpoint and the one spending the
+/// outpoint).
+///
+/// Unfortunately this is awkward to implement as electrum does not provide such an API. Instead, we
+/// will get the tx history of the outpoint's spk, and try to find the containing tx and the
+/// spending tx.
 fn populate_with_outpoints(
     client: &Client,
     update: &mut SparseChain,
