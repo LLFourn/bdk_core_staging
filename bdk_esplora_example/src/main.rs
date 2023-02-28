@@ -1,6 +1,6 @@
 use bdk_chain::{bitcoin::Network, TxHeight};
 use bdk_esplora::esplora_client::{self, BlockingClient};
-use bdk_esplora::EsploraClientExt;
+use bdk_esplora::EsploraExt;
 
 use std::{
     io::{self, Write},
@@ -144,7 +144,7 @@ fn main() -> anyhow::Result<()> {
                     spk_iterators,
                     core::iter::empty(),
                     core::iter::empty(),
-                    Some(stop_gap),
+                    stop_gap,
                     scan_options.parallel_requests,
                 )
                 .context("scanning the blockchain")?;

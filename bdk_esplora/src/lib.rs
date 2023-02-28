@@ -1,6 +1,6 @@
 //! This crate is used for updating structures of [`bdk_chain`] with data from an esplora server.
 //!
-//! The star of the show is the  [`EsploraClientExt::scan`] method which scans for relevant
+//! The star of the show is the  [`EsploraExt::scan`] method which scans for relevant
 //! blockchain data (via esplora) and outputs a [`KeychainScan`].
 
 use bdk_chain::{
@@ -23,24 +23,32 @@ use esplora_client::Error;
 /// Refer to [crate-level documentation] for more.
 ///
 /// [crate-level documentation]: crate
-pub trait EsploraClientExt {
-    /// Scans several iterators of script pubkeys for transactions spending to or from them.
+pub trait EsploraExt {
+    /// Scan the blockchain (via esplora) for the data specified and returns a [`KeychainScan`].
+    ///
+    /// - `local_chain`: the most recent block hashes present locally
+    /// - `keychain_spks`: keychains that we want to scan transactions for
+    /// - `txids`: transactions that we want updated [`ChainPosition`]s for
+    /// - `outpoints`: transactions associated with these outpoints (residing, spending) that we
+    ///     want to included in the update
     ///
     /// The scan for each keychain stops after a gap of `stop_gap` script pubkeys with no associated
-    /// transactions.
+    /// transactions. `parallel_requests` specifies the max task-threads allowed.
+    ///
+    /// [`ChainPosition`]: bdk_chain::sparse_chain::ChainPosition
     fn scan<K: Ord + Clone>(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
         keychain_spks: BTreeMap<K, impl IntoIterator<Item = (u32, Script)>>,
         txids: impl IntoIterator<Item = Txid>,
         outpoints: impl IntoIterator<Item = OutPoint>,
-        stop_gap: Option<usize>,
+        stop_gap: usize,
         parallel_requests: core::num::NonZeroU8,
     ) -> Result<KeychainScan<K, ConfirmationTime>, Error>;
 
-    /// Scans an iterator of script pubkeys for transactions spending to or from them.
+    /// Convenience method to call [`scan`] without requiring a keychain.
     ///
-    /// Stops after a gap of `stop_gap` script pubkeys with no associated transactions.
+    /// [`scan`]: EsploraExt::scan
     fn scan_without_keychain(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
@@ -54,7 +62,7 @@ pub trait EsploraClientExt {
             [((), misc_spks.enumerate().map(|(i, spk)| (i as u32, spk)))].into(),
             txids,
             outpoints,
-            None,
+            usize::MAX,
             parallel_requests,
         )?;
 
@@ -62,14 +70,14 @@ pub trait EsploraClientExt {
     }
 }
 
-impl EsploraClientExt for esplora_client::BlockingClient {
+impl EsploraExt for esplora_client::BlockingClient {
     fn scan<K: Ord + Clone>(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
         keychain_spks: BTreeMap<K, impl IntoIterator<Item = (u32, Script)>>,
         txids: impl IntoIterator<Item = Txid>,
         outpoints: impl IntoIterator<Item = OutPoint>,
-        stop_gap: Option<usize>,
+        stop_gap: usize,
         parallel_requests: core::num::NonZeroU8,
     ) -> Result<KeychainScan<K, ConfirmationTime>, Error> {
         let mut update = prepare_update(self, local_chain)?;
@@ -163,7 +171,7 @@ impl EsploraClientExt for esplora_client::BlockingClient {
                     }
                 }
 
-                if n_handles == 0 || empty_scripts >= stop_gap.unwrap_or(usize::MAX) {
+                if n_handles == 0 || empty_scripts >= stop_gap {
                     break;
                 }
             }
