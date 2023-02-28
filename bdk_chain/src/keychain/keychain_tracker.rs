@@ -1,3 +1,5 @@
+use core::cell::RefCell;
+
 use bitcoin::{OutPoint, Transaction};
 use miniscript::{Descriptor, DescriptorPublicKey};
 
@@ -22,7 +24,7 @@ pub struct KeychainTracker<K, P, T = Transaction> {
     pub txout_index: KeychainTxOutIndex<K>,
     chain_graph: ChainGraph<P, T>,
     /// UTXOs selected by transactions as inputs
-    selected: HashSet<OutPoint>,
+    selected: RefCell<HashSet<OutPoint>>,
 }
 
 impl<K, P, T> KeychainTracker<K, P, T>
@@ -242,9 +244,15 @@ where
         let mut trusted_pending = 0;
         let mut untrusted_pending = 0;
         let mut confirmed = 0;
+        let mut selected = 0;
         let last_sync_height = self.chain().latest_checkpoint().map(|latest| latest.height);
         for ((keychain, _), utxo) in self.full_utxos() {
             let chain_position = &utxo.chain_position;
+
+            if self.selected.borrow().contains(&utxo.outpoint) {
+                selected += utxo.txout.value;
+                continue;
+            }
 
             match chain_position.height() {
                 TxHeight::Confirmed(_) => {
@@ -276,6 +284,7 @@ where
             trusted_pending,
             untrusted_pending,
             confirmed,
+            selected,
         }
     }
 
@@ -296,16 +305,16 @@ where
     /// This is useful in a scenario where you are creating a sequence of
     /// transactions and you don't want utxos to be re-used as inputs
     /// across transactions.
-    /// A UTXO will be considered selected until it is released by [`Self::unmark_selected()`]
+    /// A UTXO will be considered selected until it is released by [`Self::unmark_selected`]
     /// to the wallet's UTXO pool.
-    pub fn mark_selected(&mut self, outpoint: OutPoint) -> bool {
-        self.selected.insert(outpoint)
+    pub fn mark_selected(&self, outpoint: OutPoint) -> bool {
+        self.selected.borrow_mut().insert(outpoint)
     }
 
-    /// Undoes the effect of [`Self::mark_selected()`]. Returns whether `outpoint`
+    /// Undoes the effect of [`Self::mark_selected`]. Returns whether `outpoint`
     /// has been removed from `selected`
-    pub fn unmark_selected(&mut self, outpoint: &OutPoint) -> bool {
-        self.selected.remove(outpoint)
+    pub fn unmark_selected(&self, outpoint: &OutPoint) -> bool {
+        self.selected.borrow_mut().remove(outpoint)
     }
 }
 
