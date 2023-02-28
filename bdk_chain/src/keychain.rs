@@ -21,10 +21,14 @@ use crate::{
     tx_graph::TxGraph,
     AsTransaction, ForEachTxOut,
 };
+use bitcoin::Transaction;
 
 #[cfg(feature = "miniscript")]
+mod keychain_persist;
+#[cfg(feature = "miniscript")]
+pub use keychain_persist::*;
+#[cfg(feature = "miniscript")]
 mod keychain_tracker;
-use bitcoin::Transaction;
 #[cfg(feature = "miniscript")]
 pub use keychain_tracker::*;
 #[cfg(feature = "miniscript")]
