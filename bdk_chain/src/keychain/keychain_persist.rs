@@ -18,7 +18,7 @@ use crate::{keychain, sparse_chain::ChainPosition};
 ///
 /// [`KeychainTracker`]: keychain::KeychainTracker
 #[derive(Debug)]
-pub struct KeychainPersist<K, P, B: KeychainPersistBackend<K, P>> {
+pub struct KeychainPersist<K, P, B> {
     backend: B,
     stage: keychain::KeychainChangeSet<K, P>,
 }
