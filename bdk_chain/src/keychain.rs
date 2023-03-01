@@ -21,16 +21,20 @@ use crate::{
     tx_graph::TxGraph,
     AsTransaction, ForEachTxOut,
 };
+use bitcoin::Transaction;
 
 #[cfg(feature = "miniscript")]
-mod keychain_tracker;
-use bitcoin::Transaction;
+pub mod persist;
 #[cfg(feature = "miniscript")]
-pub use keychain_tracker::*;
+pub use persist::*;
 #[cfg(feature = "miniscript")]
-mod keychain_txout_index;
+mod tracker;
 #[cfg(feature = "miniscript")]
-pub use keychain_txout_index::*;
+pub use tracker::*;
+#[cfg(feature = "miniscript")]
+mod txout_index;
+#[cfg(feature = "miniscript")]
+pub use txout_index::*;
 
 /// Represents updates to the derivation index of a [`KeychainTxOutIndex`].
 ///
