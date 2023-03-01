@@ -1,4 +1,6 @@
-use bitcoin::Transaction;
+use core::cell::RefCell;
+
+use bitcoin::{OutPoint, Transaction};
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::{
@@ -21,6 +23,8 @@ pub struct KeychainTracker<K, P, T = Transaction> {
     /// Index between script pubkeys to transaction outputs
     pub txout_index: KeychainTxOutIndex<K>,
     chain_graph: ChainGraph<P, T>,
+    /// UTXOs selected by transactions as inputs
+    selected: RefCell<HashSet<OutPoint>>,
 }
 
 impl<K, P, T> KeychainTracker<K, P, T>
@@ -240,9 +244,15 @@ where
         let mut trusted_pending = 0;
         let mut untrusted_pending = 0;
         let mut confirmed = 0;
+        let mut selected = 0;
         let last_sync_height = self.chain().latest_checkpoint().map(|latest| latest.height);
         for ((keychain, _), utxo) in self.full_utxos() {
             let chain_position = &utxo.chain_position;
+
+            if self.selected.borrow().contains(&utxo.outpoint) {
+                selected += utxo.txout.value;
+                continue;
+            }
 
             match chain_position.height() {
                 TxHeight::Confirmed(_) => {
@@ -274,6 +284,7 @@ where
             trusted_pending,
             untrusted_pending,
             confirmed,
+            selected,
         }
     }
 
@@ -285,6 +296,26 @@ where
             .map(|(_, full_txout)| full_txout.txout.value)
             .sum()
     }
+
+    /// Marks a UTXO(`outpoint`) as selected by adding it to a set of utxos used
+    /// by transactions that have been created but not yet broadcasted.
+    /// Once a utxo is marked as selected by a particular transaction either
+    /// during/after the transaction building process, it cannot be used for
+    /// building another transaction.
+    /// This is useful in a scenario where you are creating a sequence of
+    /// transactions and you don't want utxos to be re-used as inputs
+    /// across transactions.
+    /// A UTXO will be considered selected until it is released by [`Self::unmark_selected`]
+    /// to the wallet's UTXO pool.
+    pub fn mark_selected(&self, outpoint: OutPoint) -> bool {
+        self.selected.borrow_mut().insert(outpoint)
+    }
+
+    /// Undoes the effect of [`Self::mark_selected`]. Returns whether `outpoint`
+    /// has been removed from `selected`
+    pub fn unmark_selected(&self, outpoint: &OutPoint) -> bool {
+        self.selected.borrow_mut().remove(outpoint)
+    }
 }
 
 impl<K, P> Default for KeychainTracker<K, P> {
@@ -292,6 +323,7 @@ impl<K, P> Default for KeychainTracker<K, P> {
         Self {
             txout_index: Default::default(),
             chain_graph: Default::default(),
+            selected: Default::default(),
         }
     }
 }

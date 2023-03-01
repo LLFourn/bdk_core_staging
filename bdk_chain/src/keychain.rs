@@ -221,6 +221,8 @@ pub struct Balance {
     pub untrusted_pending: u64,
     /// Confirmed and immediately spendable balance
     pub confirmed: u64,
+    /// UTXOs reserved by transactions not yet broadcasted
+    pub selected: u64,
 }
 
 impl Balance {
@@ -234,7 +236,11 @@ impl Balance {
 
     /// Get the whole balance visible to the wallet.
     pub fn total(&self) -> u64 {
-        self.confirmed + self.trusted_pending + self.untrusted_pending + self.immature
+        self.confirmed
+            + self.trusted_pending
+            + self.untrusted_pending
+            + self.immature
+            + self.selected
     }
 }
 
@@ -242,8 +248,8 @@ impl core::fmt::Display for Balance {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "{{ immature: {}, trusted_pending: {}, untrusted_pending: {}, confirmed: {} }}",
-            self.immature, self.trusted_pending, self.untrusted_pending, self.confirmed
+            "{{ immature: {}, trusted_pending: {}, untrusted_pending: {}, confirmed: {}, reserved: {} }}",
+            self.immature, self.trusted_pending, self.untrusted_pending, self.confirmed, self.selected
         )
     }
 }
@@ -257,6 +263,7 @@ impl core::ops::Add for Balance {
             trusted_pending: self.trusted_pending + other.trusted_pending,
             untrusted_pending: self.untrusted_pending + other.untrusted_pending,
             confirmed: self.confirmed + other.confirmed,
+            selected: self.selected + other.selected,
         }
     }
 }
