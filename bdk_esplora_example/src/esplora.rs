@@ -1,5 +1,5 @@
 use bdk_chain::{
-    bitcoin::{BlockHash, Script, Transaction},
+    bitcoin::{BlockHash, Script},
     chain_graph::ChainGraph,
     keychain::KeychainScan,
     sparse_chain, BlockId, ConfirmationTime,
@@ -206,12 +206,5 @@ impl Client {
         }
 
         Ok(wallet_scan)
-    }
-}
-
-impl bdk_cli::Broadcast for Client {
-    type Error = esplora_client::Error;
-    fn broadcast(&self, tx: &Transaction) -> Result<(), Self::Error> {
-        Ok(self.client.broadcast(tx)?)
     }
 }

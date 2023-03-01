@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         general_command => {
             return bdk_cli::handle_commands(
                 general_command,
-                client,
+                |transaction| Ok(client.client.broadcast(transaction)?),
                 &keychain_tracker,
                 &db,
                 args.network,

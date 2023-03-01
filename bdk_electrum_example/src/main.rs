@@ -1,14 +1,13 @@
 use bdk_cli::{
     anyhow::{self, Context},
     clap::{self, Parser, Subcommand},
-    Broadcast,
 };
 use bdk_electrum::bdk_chain::{self, bitcoin::Network, TxHeight};
 use bdk_electrum::{
     electrum_client::{self, ElectrumApi},
     ElectrumExt, ElectrumUpdate,
 };
-use std::{collections::BTreeMap, fmt::Debug, io, io::Write, ops::Deref};
+use std::{collections::BTreeMap, fmt::Debug, io, io::Write};
 
 #[derive(Subcommand, Debug, Clone)]
 enum ElectrumCommands {
@@ -50,31 +49,6 @@ pub struct ScanOption {
     pub batch_size: usize,
 }
 
-/// A wrapped [`electrum_client::Client`] that implements [`bdk_cli::Broadcast`].
-struct WrappedClient(electrum_client::Client);
-
-impl Deref for WrappedClient {
-    type Target = electrum_client::Client;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl WrappedClient {
-    fn new(url: &str, config: electrum_client::Config) -> Result<Self, electrum_client::Error> {
-        electrum_client::Client::from_config(url, config).map(Self)
-    }
-}
-
-impl Broadcast for WrappedClient {
-    type Error = electrum_client::Error;
-
-    fn broadcast(&self, tx: &bdk_chain::bitcoin::Transaction) -> anyhow::Result<(), Self::Error> {
-        self.transaction_broadcast(tx).map(|_| ())
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     let (args, keymap, mut tracker, mut db) = bdk_cli::init::<ElectrumCommands, _>()?;
 
@@ -91,14 +65,17 @@ fn main() -> anyhow::Result<()> {
         })
         .build();
 
-    let client = WrappedClient::new(electrum_url, config)?;
+    let client = electrum_client::Client::from_config(electrum_url, config)?;
 
     let electrum_cmd = match args.command {
         bdk_cli::Commands::ChainSpecific(electrum_cmd) => electrum_cmd,
         general_command => {
             return bdk_cli::handle_commands(
                 general_command,
-                client,
+                |transaction| {
+                    let _txid = client.transaction_broadcast(transaction)?;
+                    Ok(())
+                },
                 &mut tracker,
                 &mut db,
                 args.network,
