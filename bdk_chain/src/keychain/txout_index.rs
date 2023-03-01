@@ -460,6 +460,30 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
         ((next_index, script), additions)
     }
 
+    /// Attempts to reveal the next script pubkey of the provided `keychain` and mark it as used.
+    ///
+    /// This is a convenience method that is equivalent to calling [`reveal_next_spk`] and
+    /// [`mark_used`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `keychain` does not exist.
+    ///
+    /// [`reveal_next_spk`]: Self::reveal_next_spk
+    /// [`mark_used`]: Self::mark_used
+    pub fn reveal_and_reserve_next_spk(
+        &mut self,
+        keychain: &K,
+    ) -> ((u32, &Script), DerivationAdditions<K>) {
+        let ((next_index, _), additions) = self.reveal_next_spk(keychain);
+        self.mark_used(keychain, next_index);
+        let script = self
+            .inner
+            .spk_at_index(&(keychain.clone(), next_index))
+            .expect("spk already returned above");
+        ((next_index, script), additions)
+    }
+
     /// Gets the next unused script pubkey in the keychain. I.e. the script pubkey with the lowest
     /// index that has not been used yet.
     ///
@@ -485,6 +509,30 @@ impl<K: Clone + Ord + Debug> KeychainTxOutIndex<K> {
                 DerivationAdditions::default(),
             )
         }
+    }
+
+    /// Get the next unused script pubkey of the provided `keychain` and mark it as used.
+    ///
+    /// This is a convenience method that is equivalent to calling [`next_unused_spk`] and
+    /// [`mark_used`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if 'keychain' has never been added to the index
+    ///
+    /// [`next_unused_spk`]: Self::next_unused_spk
+    /// [`mark_used`]: Self::mark_used
+    pub fn reserve_next_unused_spk(
+        &mut self,
+        keychain: &K,
+    ) -> ((u32, &Script), DerivationAdditions<K>) {
+        let ((index, _), additions) = self.next_unused_spk(keychain);
+        self.mark_used(keychain, index);
+        let script = self
+            .inner
+            .spk_at_index(&(keychain.clone(), index))
+            .expect("spk already returned above");
+        ((index, script), additions)
     }
 
     /// Marks the script pubkey at `index` as used even though it hasn't seen an output with it.
