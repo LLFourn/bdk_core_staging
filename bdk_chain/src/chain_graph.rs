@@ -39,6 +39,24 @@ impl<P, T> Default for ChainGraph<P, T> {
     }
 }
 
+impl<P, T> AsRef<SparseChain<P>> for ChainGraph<P, T> {
+    fn as_ref(&self) -> &SparseChain<P> {
+        &self.chain
+    }
+}
+
+impl<P, T> AsRef<TxGraph<T>> for ChainGraph<P, T> {
+    fn as_ref(&self) -> &TxGraph<T> {
+        &self.graph
+    }
+}
+
+impl<P, T> AsRef<ChainGraph<P, T>> for ChainGraph<P, T> {
+    fn as_ref(&self) -> &ChainGraph<P, T> {
+        self
+    }
+}
+
 impl<P, T> ChainGraph<P, T> {
     /// Returns a reference to the internal [`SparseChain`].
     pub fn chain(&self) -> &SparseChain<P> {
@@ -462,12 +480,6 @@ impl<P, T> Default for ChangeSet<P, T> {
             chain: Default::default(),
             graph: Default::default(),
         }
-    }
-}
-
-impl<P, T> AsRef<TxGraph<T>> for ChainGraph<P, T> {
-    fn as_ref(&self) -> &TxGraph<T> {
-        &self.graph
     }
 }
 

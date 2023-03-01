@@ -244,6 +244,12 @@ pub struct SparseChain<P = TxHeight> {
     checkpoint_limit: Option<usize>,
 }
 
+impl<P> AsRef<SparseChain<P>> for SparseChain<P> {
+    fn as_ref(&self) -> &SparseChain<P> {
+        self
+    }
+}
+
 impl<P> Default for SparseChain<P> {
     fn default() -> Self {
         Self {
