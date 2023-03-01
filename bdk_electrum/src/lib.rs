@@ -28,7 +28,7 @@ use std::{
 
 pub use bdk_chain;
 use bdk_chain::{
-    bitcoin::{BlockHash, OutPoint, Script, Transaction, Txid},
+    bitcoin::{hashes::hex::FromHex, BlockHash, OutPoint, Script, Transaction, Txid},
     chain_graph::{self, ChainGraph},
     keychain::KeychainScan,
     sparse_chain::{self, ChainPosition, SparseChain},
@@ -373,6 +373,38 @@ fn prepare_update(
     Ok(update)
 }
 
+/// This atrocity is required because electrum thinks height of 0 means "unconfirmed", but there is
+/// such thing as a genesis block.
+///
+/// We contain an expection for the genesis coinbase txid to always have a chain position of
+/// [`TxHeight::Confirmed(0)`].
+fn determine_tx_height(raw_height: i32, tip_height: u32, txid: Txid) -> TxHeight {
+    if txid
+        == Txid::from_hex("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b")
+            .expect("must deserialize genesis coinbase txid")
+    {
+        return TxHeight::Confirmed(0);
+    }
+    match raw_height {
+        h if h <= 0 => {
+            debug_assert!(
+                h == 0 || h == -1,
+                "unexpected height ({}) from electrum server",
+                h
+            );
+            TxHeight::Unconfirmed
+        }
+        h => {
+            let h = h as u32;
+            if h > tip_height {
+                TxHeight::Unconfirmed
+            } else {
+                TxHeight::Confirmed(h)
+            }
+        }
+    }
+}
+
 /// Populates the update [`SparseChain`] with related transactions and associated [`ChainPosition`]s
 /// of the provided `outpoints` (this is the tx which contains the outpoint and the one spending the
 /// outpoint).
@@ -435,25 +467,7 @@ fn populate_with_outpoints(
                 }
             };
 
-            let tx_height = match res.height {
-                // Electrum server API specifies that height <= 0 is considered unconfirmed
-                h if h <= 0 => {
-                    debug_assert!(
-                        h == 0 || h == -1,
-                        "unexpected height ({}) from electrum server",
-                        h
-                    );
-                    TxHeight::Unconfirmed
-                }
-                h => {
-                    let h = h as u32;
-                    if h > tip.height {
-                        TxHeight::Unconfirmed
-                    } else {
-                        TxHeight::Confirmed(h)
-                    }
-                }
-            };
+            let tx_height = determine_tx_height(res.height, tip.height, res.tx_hash);
 
             if let Err(failure) = update.insert_tx(res.tx_hash, tx_height) {
                 match failure {
@@ -493,33 +507,13 @@ fn populate_with_txids(
             .map(|txo| &txo.script_pubkey)
             .expect("tx must have an output");
 
-        let res_height = match client
+        let tx_height = match client
             .script_get_history(spk)?
             .into_iter()
             .find(|r| r.tx_hash == txid)
         {
-            Some(r) => r.height,
+            Some(r) => determine_tx_height(r.height, tip.height, r.tx_hash),
             None => continue,
-        };
-
-        let tx_height = match res_height {
-            // Electrum server API specifies that height <= 0 is considered unconfirmed
-            h if h <= 0 => {
-                debug_assert!(
-                    h == 0 || h == -1,
-                    "unexpected height ({}) from electrum server",
-                    h
-                );
-                TxHeight::Unconfirmed
-            }
-            h => {
-                let h = h as u32;
-                if h > tip.height {
-                    TxHeight::Unconfirmed
-                } else {
-                    TxHeight::Confirmed(h)
-                }
-            }
         };
 
         if let Err(failure) = update.insert_tx(txid, tx_height) {
@@ -578,25 +572,8 @@ where
             }
 
             for tx in spk_history {
-                let tx_height = match tx.height {
-                    // Electrum server API specifies that height <= 0 is considered unconfirmed
-                    h if h <= 0 => {
-                        debug_assert!(
-                            h == 0 || h == -1,
-                            "unexpected height ({}) from electrum server",
-                            h
-                        );
-                        TxHeight::Unconfirmed
-                    }
-                    h => {
-                        let h = h as u32;
-                        if h > tip {
-                            TxHeight::Unconfirmed
-                        } else {
-                            TxHeight::Confirmed(h)
-                        }
-                    }
-                };
+                let tx_height = determine_tx_height(tx.height, tip, tx.tx_hash);
+
                 if let Err(failure) = update.insert_tx(tx.tx_hash, tx_height) {
                     match failure {
                         sparse_chain::InsertTxError::TxTooHigh { .. } => {
