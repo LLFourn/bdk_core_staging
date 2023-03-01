@@ -5,14 +5,12 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-# BDK Core
-bdk_chain = { version = "0.2", features = ["serde", "miniscript"]}
+bdk_chain = { path = "../bdk_chain", version = "0.3", features = ["serde", "miniscript"]}
 bdk_tmp_plan = { path = "../bdk_tmp_plan" }
 bdk_coin_select = { path = "../bdk_coin_select" }
 bdk_file_store = { path = "../bdk_file_store" }
-# Auxiliaries
+
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-thiserror = "1.0.37"
 serde_json = { version = "^1.0" }
