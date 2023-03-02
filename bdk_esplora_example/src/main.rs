@@ -1,11 +1,9 @@
+use bdk_chain::bitcoin::{Address, OutPoint, Txid};
 use bdk_chain::{bitcoin::Network, TxHeight};
-use bdk_esplora::esplora_client::{self, BlockingClient};
+use bdk_esplora::esplora_client;
 use bdk_esplora::EsploraExt;
 
-use std::{
-    io::{self, Write},
-    num::NonZeroU8,
-};
+use std::io::{self, Write};
 
 use bdk_cli::{
     anyhow::{self, Context},
@@ -28,18 +26,15 @@ enum EsploraCommands {
         /// Scan all the unused addresses
         #[clap(long)]
         unused_spks: bool,
-        /// Scan the script addresses that have unspent outputs
-        #[clap(long)]
-        unspent_spks: bool,
         /// Scan every address that you have derived
         #[clap(long)]
         all_spks: bool,
         /// Scan unspent outpoints for spends or changes to confirmation status of residing tx
         #[clap(long)]
-        unspent_outpoints: bool,
+        utxos: bool,
         /// Scan unconfirmed transactions for updates
         #[clap(long)]
-        unconfirmed_txs: bool,
+        unconfirmed: bool,
 
         #[clap(flatten)]
         scan_options: ScanOptions,
@@ -49,33 +44,7 @@ enum EsploraCommands {
 #[derive(Parser, Debug, Clone, PartialEq)]
 pub struct ScanOptions {
     #[clap(long, default_value = "5")]
-    pub parallel_requests: NonZeroU8,
-}
-
-struct WrappedClient(BlockingClient);
-
-impl std::ops::Deref for WrappedClient {
-    type Target = BlockingClient;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-// impl bdk_cli::Broadcast for WrappedClient {
-//     type Error = bdk_esplora::esplora_client::Error;
-
-//     fn broadcast(&self, tx: &bdk_chain::bitcoin::Transaction) -> anyhow::Result<(), Self::Error> {
-//         self.0.broadcast(tx)
-//     }
-// }
-
-impl WrappedClient {
-    pub fn new(base_url: &str) -> Result<Self, esplora_client::Error> {
-        esplora_client::Builder::new(base_url)
-            .build_blocking()
-            .map(Self)
-    }
+    pub parallel_requests: usize,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -87,7 +56,7 @@ fn main() -> anyhow::Result<()> {
         Network::Signet => "https://mempool.space/signet/api",
     };
 
-    let client = WrappedClient::new(esplora_url)?;
+    let client = esplora_client::Builder::new(esplora_url).build_blocking()?;
 
     let esplora_cmd = match args.command {
         bdk_cli::Commands::ChainSpecific(esplora_cmd) => esplora_cmd,
@@ -160,21 +129,20 @@ fn main() -> anyhow::Result<()> {
         }
         EsploraCommands::Sync {
             mut unused_spks,
-            mut unspent_spks,
+            mut utxos,
+            mut unconfirmed,
             all_spks,
-            unspent_outpoints,
-            unconfirmed_txs,
             scan_options,
         } => {
             // Get a short lock on the tracker to get the spks we're interested in
             let tracker = keychain_tracker.lock().unwrap();
 
-            if !(all_spks || unused_spks || unspent_spks || unspent_outpoints || unconfirmed_txs) {
+            if !(all_spks || unused_spks || utxos || unconfirmed) {
                 unused_spks = true;
-                unspent_spks = true;
+                unconfirmed = true;
+                utxos = true;
             } else if all_spks {
                 unused_spks = false;
-                unspent_spks = false
             }
 
             let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
@@ -198,36 +166,49 @@ fn main() -> anyhow::Result<()> {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect::<Vec<_>>();
                 spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {
-                    eprintln!("Checking if address at {:?} has been used", index);
+                    eprintln!(
+                        "Checking if address {} {:?} has been used",
+                        Address::from_script(&script, args.network).unwrap(),
+                        index
+                    );
+
                     script
                 })));
             }
-            if unspent_spks {
-                let unspent_txouts = tracker
-                    .full_utxos()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect::<Vec<_>>();
-                spks = Box::new(
-                    spks.chain(unspent_txouts.into_iter().map(|(_index, ftxout)| {
-                        eprintln!("checking if {} has been spent", ftxout.outpoint);
-                        ftxout.txout.script_pubkey
-                    })),
-                );
-            }
 
-            let outpoints: Vec<_> = match unspent_outpoints {
-                true => tracker.full_txouts().map(|(_, txo)| txo.outpoint).collect(),
-                false => Default::default(),
+            let mut outpoints: Box<dyn Iterator<Item = OutPoint>> = Box::new(core::iter::empty());
+
+            if utxos {
+                let utxos = tracker
+                    .full_utxos()
+                    .map(|(_, utxo)| utxo)
+                    .collect::<Vec<_>>();
+                outpoints = Box::new(
+                    utxos
+                        .into_iter()
+                        .inspect(|utxo| {
+                            eprintln!(
+                                "Checking if outpoint {} (value: {}) has been spent",
+                                utxo.outpoint, utxo.txout.value
+                            );
+                        })
+                        .map(|utxo| utxo.outpoint),
+                );
             };
 
-            let txids: Vec<_> = match unconfirmed_txs {
-                true => tracker
+            let mut txids: Box<dyn Iterator<Item = Txid>> = Box::new(core::iter::empty());
+
+            if unconfirmed {
+                let unconfirmed_txids = tracker
                     .chain()
                     .range_txids_by_height(TxHeight::Unconfirmed..)
                     .map(|(_, txid)| *txid)
-                    .collect(),
-                false => Default::default(),
-            };
+                    .collect::<Vec<_>>();
+
+                txids = Box::new(unconfirmed_txids.into_iter().inspect(|txid| {
+                    eprintln!("Checking if {} is confirmed yet", txid);
+                }));
+            }
 
             let local_chain = tracker.chain().checkpoints().clone();
 

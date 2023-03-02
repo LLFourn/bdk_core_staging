@@ -1,3 +1,4 @@
+use bdk_chain::bitcoin::{Address, OutPoint, Txid};
 use bdk_cli::{
     anyhow::{self, Context},
     clap::{self, Parser, Subcommand},
@@ -17,33 +18,29 @@ enum ElectrumCommands {
         #[clap(long, default_value = "5")]
         stop_gap: usize,
         #[clap(flatten)]
-        scan_option: ScanOption,
+        scan_options: ScanOptions,
     },
     /// Scans particular addresses using esplora API
     Sync {
         /// Scan all the unused addresses
         #[clap(long)]
         unused_spks: bool,
-        /// Scan the script addresses that have unspent outputs
-        #[clap(long)]
-        unspent_spks: bool,
         /// Scan every address that you have derived
         #[clap(long)]
         all_spks: bool,
         /// Scan unspent outpoints for spends or changes to confirmation status of residing tx
         #[clap(long)]
-        unspent_outpoints: bool,
+        utxos: bool,
         /// Scan unconfirmed transactions for updates
         #[clap(long)]
-        unconfirmed_txs: bool,
-
+        unconfirmed: bool,
         #[clap(flatten)]
-        scan_option: ScanOption,
+        scan_options: ScanOptions,
     },
 }
 
 #[derive(Parser, Debug, Clone, PartialEq)]
-pub struct ScanOption {
+pub struct ScanOptions {
     /// Set batch size for each script_history call to electrum client
     #[clap(long, default_value = "25")]
     pub batch_size: usize,
@@ -87,7 +84,7 @@ fn main() -> anyhow::Result<()> {
     let response = match electrum_cmd {
         ElectrumCommands::Scan {
             stop_gap,
-            scan_option,
+            scan_options: scan_option,
         } => {
             let (spk_iterators, local_chain) = {
                 // Get a short lock on the tracker to get the spks iterators
@@ -127,21 +124,20 @@ fn main() -> anyhow::Result<()> {
         }
         ElectrumCommands::Sync {
             mut unused_spks,
-            mut unspent_spks,
+            mut utxos,
+            mut unconfirmed,
             all_spks,
-            unspent_outpoints,
-            unconfirmed_txs,
-            scan_option,
+            scan_options,
         } => {
             // Get a short lock on the tracker to get the spks we're interested in
             let tracker = tracker.lock().unwrap();
 
-            if !(all_spks || unused_spks || unspent_spks || unspent_outpoints || unconfirmed_txs) {
+            if !(all_spks || unused_spks || utxos || unconfirmed) {
                 unused_spks = true;
-                unspent_spks = true;
+                unconfirmed = true;
+                utxos = true;
             } else if all_spks {
                 unused_spks = false;
-                unspent_spks = false;
             }
 
             let mut spks: Box<dyn Iterator<Item = bdk_chain::bitcoin::Script>> =
@@ -165,39 +161,51 @@ fn main() -> anyhow::Result<()> {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect::<Vec<_>>();
                 spks = Box::new(spks.chain(unused_spks.into_iter().map(|(index, script)| {
-                    eprintln!("Checking if address at {:?} has been used", index);
+                    eprintln!(
+                        "Checking if address {} {:?} has been used",
+                        Address::from_script(&script, args.network).unwrap(),
+                        index
+                    );
+
                     script
                 })));
             }
-            if unspent_spks {
-                let unspent_txouts = tracker
+
+            let mut outpoints: Box<dyn Iterator<Item = OutPoint>> = Box::new(core::iter::empty());
+
+            if utxos {
+                let utxos = tracker
                     .full_utxos()
-                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .map(|(_, utxo)| utxo)
                     .collect::<Vec<_>>();
-                spks = Box::new(
-                    spks.chain(unspent_txouts.into_iter().map(|(_index, ftxout)| {
-                        eprintln!("checking if {} has been spent", ftxout.outpoint);
-                        ftxout.txout.script_pubkey
-                    })),
+                outpoints = Box::new(
+                    utxos
+                        .into_iter()
+                        .inspect(|utxo| {
+                            eprintln!(
+                                "Checking if outpoint {} (value: {}) has been spent",
+                                utxo.outpoint, utxo.txout.value
+                            );
+                        })
+                        .map(|utxo| utxo.outpoint),
                 );
-            }
+            };
 
-            let mut outpoints = Vec::new();
-            if unspent_outpoints {
-                outpoints = tracker.full_utxos().map(|(_, txo)| txo.outpoint).collect();
-            }
+            let mut txids: Box<dyn Iterator<Item = Txid>> = Box::new(core::iter::empty());
 
-            let mut txids = Vec::new();
-            if unconfirmed_txs {
-                txids = tracker
+            if unconfirmed {
+                let unconfirmed_txids = tracker
                     .chain()
                     .range_txids_by_height(TxHeight::Unconfirmed..)
                     .map(|(_, txid)| *txid)
-                    .collect();
+                    .collect::<Vec<_>>();
+
+                txids = Box::new(unconfirmed_txids.into_iter().inspect(|txid| {
+                    eprintln!("Checking if {} is confirmed yet", txid);
+                }));
             }
 
             let local_chain = tracker.chain().checkpoints().clone();
-
             // drop lock on tracker
             drop(tracker);
 
@@ -209,7 +217,7 @@ fn main() -> anyhow::Result<()> {
                         spks,
                         txids,
                         outpoints,
-                        scan_option.batch_size,
+                        scan_options.batch_size,
                     )
                     .context("scanning the blockchain")?,
                 ..Default::default()

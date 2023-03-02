@@ -7,9 +7,9 @@ use bdk_chain::{
     bitcoin::{BlockHash, OutPoint, Script, Txid},
     chain_graph::ChainGraph,
     keychain::KeychainScan,
-    BlockId, ConfirmationTime,
+    sparse_chain, BlockId, ConfirmationTime,
 };
-use esplora_client::OutputStatus;
+use esplora_client::{OutputStatus, TxStatus};
 use std::collections::BTreeMap;
 
 pub use esplora_client;
@@ -30,7 +30,8 @@ pub trait EsploraExt {
     ///     want to included in the update
     ///
     /// The scan for each keychain stops after a gap of `stop_gap` script pubkeys with no associated
-    /// transactions. `parallel_requests` specifies the max task-threads allowed.
+    /// transactions. `parallel_requests` specifies the max number of HTTP requests to make in
+    /// parallel.
     ///
     /// [`ChainPosition`]: bdk_chain::sparse_chain::ChainPosition
     fn scan<K: Ord + Clone>(
@@ -40,7 +41,7 @@ pub trait EsploraExt {
         txids: impl IntoIterator<Item = Txid>,
         outpoints: impl IntoIterator<Item = OutPoint>,
         stop_gap: usize,
-        parallel_requests: core::num::NonZeroU8,
+        parallel_requests: usize,
     ) -> Result<KeychainScan<K, ConfirmationTime>, Error>;
 
     /// Convenience method to call [`scan`] without requiring a keychain.
@@ -49,14 +50,21 @@ pub trait EsploraExt {
     fn scan_without_keychain(
         &self,
         local_chain: &BTreeMap<u32, BlockHash>,
-        misc_spks: impl Iterator<Item = Script>,
+        misc_spks: impl IntoIterator<Item = Script>,
         txids: impl IntoIterator<Item = Txid>,
         outpoints: impl IntoIterator<Item = OutPoint>,
-        parallel_requests: core::num::NonZeroU8,
+        parallel_requests: usize,
     ) -> Result<ChainGraph<ConfirmationTime>, Error> {
         let wallet_scan = self.scan(
             local_chain,
-            [((), misc_spks.enumerate().map(|(i, spk)| (i as u32, spk)))].into(),
+            [(
+                (),
+                misc_spks
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, spk)| (i as u32, spk)),
+            )]
+            .into(),
             txids,
             outpoints,
             usize::MAX,
@@ -75,16 +83,45 @@ impl EsploraExt for esplora_client::BlockingClient {
         txids: impl IntoIterator<Item = Txid>,
         outpoints: impl IntoIterator<Item = OutPoint>,
         stop_gap: usize,
-        parallel_requests: core::num::NonZeroU8,
+        parallel_requests: usize,
     ) -> Result<KeychainScan<K, ConfirmationTime>, Error> {
-        let mut update = prepare_update(self, local_chain)?;
+        let parallel_requests = parallel_requests.max(1);
+        let mut scan = KeychainScan::default();
+        let update = &mut scan.update;
+        let last_active_indices = &mut scan.last_active_indices;
 
-        let tip = update
-            .chain()
-            .latest_checkpoint()
-            .expect("chain must have a checkpoint");
-
-        let mut last_active_indices = BTreeMap::new();
+        for (&height, &original_hash) in local_chain.iter().rev() {
+            let update_block_id = BlockId {
+                height,
+                hash: self.get_block_hash(height)?,
+            };
+            let _ = update
+                .insert_checkpoint(update_block_id)
+                .expect("cannot repeat height here");
+            if update_block_id.hash == original_hash {
+                break;
+            }
+        }
+        let tip_at_start = BlockId {
+            height: self.get_height()?,
+            hash: self.get_tip_hash()?,
+        };
+        if let Err(failure) = update.insert_checkpoint(tip_at_start) {
+            match failure {
+                sparse_chain::InsertCheckpointError::HashNotMatching { .. } => {
+                    // there has been a re-org before we started scanning. We haven't consumed any iterators so it's safe to recursively call.
+                    return EsploraExt::scan(
+                        self,
+                        local_chain,
+                        keychain_spks,
+                        txids,
+                        outpoints,
+                        stop_gap,
+                        parallel_requests,
+                    );
+                }
+            }
+        }
 
         for (keychain, spks) in keychain_spks {
             let mut spks = spks.into_iter();
@@ -92,7 +129,7 @@ impl EsploraExt for esplora_client::BlockingClient {
             let mut empty_scripts = 0;
 
             loop {
-                let handles = (0..parallel_requests.get())
+                let handles = (0..parallel_requests)
                     .filter_map(
                         |_| -> Option<
                             std::thread::JoinHandle<Result<(u32, Vec<esplora_client::Tx>), _>>,
@@ -138,17 +175,9 @@ impl EsploraExt for esplora_client::BlockingClient {
                         empty_scripts = 0;
                     }
                     for tx in related_txs {
-                        let confirmation_time = if tx.status.confirmed
-                            // anything higher means that chain tip has progressed
-                            && tx.status.block_height.expect("height expected") <= tip.height as _
-                        {
-                            ConfirmationTime::Confirmed {
-                                height: tx.status.block_height.expect("height expected"),
-                                time: tx.status.block_time.expect("blocktime expected"),
-                            }
-                        } else {
-                            ConfirmationTime::Unconfirmed
-                        };
+                        let confirmation_time =
+                            map_confirmation_time(&tx.status, tip_at_start.height);
+
                         if let Err(failure) = update.insert_tx(tx.to_tx(), confirmation_time) {
                             use bdk_chain::{
                                 chain_graph::InsertTxError, sparse_chain::InsertTxError::*,
@@ -157,11 +186,9 @@ impl EsploraExt for esplora_client::BlockingClient {
                                 InsertTxError::Chain(TxTooHigh { .. }) => {
                                     unreachable!("chain position already checked earlier")
                                 }
-                                InsertTxError::Chain(TxMovedUnexpectedly { .. }) => {
-                                    /* Reorg occured (catch error below), ignore tx for now */
-                                }
-                                InsertTxError::UnresolvableConflict(_) => {
-                                    /* Reorg occured (catch error below), ignore tx for now */
+                                InsertTxError::Chain(TxMovedUnexpectedly { .. })
+                                | InsertTxError::UnresolvableConflict(_) => {
+                                    /* implies reorg during scan. We deal with that below */
                                 }
                             }
                         }
@@ -184,16 +211,7 @@ impl EsploraExt for esplora_client::BlockingClient {
                 _ => continue,
             };
 
-            let confirmation_time = if tx_status.confirmed
-                && tx_status.block_height.expect("height expected") <= tip.height as _
-            {
-                ConfirmationTime::Confirmed {
-                    height: tx_status.block_height.expect("height expected"),
-                    time: tx_status.block_time.expect("blocktime expected"),
-                }
-            } else {
-                ConfirmationTime::Unconfirmed
-            };
+            let confirmation_time = map_confirmation_time(&tx_status, tip_at_start.height);
 
             if let Err(failure) = update.insert_tx(tx, confirmation_time) {
                 use bdk_chain::{chain_graph::InsertTxError, sparse_chain::InsertTxError::*};
@@ -201,11 +219,9 @@ impl EsploraExt for esplora_client::BlockingClient {
                     InsertTxError::Chain(TxTooHigh { .. }) => {
                         unreachable!("chain position already checked earlier")
                     }
-                    InsertTxError::Chain(TxMovedUnexpectedly { .. }) => {
-                        /* Reorg occured (catch error below), ignore tx for now */
-                    }
-                    InsertTxError::UnresolvableConflict(_) => {
-                        /* Reorg occured (catch error below), ignore tx for now */
+                    InsertTxError::Chain(TxMovedUnexpectedly { .. })
+                    | InsertTxError::UnresolvableConflict(_) => {
+                        /* implies reorg during scan. We deal with that below */
                     }
                 }
             }
@@ -230,16 +246,7 @@ impl EsploraExt for esplora_client::BlockingClient {
             }
 
             for (tx, status) in op_txs {
-                let confirmation_time = if status.confirmed
-                    && status.block_height.expect("height expected") <= tip.height as _
-                {
-                    ConfirmationTime::Confirmed {
-                        height: status.block_height.expect("height expected"),
-                        time: status.block_time.expect("blocktime expected"),
-                    }
-                } else {
-                    ConfirmationTime::Unconfirmed
-                };
+                let confirmation_time = map_confirmation_time(&status, tip_at_start.height);
 
                 if let Err(failure) = update.insert_tx(tx, confirmation_time) {
                     use bdk_chain::{chain_graph::InsertTxError, sparse_chain::InsertTxError::*};
@@ -247,104 +254,50 @@ impl EsploraExt for esplora_client::BlockingClient {
                         InsertTxError::Chain(TxTooHigh { .. }) => {
                             unreachable!("chain position already checked earlier")
                         }
-                        InsertTxError::Chain(TxMovedUnexpectedly { .. }) => {
-                            /* Reorg occured (catch error below), ignore tx for now */
-                        }
-                        InsertTxError::UnresolvableConflict(_) => {
-                            /* Reorg occured (catch error below), ignore tx for now */
+                        InsertTxError::Chain(TxMovedUnexpectedly { .. })
+                        | InsertTxError::UnresolvableConflict(_) => {
+                            /* implies reorg during scan. We deal with that below */
                         }
                     }
                 }
             }
         }
 
-        // Reorg mitigation logic...
-        'mitigate_reorg: loop {
-            let recheck_update = prepare_update(self, update.chain().checkpoints())?;
-            let changeset = update.apply_update(recheck_update).expect("should work");
-            let displaced_txids = changeset.chain.txids.into_keys();
-
-            if displaced_txids.len() == 0 {
-                break 'mitigate_reorg;
-            }
-
-            // recheck status of all unconfirmed txs
-            for txid in displaced_txids {
-                let status = match self.get_tx_status(&txid)? {
-                    Some(status) => status,
-                    None => continue, // [TODO] Should we remove tx from unconfirmed here?
-                };
-
-                let confirmation_time = if status.confirmed
-                    // anything higher means that chain tip has progressed
-                    && status.block_height.expect("height expected") <= tip.height as _
-                {
-                    ConfirmationTime::Confirmed {
-                        height: status.block_height.expect("height expected"),
-                        time: status.block_time.expect("blocktime expected"),
-                    }
-                } else {
-                    ConfirmationTime::Unconfirmed
-                };
-
-                // [TODO] Should we allow directly updating tx position on chaingraph?
-                let tx = update.graph().get_tx(txid).expect("must exist").clone();
-                if let Err(failure) = update.insert_tx(tx, confirmation_time) {
-                    use bdk_chain::{chain_graph::InsertTxError, sparse_chain::InsertTxError::*};
-                    match failure {
-                        InsertTxError::Chain(TxTooHigh { .. }) => {
-                            unreachable!("chain position already checked earlier")
-                        }
-                        InsertTxError::Chain(TxMovedUnexpectedly { .. }) => {
-                            /* Reorg occured (catch error below), ignore tx for now */
-                        }
-                        InsertTxError::UnresolvableConflict(_) => {
-                            /* Reorg occured (catch error below), ignore tx for now */
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(KeychainScan {
-            update,
-            last_active_indices,
-        })
-    }
-}
-
-fn prepare_update(
-    client: &esplora_client::BlockingClient,
-    local_chain: &BTreeMap<u32, BlockHash>,
-) -> Result<ChainGraph<ConfirmationTime>, Error> {
-    'outer: loop {
-        let mut update = ChainGraph::<ConfirmationTime>::default();
-
-        'find_agreement: for (&height, &original_hash) in local_chain.iter().rev() {
-            let update_block_id = BlockId {
-                height,
-                hash: client.get_block_hash(height)?,
-            };
-            let _ = update
-                .insert_checkpoint(update_block_id)
-                .expect("must not collide");
-            if update_block_id.hash == original_hash {
-                break 'find_agreement;
-            }
-        }
-
-        let tip_block_id = 'find_tip: loop {
-            let hash = client.get_tip_hash()?;
-            match client.get_block_status(&hash)?.height {
-                Some(height) => break 'find_tip BlockId { hash, height },
-                None => continue 'find_tip,
+        let reorg_occurred = {
+            if let Some(checkpoint) = update.chain().latest_checkpoint() {
+                self.get_block_hash(checkpoint.height)? != checkpoint.hash
+            } else {
+                false
             }
         };
 
-        if update.insert_checkpoint(tip_block_id).is_err() {
-            continue 'outer;
+        if reorg_occurred {
+            // A reorg occurred so lets find out where all the txids we found are in the chain now.
+            // XXX: collect required because of weird type naming issues
+            let txids_found = update
+                .chain()
+                .txids()
+                .map(|(_, txid)| *txid)
+                .collect::<Vec<_>>();
+            scan.update = EsploraExt::scan_without_keychain(
+                self,
+                local_chain,
+                [],
+                txids_found,
+                [],
+                parallel_requests,
+            )?;
         }
 
-        return Ok(update);
+        Ok(scan)
+    }
+}
+
+fn map_confirmation_time(tx_status: &TxStatus, height_at_start: u32) -> ConfirmationTime {
+    match (tx_status.block_time, tx_status.block_height) {
+        (Some(time), Some(height)) if height <= height_at_start => {
+            ConfirmationTime::Confirmed { height, time }
+        }
+        _ => ConfirmationTime::Unconfirmed,
     }
 }
