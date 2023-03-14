@@ -1,5 +1,9 @@
 # BDK core staging
 
+> ⚠ THIS REPO IS ARCHIVED -- ALL THE CONTRIBUTIONS HERE HAVE BEEN MERGED INTO
+> [BDK](https://github.com/bitcoindevkit/bdk)'s repo.
+> Please re-submit PRs over there as appropriate. Thanks!
+
 This is a repo for building out bdk_core before it can be integrated into bdk.
 
 ## Components
