@@ -411,6 +411,20 @@ impl<P: ChainPosition> SparseChain<P> {
             .map(|(&height, &hash)| BlockId { height, hash })
     }
 
+    pub fn determine_relevant_changeset(
+        &self,
+        mut update: Self,
+        relevant_txids: &BTreeSet<Txid>,
+    ) -> Result<ChangeSet<P>, UpdateError<P>> {
+        update
+            .ordered_txids
+            .retain(|(_, txid)| relevant_txids.contains(txid));
+        update
+            .txid_to_pos
+            .retain(|txid, _| relevant_txids.contains(txid));
+        self.determine_changeset(&update)
+    }
+
     /// Preview changes of updating [`Self`] with another chain that connects to it.
     ///
     /// If the `update` wishes to introduce confirmed transactions, it must contain a checkpoint

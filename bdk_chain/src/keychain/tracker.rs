@@ -70,7 +70,36 @@ where
     where
         T2: IntoOwned<T> + Clone,
     {
-        // TODO: `KeychainTxOutIndex::determine_additions`
+        Ok(KeychainChangeSet {
+            derivation_indices: self.determine_additions(scan),
+            chain_graph: self.chain_graph.determine_changeset(&scan.update)?,
+        })
+    }
+
+    /// Determines the resultant [`KeychainChangeSet`] if the relevant part of a [`KeychainScan`] is applied.
+    ///
+    /// Internally, we call [`ChainGraph::determine_relevant_changeset`] and also determine the additions of
+    /// [`KeychainTxOutIndex`].
+    pub fn determine_relevant_changeset<T2>(
+        &self,
+        scan: KeychainScan<K, P, T2>,
+    ) -> Result<KeychainChangeSet<K, P, T>, chain_graph::UpdateError<P>>
+    where
+        T2: IntoOwned<T> + Clone + AsTransaction,
+    {
+        Ok(KeychainChangeSet {
+            derivation_indices: self.determine_additions(&scan),
+            chain_graph: self
+                .chain_graph
+                .determine_relevant_changeset(scan.update, |tx| self.txout_index.is_relevant(tx))?,
+        })
+    }
+
+    /// Determines the changes ([`DerivationAdditions`]) in the local keychain
+    /// derivation if the given [`KeychainScan`] is applied
+    // Note: we could accept `last_active_indices: BTreeMap<K, u32>` here, but we're accepting a whole
+    // KeychainScan for clarity
+    pub fn determine_additions<T2>(&self, scan: &KeychainScan<K, P, T2>) -> DerivationAdditions<K> {
         let mut derivation_indices = scan.last_active_indices.clone();
         derivation_indices.retain(|keychain, index| {
             match self.txout_index.last_revealed_index(keychain) {
@@ -79,10 +108,7 @@ where
             }
         });
 
-        Ok(KeychainChangeSet {
-            derivation_indices: DerivationAdditions(derivation_indices),
-            chain_graph: self.chain_graph.determine_changeset(&scan.update)?,
-        })
+        DerivationAdditions(derivation_indices)
     }
 
     /// Directly applies a [`KeychainScan`] on [`KeychainTracker`].
@@ -99,6 +125,24 @@ where
         T2: IntoOwned<T> + Clone,
     {
         let changeset = self.determine_changeset(&scan)?;
+        self.apply_changeset(changeset.clone());
+        Ok(changeset)
+    }
+
+    /// Directly applies the relevant part of a [`KeychainScan`] on [`KeychainTracker`].
+    ///
+    /// This is equivilant to calling [`determine_relevant_changeset`] and [`apply_changeset`] in sequence.
+    ///
+    /// [`determine_relevant_changeset`]: Self::determine_relevant_changeset
+    /// [`apply_changeset`]: Self::apply_changeset
+    pub fn apply_update_relevant<T2>(
+        &mut self,
+        scan: KeychainScan<K, P, T2>,
+    ) -> Result<KeychainChangeSet<K, P, T>, chain_graph::UpdateError<P>>
+    where
+        T2: IntoOwned<T> + Clone + AsTransaction,
+    {
+        let changeset = self.determine_relevant_changeset(scan)?;
         self.apply_changeset(changeset.clone());
         Ok(changeset)
     }

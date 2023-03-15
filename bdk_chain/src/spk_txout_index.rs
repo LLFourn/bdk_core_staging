@@ -2,7 +2,7 @@ use core::ops::RangeBounds;
 
 use crate::{
     collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
-    ForEachTxOut,
+    AsTransaction, ForEachTxOut,
 };
 use bitcoin::{self, OutPoint, Script, Transaction, TxOut, Txid};
 
@@ -296,7 +296,8 @@ impl<I: Clone + Ord> SpkTxOutIndex<I> {
     /// have scanned the `TxOut`s the transaction is spending. For example if you want to filter out
     /// all the transactions in a block that are irrelevant you **must first scan all the
     /// transactions in the block** and only then use this method.
-    pub fn is_relevant(&self, tx: &Transaction) -> bool {
+    pub fn is_relevant<T: AsTransaction>(&self, tx: &T) -> bool {
+        let tx = tx.as_tx();
         let input_matches = tx
             .input
             .iter()

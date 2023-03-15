@@ -1,6 +1,6 @@
 //! Module for structures that combine the features of [`sparse_chain`] and [`tx_graph`].
 use crate::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     sparse_chain::{self, ChainPosition, SparseChain},
     tx_graph::{self, TxGraph},
     AsTransaction, BlockId, ForEachTxOut, FullTxOut, IntoOwned, TxHeight,
@@ -279,6 +279,42 @@ where
         let mut changeset = ChangeSet {
             chain: chain_changeset,
             graph: self.graph.determine_additions(&update.graph),
+        };
+
+        self.fix_conflicts(&mut changeset)?;
+        Ok(changeset)
+    }
+
+    /// Calculates the difference between self and `update` in the form of a [`ChangeSet`],
+    /// filtering the irrelevant transactions
+    pub fn determine_relevant_changeset<'a, F, T2>(
+        &self,
+        update: ChainGraph<P, T2>,
+        is_relevant: F,
+    ) -> Result<ChangeSet<P, T>, UpdateError<P>>
+    where
+        T2: IntoOwned<T> + Clone,
+        F: Fn(&T2) -> bool,
+    {
+        let graph_additions = self
+            .graph
+            .determine_relevant_additions(update.graph, is_relevant);
+
+        let relevant_txids = graph_additions
+            .clone()
+            .tx
+            .into_iter()
+            .map(|t| t.as_tx().txid())
+            .collect::<BTreeSet<Txid>>();
+
+        let chain_changeset = self
+            .chain
+            .determine_relevant_changeset(update.chain, &relevant_txids)
+            .map_err(UpdateError::Chain)?;
+
+        let mut changeset = ChangeSet {
+            chain: chain_changeset,
+            graph: graph_additions,
         };
 
         self.fix_conflicts(&mut changeset)?;
