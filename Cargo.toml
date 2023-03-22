@@ -9,5 +9,6 @@ members = [
     "bdk_electrum",
     "bdk_electrum_example",
     "bdk_tmp_plan",
-    "bdk_coin_select"
+    "bdk_coin_select",
+    "bdk_rpc_wallet_example",
 ]
